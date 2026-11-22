@@ -1,0 +1,27 @@
+[package]
+name = "riscv-asm-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Language server for RISC-V assembly in GNU assembler syntax"
+
+[lib]
+name = "riscv_asm_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "riscv-asm-lsp"
+path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "../tests/integration.rs"
+
+[dependencies]
+lsp-server.workspace = true
+lsp-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tree-sitter.workspace = true
+tree-sitter-riscv.workspace = true

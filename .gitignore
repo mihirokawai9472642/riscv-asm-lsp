@@ -1,0 +1,11 @@
+# Cargo build output (workspace and the Zed extension crate).
+/target
+/zed/target/
+
+# Inputs downloaded by `cargo xtask gen-data`.
+/.cache
+
+# Written by Zed when it builds the dev extension: the grammar checkout and
+# the compiled grammar and extension.
+/zed/grammars/
+/zed/*.wasm

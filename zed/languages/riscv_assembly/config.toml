@@ -1,0 +1,19 @@
+name = "RISC-V Assembly"
+grammar = "riscv"
+path_suffixes = ["S", "s", "riscv"]
+line_comments = ["# ", "// "]
+block_comment = { start = "/*", prefix = "", end = "*/", tab_size = 1 }
+documentation_comment = { start = "/*", prefix = "* ", end = "*/", tab_size = 1 }
+tab_size = 4
+hard_tabs = false
+word_characters = [".", "%", "\\", "$"]
+completion_query_characters = [".", "%", "\\", "$"]
+brackets = [
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "{", end = "}", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+  { start = "'", end = "'", close = true, newline = false, not_in = ["string", "comment"] },
+]
+increase_indent_pattern = "(^\\s*[A-Za-z0-9_.][A-Za-z0-9_.$]*:\\s*$|^\\s*\\.(macro|if|ifdef|ifndef|else|elseif|rept|irp|irpc)\\b)"
+decrease_indent_pattern = "^\\s*\\.(endm|endif|else|elseif|endr)\\b"

@@ -1,0 +1,15 @@
+id = "riscv-assembly"
+name = "RISC-V Assembly"
+version = "0.1.0"
+schema_version = 1
+authors = ["Mihiro Kawai"]
+description = "RISC-V assembly (GNU assembler syntax) support and riscv-asm-lsp integration"
+repository = "https://github.com/mihirokawai9472642/riscv-asm-lsp"
+
+[grammars.riscv]
+repository = "https://github.com/omeyenburg/tree-sitter-riscv"
+commit = "c89b7c525d90c7375129f888e4a37b4485927c75"
+
+[language_servers.riscv-asm-lsp]
+name = "riscv-asm-lsp"
+languages = ["RISC-V Assembly"]

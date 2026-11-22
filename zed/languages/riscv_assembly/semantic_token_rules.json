@@ -1,0 +1,26 @@
+[
+  {
+    "token_type": "register",
+    "style": ["variable.special", "variable.builtin"]
+  },
+  {
+    "token_type": "csr",
+    "style": ["constant.builtin", "constant"]
+  },
+  {
+    "token_type": "label",
+    "style": ["label", "function"]
+  },
+  {
+    "token_type": "constant",
+    "style": ["constant"]
+  },
+  {
+    "token_type": "macro",
+    "style": ["function.macro", "macro"]
+  },
+  {
+    "token_type": "parameter",
+    "style": ["variable.parameter"]
+  }
+]

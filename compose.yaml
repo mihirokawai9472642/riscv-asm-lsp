@@ -1,0 +1,20 @@
+# Development container configuration for riscv-asm-lsp.
+# Run `docker compose` commands from the repository root so `${PWD}` resolves
+# to the project directory and mirrors the host path inside the container.
+services:
+  dev:
+    build: .
+    init: true
+    user: "1000:1000"
+    working_dir: ${PWD}
+    volumes:
+      # Mount at the identical path so compilation database and file:// URIs match.
+      - ${PWD}:${PWD}
+      # Persist Cargo downloads across container rebuilds.
+      - cargo-registry:/home/dev/.cargo/registry
+      - cargo-git:/home/dev/.cargo/git
+    command: sleep infinity
+
+volumes:
+  cargo-registry:
+  cargo-git:
