@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
@@ -81,11 +82,18 @@ pub fn run_stdio() -> Result<(), Box<dyn std::error::Error>> {
     register_watched_files_if_supported(&connection, &init_params);
 
     let completion_caps = extract_completion_caps(&init_params);
+    let progress_ok = init_params
+        .capabilities
+        .window
+        .as_ref()
+        .and_then(|w| w.work_done_progress)
+        == Some(true);
     let workspace_root = extract_workspace_root(&init_params);
     let config = Config::from_init_options(init_params.initialization_options);
     let mut ctx = CompileContext::new(workspace_root.clone(), config.clone());
     let mut store = DocumentStore::new().map_err(std::io::Error::other)?;
     let mut index = WorkspaceIndex::new(workspace_root).map_err(std::io::Error::other)?;
+    index.start_background_scan(progress_ok.then(|| make_message_sink(&connection)));
     let tools = Arc::new(ToolRunner::new(
         config.clang.clone(),
         config.llvm_mc.clone(),
@@ -119,6 +127,7 @@ pub fn run_stdio() -> Result<(), Box<dyn std::error::Error>> {
         completion_caps,
     );
     // Shut down background workers before dropping `connection` so `LspServerWriter` drains cleanly.
+    index.shutdown();
     diag_worker.shutdown();
     hover_worker.shutdown();
     drop(connection);
@@ -224,6 +233,20 @@ fn main_loop(
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
                 }
+                if matches!(
+                    req.method.as_str(),
+                    "textDocument/definition"
+                        | "textDocument/references"
+                        | "textDocument/rename"
+                        | "workspace/symbol"
+                ) {
+                    index.drain_background_wait(
+                        &|u| store.get(u).is_some(),
+                        Duration::from_millis(200),
+                    );
+                } else {
+                    index.drain_background(&|u| store.get(u).is_some());
+                }
                 handle_request(
                     connection,
                     req,
@@ -238,6 +261,7 @@ fn main_loop(
                 )?;
             }
             Message::Notification(not) => {
+                index.drain_background(&|u| store.get(u).is_some());
                 handle_notification(&not.method, not.params, ctx, store, index, diag_worker);
             }
             Message::Response(_) => {}

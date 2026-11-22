@@ -87,6 +87,24 @@ machine or container where the editor starts language servers, next to
    label ranges; `semantic_tokens` adds its highlighting on top of the
    grammar's.
 
+   `lsp.riscv-asm-lsp.binary` in a project's `.zed/settings.json` applies only
+   when that directory is the opened project root. If you open a parent
+   directory (for example your home directory `~`), either put `riscv-asm-lsp`
+   on `PATH` or configure `lsp.riscv-asm-lsp.binary` in your user settings.
+
+   Themes that omit `variable.special` (such as Ayu) can still give registers
+   their own colour via `theme_overrides`:
+
+   ```json
+   "theme_overrides": {
+     "Ayu Dark": {
+       "syntax": {
+         "variable.special": { "color": "#95e6cb" }
+       }
+     }
+   }
+   ```
+
 ### Zed on Windows with projects in WSL
 
 - Zed links a dev extension with a directory junction, which cannot point

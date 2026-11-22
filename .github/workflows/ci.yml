@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang 19 and LLVM 19
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-19 llvm-19
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.100"
+          components: rustfmt, clippy
+          targets: wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+
+      - name: Check formatting
+        run: |
+          cargo fmt --check
+          cargo fmt --manifest-path zed/Cargo.toml --check
+
+      - name: Check clippy
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --manifest-path zed/Cargo.toml --target wasm32-wasip2 -- -D warnings
+
+      - name: Check dependency licenses
+        run: cargo deny check licenses
+
+      - name: Run tests without clang or llvm-mc
+        run: env PATH="$HOME/.cargo/bin:/usr/bin:/bin" cargo test
+
+      - name: Run LLVM 19 and clang 19 tests
+        run: |
+          export PATH="/usr/lib/llvm-19/bin:$HOME/.cargo/bin:/usr/bin:/bin"
+          clang --version
+          llvm-mc --version
+          out="$(cargo test --test integration -- --ignored)"
+          echo "$out"
+          echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed; 0 failed;'

@@ -218,7 +218,7 @@ what changed.
 | LSP layer | `lsp-server` (synchronous, from rust-analyzer) and `lsp-types`. Only implemented features are advertised |
 | Documents | Text and version of open documents (incremental sync), with a per-line map between UTF-16 and byte offsets |
 | Parser | tree-sitter-riscv; incremental reparse on edits |
-| Index | Project-wide symbol table (Section 5.2), built at startup and updated on change and save |
+| Index | Project-wide symbol table (Section 5.2), scanned asynchronously on a background thread (via `ignore`), updated on change, save, and watched-file events |
 | Context | Per-file flags from the compilation database (`--target`, `-march`, `-mabi`, `-I`, `-D`) and the `.option` state |
 | External tools | clang and llvm-mc processes, with delays, cancellation and time limits |
 
@@ -240,11 +240,17 @@ are clamped, never trusted.
 | `.equ`, `.set`, `=` | The file and the files it includes with `.include` |
 | `.macro` | The file and the files it includes |
 | Macro parameters (`\reg`) | The macro body |
-| `#define` in headers | Files that `#include` the header; headers are scanned for `#define` lines only |
+| `#define` in headers and `.S` files | The defining file and files that `#include` it; headers are loaded lazily when reached by an `#include` / `.include` |
 | C functions (`call kernel_main`) | Out of scope (clangd's job); may be revisited |
 
 The range of a label runs from the label to just before the next ordinary
 label. Numeric labels are children of the enclosing label.
+
+Workspace scanning walks `.S`, `.s`, and `.inc` files on a background thread
+using `ignore` (skipping hidden and `.gitignore`/`.ignore` directories), capped
+at 2,000 files, and reports progress with `$/progress` when supported by the
+client. Requests for open documents answer immediately from memory without
+waiting on the workspace scan.
 
 ### 5.3 Compilation context
 
@@ -260,7 +266,7 @@ refine this later (open question).
 
 | Target | Content |
 | --- | --- |
-| Instruction | LLVM syntax in a `riscv` fence, then compact metadata (long name, extensions, XLEN), first-paragraph description (~300 chars max), and `**This line:**` live expansion/encoding |
+| Instruction | LLVM syntax in a `riscv` fence, then compact metadata (long name, extensions or base ISA such as `I`/`RV64I`, XLEN), `-march` status if disabled, first-paragraph description (~300 chars max), and `**This line:**` live expansion/encoding |
 | Alias or pseudo-instruction (`mv`, `csrw`, `li`, `la`, `call`, ...) | Same compact layout with `alias of ...` / `pseudo-instruction` (excluding self-aliases such as `ld` -> `ld`), plus the current line's expansion |
 | CSR | Header line (`stvec · 0x105 · S-mode`), one-sentence description, and a bullet list of fields (`- NAME [bits] — summary`, no wide table) |
 | Register (`x2` or `sp`) | Single line with ABI name, architectural name, role, and saver convention |
@@ -271,6 +277,9 @@ refine this later (open question).
 
 Hover omits attribution trailers (`Source: ...`) and duplicate operand-naming
 sections so the popover stays compact and fits without horizontal scrolling.
+Extension alternatives are formatted readably (`V (or Zve32x)`), and instructions
+disabled under the active `-march` state which extension or XLEN is required
+without emitting `*expansion unavailable*`.
 
 The expansion comes from `llvm-mc`, given the current line (and any `.option`
 lines that affect it, plus `.equ` / `#define` constant substitution and `clang
@@ -303,11 +312,15 @@ Trigger characters include `.`, `%`, `\`, `,`, and ` `.
 | After `.option` | `arch`, `rvc`, `norvc`, `push`, `pop`, `relax`, `norelax`, `pic`, `nopic`, `exact` |
 | Inside a macro body | The macro's parameters |
 
-When the client supports snippets (`snippetSupport`) and `labelDetails`, each
-variant of an instruction, alias, or pseudo-instruction (register forms sorted
-first, memory forms as `ld ${1:rd}, ${2:0}(${3:rs1})`) inserts operand tab stops,
-and structured directives (`.macro`, `.rept`, `.irp`, `.if`, `.equ`, `.section`,
-`.option`) provide block snippets; zero-operand mnemonics insert plain text.
+When the client supports snippets (`snippetSupport`), variants of one mnemonic
+sort with real instructions before aliases before special relocation/symbol
+forms (`tprel_add_symbol`, `.insn`, etc.), and register forms before immediate
+forms; memory operands expand as `ld ${1:rd}, ${2:0}(${3:rs1})$0`. Each item
+places its operand syntax in `label` (with the mnemonic in `filterText`, the
+long name in `detail`, and the variant's own syntax in a `riscv` fence at the
+top of `documentation`) so overloaded variants are distinguishable in Zed;
+structured directives (`.macro`, `.rept`, `.irp`, `.if`, `.equ`, `.section`,
+`.option`) provide block snippets, and zero-operand mnemonics insert plain text.
 When snippet support is absent, plain completions append the required separator
 (` ` after mnemonics/directives taking arguments, `, ` after non-last operands
 and `.option arch`, and nothing after zero-operand mnemonics, final operands,
@@ -406,9 +419,9 @@ Logs go to standard error.
 | Language | `RISC-V Assembly`, separate from zed-asm's `Assembly`. Both claim `.S` and `.s`: remove zed-asm, or map the files with `"file_types": { "RISC-V Assembly": ["S", "s"] }` in the project settings |
 | File suffixes | `S`, `s`, and `riscv` (so ```` ```riscv ```` hover code fences highlight without colliding with zed-asm's `S`/`s`; `asm` is shared with other architectures) |
 | Grammar | tree-sitter-riscv (MIT), pinned at `c89b7c525d90`. It distinguishes numeric labels, macro parameters, registers and expressions |
-| Queries | `highlights.scm` (with `@preproc` rule for `#include`/`#define`/`#if...` comments), `injections.scm` (injecting `c` on preprocessor lines), `brackets.scm`, `indents.scm`, `outline.scm`, `semantic_token_rules.json` |
-| `config.toml` | `line_comments = ["# ", "// "]`, table-form `block_comment` and `documentation_comment`, `brackets`, `word_characters`/`completion_query_characters`, indentation rules for labels and `.macro` |
-| Starting the server | If `lsp.riscv-asm-lsp.binary` is set, Zed itself starts that command without calling `language_server_command` (checked in Zed 1.29.3). Otherwise `zed/src/lib.rs` looks up `riscv-asm-lsp` on `PATH` and returns an error if missing; downloading a release comes later |
+| Queries | `highlights.scm` (with `@preproc` rule for `#include`/`#define`/`#if...` comments), `injections.scm` (injecting `c` on preprocessor lines), `overrides.scm` (`@comment.inclusive` and `@string` scopes for comment continuation and bracket `not_in`), `brackets.scm`, `indents.scm`, `outline.scm`, `semantic_token_rules.json` (with theme fallback chains) |
+| `config.toml` | `line_comments = ["// ", "# "]` (putting `// ` first avoids creating `# ...` preprocessor directives when toggling comments in `.S` files; trade-off: GNU `as` does not accept `//` in `.s` without the preprocessor, whereas LLVM accepts it), table-form `block_comment` and `documentation_comment`, auto-closing `/*` pair, `brackets`, `word_characters`/`completion_query_characters`, indentation rules for labels and `.macro` |
+| Starting the server | If `lsp.riscv-asm-lsp.binary` is set for the opened worktree root, Zed starts that command without calling `language_server_command` (checked in Zed 1.29.3). Otherwise `zed/src/lib.rs` looks up `riscv-asm-lsp` on `PATH` and returns an error pointing to the README; it also implements `label_for_completion` so syntax-bearing completion labels highlight with the RISC-V grammar while filtering on the mnemonic |
 | License | `zed/LICENSE` (MIT): the registry checks the extension directory, not the repository root |
 | Recommended settings | `document_symbols` (`"on"`) and `semantic_tokens` (`"combined"`) documented in the README; `document_folding_ranges` comes later |
 
@@ -455,6 +468,7 @@ distribution under MIT.
 | riscv-unified-db data (all files used carry this license in their headers) | BSD-3-Clause-Clear | Keep the copyright notice and license in source and binary distributions; no endorsement; no patent grant |
 | riscv-asm-manual tables | CC-BY-4.0 | Credit the source, authors and license; state changes |
 | lsp-server, serde, serde_json, yaml_serde | MIT OR Apache-2.0 | Include the license |
+| ignore (file walking & `.gitignore` handling) | MIT OR Unlicense | Include the license |
 | lsp-types, tree-sitter, tree-sitter-riscv | MIT | Include the license |
 | zed_extension_api | Apache-2.0 | Include the license |
 | clang, llvm-mc | Only run as separate programs | None |

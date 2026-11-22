@@ -48,17 +48,25 @@ impl LspClient {
         root_uri: Option<&Uri>,
         envs: &[(&str, &str)],
     ) -> Self {
-        Self::start_with_options(init_options, root_uri, envs, false, false, false)
+        Self::start_with_options(init_options, root_uri, envs, false, false, false, false)
     }
 
     #[allow(dead_code)]
     pub fn start_with_watched_files(init_options: Option<Value>, root_uri: Option<&Uri>) -> Self {
-        Self::start_with_options(init_options, root_uri, &[], true, false, false)
+        Self::start_with_options(init_options, root_uri, &[], true, false, false, false)
     }
 
     #[allow(dead_code)]
     pub fn start_with_snippets(init_options: Option<Value>, root_uri: Option<&Uri>) -> Self {
-        Self::start_with_options(init_options, root_uri, &[], false, true, true)
+        Self::start_with_options(init_options, root_uri, &[], false, true, true, false)
+    }
+
+    #[allow(dead_code)]
+    pub fn start_with_work_done_progress(
+        init_options: Option<Value>,
+        root_uri: Option<&Uri>,
+    ) -> Self {
+        Self::start_with_options(init_options, root_uri, &[], false, false, false, true)
     }
 
     fn start_with_options(
@@ -68,6 +76,7 @@ impl LspClient {
         watched_files_dynamic: bool,
         snippet_support: bool,
         label_details_support: bool,
+        work_done_progress: bool,
     ) -> Self {
         let bin = env!("CARGO_BIN_EXE_riscv-asm-lsp");
         let mut cmd = Command::new(bin);
@@ -157,6 +166,11 @@ impl LspClient {
                 "didChangeWatchedFiles": {
                     "dynamicRegistration": true
                 }
+            });
+        }
+        if work_done_progress {
+            capabilities["window"] = json!({
+                "workDoneProgress": true
             });
         }
         let mut params = json!({
@@ -323,6 +337,75 @@ pub fn path_to_uri(path: &std::path::Path) -> Uri {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let s = format!("file://{}", abs.display());
     s.parse().expect("valid file URI")
+}
+
+#[allow(dead_code)]
+pub fn has_tool(name: &str) -> bool {
+    Command::new(name)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[allow(dead_code)]
+pub fn completion_items_vec(result: &Option<Value>) -> Vec<Value> {
+    let Some(val) = result.as_ref() else {
+        return Vec::new();
+    };
+    val.as_array()
+        .or_else(|| val.get("items").and_then(|v| v.as_array()))
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+pub fn completion_labels(result: &Option<Value>) -> Vec<String> {
+    completion_items_vec(result)
+        .into_iter()
+        .filter_map(|x| x.get("label").and_then(|l| l.as_str()).map(str::to_owned))
+        .collect()
+}
+
+#[allow(dead_code)]
+pub fn hover_markdown(
+    client: &mut LspClient,
+    uri: &Uri,
+    line: u32,
+    character: u32,
+) -> Option<String> {
+    let resp = client.send_request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": line, "character": character }
+        }),
+    );
+    assert!(resp.error.is_none(), "hover error: {:?}", resp.error);
+    resp.result.and_then(|v| {
+        v.get("contents")
+            .and_then(|c| c.get("value"))
+            .and_then(|s| s.as_str())
+            .map(str::to_owned)
+    })
+}
+
+#[allow(dead_code)]
+pub fn workspace_symbol_names(client: &mut LspClient, query: &str) -> Vec<String> {
+    let resp = client.send_request("workspace/symbol", json!({ "query": query }));
+    assert!(
+        resp.error.is_none(),
+        "workspace/symbol error: {:?}",
+        resp.error
+    );
+    resp.result
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.get("name").and_then(|n| n.as_str()).map(str::to_owned))
+        .collect()
 }
 
 fn write_lsp_message(stdin: &mut ChildStdin, payload: &Value) {

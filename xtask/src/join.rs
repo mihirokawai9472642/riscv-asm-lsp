@@ -178,12 +178,20 @@ fn join_instructions(
             };
             (u.long_name.clone(), u.description.clone(), src)
         } else if let Some(m) = manual_entry {
-            (
-                None,
-                Some(format!(
+            let formatted = if mnemonic == "li" || m.expansion == "Multiple instruction sequences" {
+                format!(
+                    "`{}` — {} (expands to one or more instructions depending on the value)",
+                    m.syntax, m.description
+                )
+            } else {
+                format!(
                     "`{}` — {} (expands to `{}`)",
                     m.syntax, m.description, m.expansion
-                )),
+                )
+            };
+            (
+                None,
+                Some(formatted),
                 Some("riscv-asm-manual (CC-BY-4.0)".to_owned()),
             )
         } else {
@@ -519,6 +527,14 @@ mod tests {
         let li = insts.iter().find(|i| i.mnemonic == "li").expect("li entry");
         let desc = li.description.as_deref().expect("li description");
         assert_eq!(desc.matches("expands to").count(), 1, "desc: {desc}");
+        assert!(
+            !desc.contains("Multiple instruction sequences"),
+            "desc: {desc}"
+        );
+        assert!(
+            desc.contains("one or more instructions depending on the value"),
+            "desc: {desc}"
+        );
         assert!(!desc.contains("|==="));
         assert!(!desc.contains("latexmath:"));
         assert!(!desc.contains("xref:"));

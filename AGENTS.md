@@ -34,7 +34,9 @@ same path inside the container.
 - `docker compose up -d --build`: builds and starts the container. The other
   commands need it running.
 - `docker compose exec dev cargo build`: builds the workspace.
-- `docker compose exec dev cargo test`: runs unit and integration tests.
+- `docker compose exec dev cargo test`: runs unit tests and non-tool integration
+  tests; `docker compose exec dev cargo test -- --include-ignored` also runs
+  the `clang` / `llvm-mc` integration tests (marked `#[ignore]`).
 - `docker compose exec dev cargo clippy --all-targets -- -D warnings`: lints.
 - `docker compose exec dev cargo fmt`: formats; `cargo fmt --check` checks.
 - `docker compose exec dev cargo deny check licenses`: checks dependency
@@ -95,8 +97,9 @@ available there.
 - A fixed bug comes with a regression test. Keep the tests for inputs that
   crashed asm-lsp: multibyte characters, positions past the end of a line,
   empty lines.
-- Tests that need clang or llvm-mc run in the container; the rest of the
-  suite must also pass without those tools.
+- Tests that need clang or llvm-mc are marked `#[ignore]` and run in the
+  container with `-- --include-ignored` (or `--test integration -- --ignored`);
+  the rest of the suite must pass with those tools absent from `PATH`.
 
 ## Security
 

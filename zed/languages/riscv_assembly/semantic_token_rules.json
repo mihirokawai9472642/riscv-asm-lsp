@@ -1,23 +1,23 @@
 [
   {
     "token_type": "register",
-    "style": ["variable.special", "variable.builtin"]
+    "style": ["variable.special", "variable.builtin", "type"]
   },
   {
     "token_type": "csr",
-    "style": ["constant.builtin", "constant"]
+    "style": ["constant.builtin", "enum", "constant"]
+  },
+  {
+    "token_type": "macro",
+    "style": ["function.macro", "preproc"]
   },
   {
     "token_type": "label",
-    "style": ["label", "function"]
+    "style": ["label"]
   },
   {
     "token_type": "constant",
     "style": ["constant"]
-  },
-  {
-    "token_type": "macro",
-    "style": ["function.macro", "macro"]
   },
   {
     "token_type": "parameter",
