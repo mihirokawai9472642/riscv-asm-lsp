@@ -6,7 +6,10 @@ use tree_sitter::{Node, Parser};
 
 use crate::position::{LineIndex, clamp_to_char_boundary};
 
-use super::{FileIndex, IncludeDirective, MacroParamDef, RefKind, SymKind, SymbolDef, SymbolRef};
+use super::{
+    AssignKind, FileIndex, IncludeDirective, MacroParamDef, RefKind, RepeatScope, SymKind,
+    SymbolDef, SymbolRef,
+};
 
 pub(super) fn is_header_path(path: &Path) -> bool {
     matches!(
@@ -85,6 +88,7 @@ pub(super) fn build_file_index(
     let tree = existing_tree.or(owned_tree.as_ref());
 
     let mut definitions = Vec::new();
+    let mut repeat_scopes = Vec::new();
     let mut references = Vec::new();
     let mut includes = Vec::new();
     let mut globals = HashSet::new();
@@ -98,16 +102,23 @@ pub(super) fn build_file_index(
             text: &text,
             line_index: &line_index,
             definitions: &mut definitions,
+            repeat_scopes: &mut repeat_scopes,
             references: &mut references,
             includes: &mut includes,
             globals: &mut globals,
             macro_stack: Vec::new(),
+            repeat_stack: Vec::new(),
         };
         walk_ast(tree.root_node(), &mut ctx);
         // Close any unclosed macros cleanly at EOF
         for open_idx in ctx.macro_stack {
             if let Some(def) = ctx.definitions.get_mut(open_idx) {
                 def.full_span.1 = text.len();
+            }
+        }
+        for open_rep in ctx.repeat_stack.into_iter().flatten() {
+            if let Some(scope) = ctx.repeat_scopes.get_mut(open_rep) {
+                scope.full_span.1 = text.len();
             }
         }
     }
@@ -124,6 +135,7 @@ pub(super) fn build_file_index(
         text,
         line_index,
         definitions,
+        repeat_scopes,
         references,
         includes,
         globals,
@@ -143,6 +155,7 @@ fn parse_header_file(path: PathBuf, uri: Uri, text: String, line_index: LineInde
         text,
         line_index,
         definitions,
+        repeat_scopes: Vec::new(),
         references: Vec::new(),
         includes,
         globals: HashSet::new(),
@@ -181,6 +194,7 @@ fn scan_cpp_defines(text: &str, definitions: &mut Vec<SymbolDef>) {
                 definitions.push(SymbolDef {
                     name: ident,
                     kind: SymKind::Define,
+                    assign_kind: None,
                     name_span: (name_start, name_end),
                     full_span: (line_start, line_end),
                     line_text: trimmed.to_owned(),
@@ -247,10 +261,26 @@ struct ExtractCtx<'a> {
     text: &'a str,
     line_index: &'a LineIndex,
     definitions: &'a mut Vec<SymbolDef>,
+    repeat_scopes: &'a mut Vec<RepeatScope>,
     references: &'a mut Vec<SymbolRef>,
     includes: &'a mut Vec<IncludeDirective>,
     globals: &'a mut HashSet<String>,
     macro_stack: Vec<usize>,
+    repeat_stack: Vec<Option<usize>>,
+}
+
+fn walk_ast_after_offset(node: Node<'_>, min_start: usize, ctx: &mut ExtractCtx<'_>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.end_byte() <= min_start {
+            continue;
+        }
+        if child.start_byte() >= min_start {
+            walk_ast(child, ctx);
+        } else {
+            walk_ast_after_offset(child, min_start, ctx);
+        }
+    }
 }
 
 fn walk_ast(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
@@ -274,6 +304,7 @@ fn walk_ast(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
                     ctx.definitions.push(SymbolDef {
                         name: name.to_owned(),
                         kind: sym_kind,
+                        assign_kind: None,
                         name_span: (name_start, name_end),
                         full_span: (node.start_byte(), node.end_byte()),
                         line_text: line_text_at(ctx.text, ctx.line_index, name_start),
@@ -295,6 +326,7 @@ fn walk_ast(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
                     ctx.definitions.push(SymbolDef {
                         name: name.to_owned(),
                         kind: SymKind::NumericLabel,
+                        assign_kind: None,
                         name_span: (name_start, name_end),
                         full_span: (node.start_byte(), node.end_byte()),
                         line_text: line_text_at(ctx.text, ctx.line_index, name_start),
@@ -367,6 +399,7 @@ fn walk_ast(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
                 ctx.definitions.push(SymbolDef {
                     name: name.to_owned(),
                     kind: SymKind::Equ,
+                    assign_kind: Some(AssignKind::Equals),
                     name_span: (left.start_byte(), left.end_byte()),
                     full_span: (node.start_byte(), node.end_byte()),
                     line_text: line_text_at(ctx.text, ctx.line_index, left.start_byte()),
@@ -468,6 +501,7 @@ fn handle_directive(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
             ctx.definitions.push(SymbolDef {
                 name: name.to_owned(),
                 kind: SymKind::Macro,
+                assign_kind: None,
                 name_span: (name_node.start_byte(), name_node.end_byte()),
                 full_span: (node.start_byte(), ctx.text.len()),
                 line_text: line_text_at(ctx.text, ctx.line_index, node.start_byte()),
@@ -490,6 +524,56 @@ fn handle_directive(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
         return;
     }
 
+    if matches!(mnem.as_str(), ".irp" | ".irpc") {
+        if let Some(ops_node) = node.child_by_field_name("operands")
+            && let Some(raw_ops) = ctx.text.get(ops_node.start_byte()..ops_node.end_byte())
+        {
+            let lead = raw_ops.len() - raw_ops.trim_start().len();
+            let param_start = ops_node.start_byte() + lead;
+            let trimmed = &raw_ops[lead..];
+            let param_len = trimmed
+                .bytes()
+                .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'$'))
+                .count();
+            if param_len > 0 {
+                let param_name = &trimmed[..param_len];
+                let param_end = param_start + param_len;
+                let scope_idx = ctx.repeat_scopes.len();
+                ctx.repeat_scopes.push(RepeatScope {
+                    directive: mnem,
+                    param: MacroParamDef {
+                        name: param_name.to_owned(),
+                        span: (param_start, param_end),
+                    },
+                    full_span: (node.start_byte(), ctx.text.len()),
+                    line_text: line_text_at(ctx.text, ctx.line_index, node.start_byte()),
+                });
+                ctx.repeat_stack.push(Some(scope_idx));
+                walk_ast_after_offset(ops_node, param_end, ctx);
+                return;
+            }
+        }
+        ctx.repeat_stack.push(None);
+        return;
+    }
+
+    if mnem == ".rept" {
+        ctx.repeat_stack.push(None);
+        if let Some(ops_node) = node.child_by_field_name("operands") {
+            walk_ast(ops_node, ctx);
+        }
+        return;
+    }
+
+    if mnem == ".endr" {
+        if let Some(Some(scope_idx)) = ctx.repeat_stack.pop()
+            && let Some(scope) = ctx.repeat_scopes.get_mut(scope_idx)
+        {
+            scope.full_span.1 = node.end_byte();
+        }
+        return;
+    }
+
     if matches!(mnem.as_str(), ".equ" | ".set" | ".equiv")
         && let Some(ops_node) = node.child_by_field_name("operands")
     {
@@ -504,9 +588,15 @@ fn handle_directive(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
                 .get(sym_node.end_byte()..ops_node.end_byte())
                 .and_then(|rest| rest.split_once(',').map(|(_, v)| v.trim().to_owned()))
                 .filter(|s| !s.is_empty());
+            let assign_kind = match mnem.as_str() {
+                ".set" => AssignKind::Set,
+                ".equiv" => AssignKind::Equiv,
+                _ => AssignKind::Equ,
+            };
             ctx.definitions.push(SymbolDef {
                 name: name.to_owned(),
                 kind: SymKind::Equ,
+                assign_kind: Some(assign_kind),
                 name_span: (sym_node.start_byte(), sym_node.end_byte()),
                 full_span: (node.start_byte(), node.end_byte()),
                 line_text: line_text_at(ctx.text, ctx.line_index, node.start_byte()),
@@ -603,6 +693,7 @@ fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<
                     defs.push(SymbolDef {
                         name: lhs_trim.to_owned(),
                         kind: SymKind::Equ,
+                        assign_kind: Some(AssignKind::Equals),
                         name_span: (name_start, name_start + lhs_trim.len()),
                         full_span: (offset, offset + raw_line.len()),
                         line_text: line_text_at(text, line_index, name_start),
@@ -649,16 +740,17 @@ fn finalize_label_hierarchy_and_ranges(text: &str, defs: &mut [SymbolDef], refs:
         defs[idx].full_span = (start, end.max(defs[idx].name_span.1));
     }
 
-    // Attach numeric labels to their enclosing ordinary label
+    // Attach numeric labels to their enclosing ordinary label via binary search (O(log N))
     for i in 0..defs.len() {
         if defs[i].kind != SymKind::NumericLabel {
             continue;
         }
         let off = defs[i].name_span.0;
-        let parent = label_indices
-            .iter()
-            .copied()
-            .rfind(|&li| defs[li].full_span.0 <= off && off <= defs[li].full_span.1);
+        let idx_pos = label_indices.partition_point(|&li| defs[li].full_span.0 <= off);
+        let parent = idx_pos.checked_sub(1).and_then(|k| {
+            let li = label_indices[k];
+            (off <= defs[li].full_span.1).then_some(li)
+        });
         defs[i].enclosing_label_idx = parent;
     }
 
@@ -694,7 +786,7 @@ fn trim_trailing_ws_before(text: &str, min: usize, limit: usize) -> usize {
 }
 
 fn line_text_at(text: &str, line_index: &LineIndex, byte_offset: usize) -> String {
-    let pos = line_index.offset_to_position(text, byte_offset);
-    let (start, end, _) = line_index.line_bounds(text, pos.line as usize);
+    let line = line_index.line_at_offset(byte_offset);
+    let (start, end, _) = line_index.line_bounds(text, line);
     text.get(start..end).unwrap_or("").trim().to_owned()
 }

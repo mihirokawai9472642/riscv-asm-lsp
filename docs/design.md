@@ -164,7 +164,7 @@ access.
      files).
    - Ignore `$ref` (12 files, part of Zimop) until that extension matters.
 3. Parse the riscv-asm-manual tables (pseudo-instructions, directives).
-4. Read the hand-written directive descriptions from `data/`.
+4. Read the hand-written directive and supplemental descriptions/corrections from `data/` (`directives_gnu.json`, `supplements.json`).
 5. Join by name, apply the rules in 4.5, and write the outputs.
 
 ### 4.4 Data format
@@ -176,7 +176,7 @@ access.
 | `meta` | Versions of the pinned inputs |
 | `extensions` | Name as used in `-march`, LLVM feature name, description |
 | `instructions` | Mnemonic; kind (`instruction`, `alias`, `pseudo`); syntax with operand names and classes (for example `simm12`, `GPR`, `csr_sysreg`); required extensions; XLEN; long name; description; source of the description; for aliases, the instruction they stand for |
-| `csrs` | Name, number, privilege level, required extensions, fields, description, deprecated names |
+| `csrs` | Name, number, privilege level, required extensions, fields, description, source of the description, deprecated names |
 | `registers` | Name, ABI names, class (integer, floating point, vector), description, who saves it in the calling convention |
 | `directives` | Name, arguments, description, source |
 
@@ -203,12 +203,12 @@ agree. Mismatches are handled as follows:
 
 | Case | Behavior |
 | --- | --- |
-| In LLVM, with a description | Shown normally |
-| In LLVM, no description | Show syntax and required extensions, and say there is no description |
+| In LLVM, with a description | Shown normally (UDB, manual, or MIT supplemental descriptions; upstream typos fixed in `xtask` and logged in `data/report.md`) |
+| Deprecated aliases (`frsr`, `vpopc.m`, ...) | Marked deprecated in hover (with preferred name) and completion (`DEPRECATED` tag, lower sort priority) |
 | Only in the documentation | Not offered in completion; hover says this LLVM version does not accept it |
 | Different names (deprecated, renamed) | Joined through LLVM's deprecated names; old names are marked |
 
-`data/report.md` lists every entry in each case, so that a pin update shows
+`data/report.md` lists every entry in each case (and applied corrections), so that a pin update shows
 what changed.
 
 ## 5. Server internals
@@ -216,10 +216,10 @@ what changed.
 | Component | Responsibility |
 | --- | --- |
 | LSP layer | `lsp-server` (synchronous, from rust-analyzer) and `lsp-types`. Only implemented features are advertised |
-| Documents | Text and version of open documents (incremental sync), with a per-line map between UTF-16 and byte offsets |
+| Documents | Text and version of open documents (incremental sync), with an incrementally updated UTF-16/byte line index |
 | Parser | tree-sitter-riscv; incremental reparse on edits |
-| Index | Project-wide symbol table (Section 5.2), scanned asynchronously on a background thread (via `ignore`), updated on change, save, and watched-file events |
-| Context | Per-file flags from the compilation database (`--target`, `-march`, `-mabi`, `-I`, `-D`) and the `.option` state |
+| Index | Project-wide symbol table (Section 5.2), scanned asynchronously on a background thread (via `ignore`), prioritizing open-document subtrees and skipping foreign assembly, with debounced rebuilds on `didChange` and updates on save/watched-file events |
+| Context | `url`-based `file://` URI/path conversion preserving client symlinks, per-file flags from the compilation database (`--target`, `-march`, `-mabi`, `-I`, `-iquote`, `-isystem`, `-D`, `-U`, `-include`, `-imacros`, `--sysroot`, `-isysroot`, `-nostdinc`, `-Wa,-I/-march/-mabi`, PIC flags, working directory), and `.option` state |
 | External tools | clang and llvm-mc processes, with delays, cancellation and time limits |
 
 ### 5.1 Positions
@@ -228,7 +228,11 @@ Zed accepts only UTF-16 positions (checked in Zed 1.29.3), and clang reports
 columns in bytes, counting from 1. The server converts every position at the
 boundary: UTF-16 from the client and bytes from tools are turned into byte
 offsets inside the server, and back when replying. Positions outside the text
-are clamped, never trusted.
+are clamped, never trusted. `file://` URIs (including `file://localhost`,
+spaces/Unicode, Windows drive paths, and symlinked workspace roots) are
+converted with `url::Url`, canonicalizing paths only for internal keys and
+comparisons while mapping returned locations back under the client's workspace
+root.
 
 ### 5.2 Symbols and scope
 
@@ -237,9 +241,9 @@ are clamped, never trusted.
 | Labels and `.globl` symbols | The whole project; several definitions with one name are all returned |
 | Local symbols (`.L...`) | The file |
 | Numeric labels (`1:`) | `1b` is the nearest preceding `1:`, `1f` the nearest following one |
-| `.equ`, `.set`, `=` | The file and the files it includes with `.include` |
+| `.equ`, `.equiv`, `.set`, `=` | The file and the files it includes with `.include`; `.set`/`=` reassignments resolve to the value in effect at the cursor |
 | `.macro` | The file and the files it includes |
-| Macro parameters (`\reg`) | The macro body |
+| Macro parameters (`\reg`) & `.irp`/`.irpc` parameters | The enclosing macro or `.irp`/`.irpc` block |
 | `#define` in headers and `.S` files | The defining file and files that `#include` it; headers are loaded lazily when reached by an `#include` / `.include` |
 | C functions (`call kernel_main`) | Out of scope (clangd's job); may be revisited |
 
@@ -247,18 +251,22 @@ The range of a label runs from the label to just before the next ordinary
 label. Numeric labels are children of the enclosing label.
 
 Workspace scanning walks `.S`, `.s`, and `.inc` files on a background thread
-using `ignore` (skipping hidden and `.gitignore`/`.ignore` directories), capped
-at 2,000 files, and reports progress with `$/progress` when supported by the
+using `ignore` (skipping hidden and `.gitignore`/`.ignore` directories), skips
+binary or foreign-architecture files such as Go Plan 9 assembly (by reading a
+small prefix before invoking tree-sitter), prioritizes the nearest project root
+(`.git` or `compile_commands.json`) of newly opened documents, is capped at
+2,000 files, and reports progress with `$/progress` when supported by the
 client. Requests for open documents answer immediately from memory without
 waiting on the workspace scan.
 
 ### 5.3 Compilation context
 
 For each file the server looks up its entry in `compile_commands.json`
-(default locations: the project root and `build/`) and keeps the flags that
-matter. Without an entry, it uses the configured defaults. `-march` controls
-which instructions and CSRs are offered; `.option arch` and `.option rvc` may
-refine this later (open question).
+(default locations: the project root and `build/`) and keeps the allow-listed
+flags above plus the entry's `directory` (for `clang` working directory).
+Without an entry, it uses the configured defaults and workspace root. `-march`
+controls which instructions and CSRs are offered; `.option arch` and
+`.option rvc` refine this per line.
 
 ## 6. Features
 
@@ -266,14 +274,14 @@ refine this later (open question).
 
 | Target | Content |
 | --- | --- |
-| Instruction | LLVM syntax in a `riscv` fence, then compact metadata (long name, extensions or base ISA such as `I`/`RV64I`, XLEN), `-march` status if disabled, first-paragraph description (~300 chars max), and `**This line:**` live expansion/encoding |
+| Instruction | LLVM syntax in a `riscv` fence, then compact metadata (long name, extensions or base ISA such as `I`/`RV64I`, XLEN), `-march` or deprecation status, first-paragraph description (~300 chars max), and `**This line:**` live expansion/encoding |
 | Alias or pseudo-instruction (`mv`, `csrw`, `li`, `la`, `call`, ...) | Same compact layout with `alias of ...` / `pseudo-instruction` (excluding self-aliases such as `ld` -> `ld`), plus the current line's expansion |
-| CSR | Header line (`stvec · 0x105 · S-mode`), one-sentence description, and a bullet list of fields (`- NAME [bits] — summary`, no wide table) |
+| CSR (`stvec` or numeric `0x105` in CSR operand position) | Header line (`stvec · 0x105 · S-mode`), one-sentence description, and a bullet list of fields (`- NAME [bits] — summary`, no wide table) |
 | Register (`x2` or `sp`) | Single line with ABI name, architectural name, role, and saver convention |
 | Directive | Syntax in a `riscv` fence and description |
-| Project symbol (label, `.equ`, `.macro`, `#define`) | Kind, `file:line`, value when known, and the defining line in a `riscv` fence |
+| Project symbol (label, `.equ`/`.set`/`=`, `.macro`, `.irp`/`.irpc` param, `#define`, `\@`) | Kind (`.set`/`=`/macro/`.irp`/`.irpc` distinguished; multi-assignment note when reassigned), `file:line`, active value at line, and the defining line in a `riscv` fence |
 | Numeric label reference (`1f`, `1b`) | Defining location and line |
-| Include directive (`#include`, `.include`) | Resolved filesystem path |
+| Include directive (`#include`, `.include`) | Resolved filesystem path (mapped under client root) |
 
 Hover omits attribution trailers (`Source: ...`) and duplicate operand-naming
 sections so the popover stays compact and fits without horizontal scrolling.
@@ -310,7 +318,16 @@ Trigger characters include `.`, `%`, `\`, `,`, and ` `.
 | Start of a statement | Instructions, aliases, pseudo-instructions, directives and macros, filtered by `-march` |
 | Operand | Depending on the operand class: integer or floating-point registers, CSRs, symbols, relocation functions (`%hi(`, `%lo(`, `%pcrel_hi(`, ...) |
 | After `.option` | `arch`, `rvc`, `norvc`, `push`, `pop`, `relax`, `norelax`, `pic`, `nopic`, `exact` |
-| Inside a macro body | The macro's parameters |
+| Inside a `.macro` / `.irp` / `.irpc` block | The enclosing block's parameters |
+
+`textDocument/completion` returns a `CompletionList`. When the client declares
+`resolveSupport` for `documentation` (as Zed does), documentation is resolved
+lazily via `completionItem/resolve`; otherwise it is inlined. When symbol or
+macro counts exceed 200, the list filters by prefix, caps symbol candidates, and
+sets `isIncomplete: true` so the client re-queries on typing. Deprecated
+instructions carry `CompletionItemTag::DEPRECATED` and sort below active
+instructions, and CSR candidates include their privilege mode in `detail`
+(`0x105 · S-mode`).
 
 When the client supports snippets (`snippetSupport`), variants of one mnemonic
 sort with real instructions before aliases before special relocation/symbol
@@ -318,7 +335,7 @@ forms (`tprel_add_symbol`, `.insn`, etc.), and register forms before immediate
 forms; memory operands expand as `ld ${1:rd}, ${2:0}(${3:rs1})$0`. Each item
 places its operand syntax in `label` (with the mnemonic in `filterText`, the
 long name in `detail`, and the variant's own syntax in a `riscv` fence at the
-top of `documentation`) so overloaded variants are distinguishable in Zed;
+top of resolved documentation) so overloaded variants are distinguishable in Zed;
 structured directives (`.macro`, `.rept`, `.irp`, `.if`, `.equ`, `.section`,
 `.option`) provide block snippets, and zero-operand mnemonics insert plain text.
 When snippet support is absent, plain completions append the required separator
@@ -329,8 +346,10 @@ or other `.option` subcommands).
 ### 6.3 Navigation
 
 Go to definition, find references, document highlight and rename, following
-the scope rules in 5.2. Rename refuses numeric labels and names defined
-outside the project.
+the scope rules in 5.2. Rename refuses numeric labels, names defined outside the
+project, invalid symbol identifiers (including leading digits), register/CSR/
+directive names, and names already defined in the symbol's scope (returning an
+LSP error message).
 
 ### 6.4 Symbols
 
@@ -339,7 +358,7 @@ macros are listed too) and workspace symbols.
 
 ### 6.5 Diagnostics
 
-1. Build the flags from the compilation context (5.3).
+1. Build the flags and working directory (`current_dir`) from the compilation context (5.3).
 2. Pass the unsaved text to clang on standard input:
 
    ```text
@@ -348,10 +367,12 @@ macros are listed too) and workspace symbols.
 
    (`-x assembler` for `.s` files). `-iquote` makes `#include "..."` resolve
    as it would for the file on disk.
-3. Parse `<stdin>:LINE:COLUMN: error|warning: MESSAGE` lines. Convert the
-   byte column to UTF-16 and extend the range to the word at that position.
-   clang's SARIF output does not include assembler errors, so text parsing is
-   required.
+3. Parse `<stdin>:LINE:COLUMN: error|warning: MESSAGE`, `<instantiation>` macro
+   diagnostics (via the following `note: while in macro instantiation`), and
+   errors in included files (attaching them to the originating `.include` /
+   `#include` line with `relatedInformation`). Convert byte columns to UTF-16
+   and extend ranges to the token at that position; clang's SARIF output does
+   not include assembler errors, so text parsing is required.
 4. Run after typing pauses (about 300 ms); drop results that an edit has made
    stale. One run takes 0.1 to 0.3 seconds, measured through
    `docker compose exec`.
@@ -374,7 +395,7 @@ delta-encoded UTF-16 tokens classifying architectural names vs. project symbols:
 | `label` | `declaration` (at def) | `_start:`, `1:`, `1f`, `1b`, `.Lloop` |
 | `constant` | `declaration` (at def) | `.equ`, `.set`, `=`, `#define` |
 | `macro` | `declaration` (at def) | `.macro SAVE`, `SAVE` invocations |
-| `parameter` | `declaration` (at def) | macro parameter names and `\reg` references |
+| `parameter` | `declaration` (at def) | macro and `.irp`/`.irpc` parameter names and `\reg` references |
 
 ### 6.8 Later
 
@@ -467,7 +488,7 @@ distribution under MIT.
 | Data generated from LLVM TableGen | Apache-2.0 WITH LLVM-exception | Include the license; state that the material was changed |
 | riscv-unified-db data (all files used carry this license in their headers) | BSD-3-Clause-Clear | Keep the copyright notice and license in source and binary distributions; no endorsement; no patent grant |
 | riscv-asm-manual tables | CC-BY-4.0 | Credit the source, authors and license; state changes |
-| lsp-server, serde, serde_json, yaml_serde | MIT OR Apache-2.0 | Include the license |
+| lsp-server, serde, serde_json, url, yaml_serde | MIT OR Apache-2.0 | Include the license |
 | ignore (file walking & `.gitignore` handling) | MIT OR Unlicense | Include the license |
 | lsp-types, tree-sitter, tree-sitter-riscv | MIT | Include the license |
 | zed_extension_api | Apache-2.0 | Include the license |

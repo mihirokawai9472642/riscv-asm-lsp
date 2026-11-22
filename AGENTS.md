@@ -81,7 +81,7 @@ available there.
 
 - Files in `data/` marked as generated are written by `cargo xtask gen-data`;
   never edit them by hand. Hand-written files say so (`directives_gnu.json`
-  in its `notice` field).
+  and `supplements.json` in their `notice` field).
 - The pinned input versions live in one place in `xtask/`. Changing a pin
   means regenerating and reviewing the diff of `data/report.md`.
 - Imported data keeps its source license. When adding a source, record it in

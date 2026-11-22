@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    CodeActionParams, CodeActionProviderCapability, CompletionOptions, CompletionParams,
-    DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    CodeActionParams, CodeActionProviderCapability, CompletionItem, CompletionOptions,
+    CompletionParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
     DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentHighlightParams,
     DocumentSymbolParams, FileChangeType, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
@@ -13,12 +14,12 @@ use lsp_types::{
     RegistrationParams, RenameOptions, RenameParams, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentPositionParams,
-    TextDocumentSyncCapability, TextDocumentSyncKind, WatchKind, WorkspaceSymbolParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WatchKind, WorkspaceSymbolParams,
 };
 use serde::Serialize;
 
 use crate::code_action::provide_code_actions;
-use crate::completion::{CompletionClientCaps, provide_completion};
+use crate::completion::{CompletionClientCaps, provide_completion, resolve_completion_item};
 use crate::config::Config;
 use crate::context::{CompileContext, uri_to_path};
 use crate::data::Database;
@@ -40,6 +41,7 @@ pub fn server_capabilities() -> ServerCapabilities {
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(true),
             trigger_characters: Some(vec![
                 ".".to_owned(),
                 "%".to_owned(),
@@ -193,9 +195,13 @@ fn extract_completion_caps(params: &InitializeParams) -> CompletionClientCaps {
         .as_ref()
         .and_then(|td| td.completion.as_ref())
         .and_then(|c| c.completion_item.as_ref());
+    let resolve_documentation_support = comp_item
+        .and_then(|ci| ci.resolve_support.as_ref())
+        .is_some_and(|rs| rs.properties.iter().any(|p| p == "documentation"));
     CompletionClientCaps {
         snippet_support: comp_item.and_then(|ci| ci.snippet_support) == Some(true),
         label_details_support: comp_item.and_then(|ci| ci.label_details_support) == Some(true),
+        resolve_documentation_support,
     }
 }
 
@@ -215,6 +221,8 @@ fn extract_workspace_root(params: &InitializeParams) -> Option<PathBuf> {
     params.root_path.as_deref().map(PathBuf::from)
 }
 
+const INDEX_DEBOUNCE: Duration = Duration::from_millis(150);
+
 #[allow(clippy::too_many_arguments)]
 fn main_loop(
     connection: &Connection,
@@ -227,11 +235,36 @@ fn main_loop(
     hover_worker: &HoverWorker,
     completion_caps: CompletionClientCaps,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for msg in &connection.receiver {
+    let mut dirty_docs: HashMap<String, (Uri, Instant)> = HashMap::new();
+
+    loop {
+        let msg = if let Some(next_due) = dirty_docs.values().map(|(_, due)| *due).min() {
+            let remaining = next_due.saturating_duration_since(Instant::now());
+            match connection.receiver.recv_timeout(remaining) {
+                Ok(m) => m,
+                Err(err) if err.is_timeout() => {
+                    flush_due_dirty_docs(store, index, &mut dirty_docs);
+                    continue;
+                }
+                Err(_) => break,
+            }
+        } else {
+            match connection.receiver.recv() {
+                Ok(m) => m,
+                Err(_) => break,
+            }
+        };
+
         match msg {
             Message::Request(req) => {
                 if connection.handle_shutdown(&req)? {
                     return Ok(());
+                }
+                if !matches!(
+                    req.method.as_str(),
+                    "completionItem/resolve" | "textDocument/codeAction"
+                ) {
+                    flush_all_dirty_docs(store, index, &mut dirty_docs);
                 }
                 if matches!(
                     req.method.as_str(),
@@ -241,11 +274,11 @@ fn main_loop(
                         | "workspace/symbol"
                 ) {
                     index.drain_background_wait(
-                        &|u| store.get(u).is_some(),
+                        &|p| store.is_open_path(p),
                         Duration::from_millis(200),
                     );
                 } else {
-                    index.drain_background(&|u| store.get(u).is_some());
+                    index.drain_background(&|p| store.is_open_path(p));
                 }
                 handle_request(
                     connection,
@@ -261,13 +294,52 @@ fn main_loop(
                 )?;
             }
             Message::Notification(not) => {
-                index.drain_background(&|u| store.get(u).is_some());
-                handle_notification(&not.method, not.params, ctx, store, index, diag_worker);
+                index.drain_background(&|p| store.is_open_path(p));
+                handle_notification(
+                    &not.method,
+                    not.params,
+                    ctx,
+                    store,
+                    index,
+                    diag_worker,
+                    &mut dirty_docs,
+                );
             }
             Message::Response(_) => {}
         }
     }
     Ok(())
+}
+
+fn flush_due_dirty_docs(
+    store: &DocumentStore,
+    index: &mut WorkspaceIndex,
+    dirty_docs: &mut HashMap<String, (Uri, Instant)>,
+) {
+    let now = Instant::now();
+    let due: Vec<(String, Uri)> = dirty_docs
+        .iter()
+        .filter(|(_, (_, due_at))| *due_at <= now)
+        .map(|(k, (u, _))| (k.clone(), u.clone()))
+        .collect();
+    for (key, uri) in due {
+        dirty_docs.remove(&key);
+        if let Some(doc) = store.get(&uri) {
+            index.upsert_open_document(doc);
+        }
+    }
+}
+
+fn flush_all_dirty_docs(
+    store: &DocumentStore,
+    index: &mut WorkspaceIndex,
+    dirty_docs: &mut HashMap<String, (Uri, Instant)>,
+) {
+    for (_, (uri, _)) in dirty_docs.drain() {
+        if let Some(doc) = store.get(&uri) {
+            index.upsert_open_document(doc);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -315,6 +387,16 @@ fn handle_request(
                 .get(uri)
                 .and_then(|doc| provide_completion(doc, pos, db, ctx, index, completion_caps));
             reply_ok(connection, id, result)?;
+        }
+        "completionItem/resolve" => {
+            let item: CompletionItem = match serde_json::from_value(req.params) {
+                Ok(i) => i,
+                Err(err) => {
+                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
+                }
+            };
+            let resolved = resolve_completion_item(item, db);
+            reply_ok(connection, id, resolved)?;
         }
         "textDocument/definition" => {
             let params: GotoDefinitionParams = match serde_json::from_value(req.params) {
@@ -372,8 +454,10 @@ fn handle_request(
             };
             let uri = &params.text_document_position.text_document.uri;
             let pos = params.text_document_position.position;
-            let result = rename_symbol(index, uri, pos, &params.new_name, db, ctx);
-            reply_ok(connection, id, result)?;
+            match rename_symbol(index, uri, pos, &params.new_name, db, ctx) {
+                Ok(edit) => reply_ok(connection, id, edit)?,
+                Err(msg) => reply_err(connection, id, ErrorCode::InvalidParams, msg)?,
+            }
         }
         "textDocument/documentSymbol" => {
             let params: DocumentSymbolParams = match serde_json::from_value(req.params) {
@@ -450,6 +534,7 @@ fn handle_notification(
     store: &mut DocumentStore,
     index: &mut WorkspaceIndex,
     diag_worker: &DiagnosticsWorker,
+    dirty_docs: &mut HashMap<String, (Uri, Instant)>,
 ) {
     match method {
         "textDocument/didOpen" => {
@@ -457,8 +542,10 @@ fn handle_notification(
                 let uri = p.text_document.uri;
                 let version = p.text_document.version;
                 let text = p.text_document.text;
+                dirty_docs.remove(uri.as_str());
                 let doc = store.open(uri.clone(), version, text.clone());
                 index.upsert_open_document(doc);
+                index.prioritize_open_document(&uri);
                 let file_ctx = ctx.for_uri(&uri);
                 diag_worker.schedule(uri, version, text, file_ctx);
             }
@@ -468,7 +555,10 @@ fn handle_notification(
                 let uri = p.text_document.uri;
                 let version = p.text_document.version;
                 if let Some(doc) = store.change(&uri, version, p.content_changes) {
-                    index.upsert_open_document(doc);
+                    dirty_docs.insert(
+                        uri.as_str().to_owned(),
+                        (uri.clone(), Instant::now() + INDEX_DEBOUNCE),
+                    );
                     let text = doc.text.clone();
                     let file_ctx = ctx.for_uri(&uri);
                     diag_worker.schedule(uri, version, text, file_ctx);
@@ -478,6 +568,7 @@ fn handle_notification(
         "textDocument/didSave" => {
             if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(params) {
                 let uri = p.text_document.uri;
+                dirty_docs.remove(uri.as_str());
                 if let Some(doc) = store.get(&uri) {
                     index.upsert_open_document(doc);
                     let version = doc.version;
@@ -491,6 +582,7 @@ fn handle_notification(
         }
         "textDocument/didClose" => {
             if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
+                dirty_docs.remove(p.text_document.uri.as_str());
                 store.close(&p.text_document.uri);
                 index.reload_path(&p.text_document.uri);
                 diag_worker.clear(&p.text_document.uri);

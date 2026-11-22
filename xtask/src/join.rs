@@ -16,14 +16,52 @@ use crate::udb::UdbData;
 #[derive(Debug, Clone)]
 pub struct JoinReportData {
     pub llvm_only_with_manual: Vec<String>,
+    pub llvm_only_with_supplement: Vec<String>,
     pub llvm_only_no_desc: Vec<String>,
     pub udb_only_instructions: Vec<String>,
     pub both_instructions: usize,
     pub missing_rv64gc: Vec<String>,
+    pub llvm_only_csrs_with_supplement: Vec<(String, u16)>,
     pub llvm_only_csrs: Vec<(String, u16)>,
     pub udb_only_csrs: Vec<(String, u16)>,
     pub both_csrs: usize,
     pub deprecated_joined: Vec<(String, String)>,
+    pub description_corrections: Vec<(String, String, String)>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SupplementsFile {
+    source: String,
+    instructions: Vec<SupplementalInst>,
+    csrs: Vec<SupplementalCsr>,
+    description_corrections: Vec<DescriptionCorrection>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SupplementalInst {
+    mnemonic: String,
+    description: String,
+    deprecated: bool,
+    preferred_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SupplementalCsr {
+    name: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct DescriptionCorrection {
+    owner: String,
+    wrong: String,
+    right: String,
+}
+
+fn load_supplements(workspace_root: &Path) -> Result<SupplementsFile, Box<dyn std::error::Error>> {
+    let path = workspace_root.join("data/supplements.json");
+    let text = fs::read_to_string(&path)?;
+    Ok(serde_json::from_str(&text)?)
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,8 +83,16 @@ pub fn build(
     udb: UdbData,
     manual: AsmManualData,
 ) -> Result<(RiscvData, JoinReportData), Box<dyn std::error::Error>> {
-    let (instructions, inst_report) = join_instructions(&llvm, &udb, &manual);
-    let (csrs, csr_report) = join_csrs(&llvm, &udb);
+    let supplements = load_supplements(workspace_root)?;
+    let mut description_corrections = Vec::new();
+    let (instructions, inst_report) = join_instructions(
+        &llvm,
+        &udb,
+        &manual,
+        &supplements,
+        &mut description_corrections,
+    );
+    let (csrs, csr_report) = join_csrs(&llvm, &udb, &supplements, &mut description_corrections);
     let registers = join_registers(&llvm, &udb);
     let directives = join_directives(workspace_root, &manual)?;
 
@@ -66,14 +112,17 @@ pub fn build(
 
     let report = JoinReportData {
         llvm_only_with_manual: inst_report.llvm_only_with_manual,
+        llvm_only_with_supplement: inst_report.llvm_only_with_supplement,
         llvm_only_no_desc: inst_report.llvm_only_no_desc,
         udb_only_instructions: inst_report.udb_only,
         both_instructions: inst_report.both,
         missing_rv64gc: inst_report.missing_rv64gc,
+        llvm_only_csrs_with_supplement: csr_report.llvm_only_with_supplement,
         llvm_only_csrs: csr_report.llvm_only,
         udb_only_csrs: csr_report.udb_only,
         both_csrs: csr_report.both,
         deprecated_joined: csr_report.deprecated_joined,
+        description_corrections,
     };
 
     Ok((data, report))
@@ -82,15 +131,33 @@ pub fn build(
 struct InstReport {
     both: usize,
     llvm_only_with_manual: Vec<String>,
+    llvm_only_with_supplement: Vec<String>,
     llvm_only_no_desc: Vec<String>,
     udb_only: Vec<String>,
     missing_rv64gc: Vec<String>,
+}
+
+fn apply_description_corrections(
+    owner: &str,
+    mut desc: String,
+    correction_table: &[DescriptionCorrection],
+    recorded: &mut Vec<(String, String, String)>,
+) -> String {
+    for c in correction_table {
+        if owner == c.owner && desc.contains(&c.wrong) {
+            desc = desc.replacen(&c.wrong, &c.right, 1);
+            recorded.push((owner.to_owned(), c.wrong.clone(), c.right.clone()));
+        }
+    }
+    desc
 }
 
 fn join_instructions(
     llvm: &LlvmData,
     udb: &UdbData,
     manual: &AsmManualData,
+    supplements: &SupplementsFile,
+    corrections: &mut Vec<(String, String, String)>,
 ) -> (Vec<InstructionEntry>, InstReport) {
     let mut llvm_grouped: BTreeMap<String, Vec<&crate::llvm::LlvmInstruction>> = BTreeMap::new();
     for inst in &llvm.instructions {
@@ -118,10 +185,16 @@ fn join_instructions(
         .iter()
         .map(|p| (p.mnemonic.clone(), p))
         .collect();
+    let supplement_by_name: HashMap<&str, &SupplementalInst> = supplements
+        .instructions
+        .iter()
+        .map(|s| (s.mnemonic.as_str(), s))
+        .collect();
 
     let mut out = Vec::new();
     let mut both = 0usize;
     let mut llvm_only_with_manual = Vec::new();
+    let mut llvm_only_with_supplement = Vec::new();
     let mut llvm_only_no_desc = Vec::new();
     let mut udb_only = Vec::new();
     let mut seen_udb = BTreeSet::new();
@@ -159,24 +232,35 @@ fn join_instructions(
 
         let udb_entry = udb_by_name.get(mnemonic).copied();
         let manual_entry = manual_by_name.get(mnemonic).copied();
+        let supplement_entry = supplement_by_name.get(mnemonic.as_str()).copied();
 
         if udb_entry.is_some() {
             seen_udb.insert(mnemonic.clone());
             both += 1;
         } else if manual_entry.is_some() {
             llvm_only_with_manual.push(mnemonic.clone());
+        } else if supplement_entry.is_some() {
+            llvm_only_with_supplement.push(mnemonic.clone());
         } else {
             llvm_only_no_desc.push(mnemonic.clone());
         }
 
         let udb_assembly = udb_entry.and_then(|u| u.assembly.clone());
         let (long_name, description, description_source) = if let Some(u) = udb_entry {
-            let src = if u.description.is_some() {
+            let desc = u.description.clone().map(|d| {
+                apply_description_corrections(
+                    mnemonic,
+                    d,
+                    &supplements.description_corrections,
+                    corrections,
+                )
+            });
+            let src = if desc.is_some() {
                 Some("riscv-unified-db (BSD-3-Clause-Clear)".to_owned())
             } else {
                 None
             };
-            (u.long_name.clone(), u.description.clone(), src)
+            (u.long_name.clone(), desc, src)
         } else if let Some(m) = manual_entry {
             let formatted = if mnemonic == "li" || m.expansion == "Multiple instruction sequences" {
                 format!(
@@ -194,12 +278,21 @@ fn join_instructions(
                 Some(formatted),
                 Some("riscv-asm-manual (CC-BY-4.0)".to_owned()),
             )
+        } else if let Some(supp) = supplement_entry {
+            (
+                None,
+                Some(supp.description.clone()),
+                Some(supplements.source.clone()),
+            )
         } else {
             (None, None, None)
         };
 
-        // Mark deprecated hint aliases if applicable
-        let deprecated = false;
+        let (deprecated, preferred_name) = if let Some(supp) = supplement_entry {
+            (supp.deprecated, supp.preferred_name.clone())
+        } else {
+            (false, None)
+        };
         out.push(InstructionEntry {
             mnemonic: mnemonic.clone(),
             kind,
@@ -210,7 +303,7 @@ fn join_instructions(
             description_source,
             llvm_supported: true,
             deprecated,
-            preferred_name: None,
+            preferred_name,
         });
     }
 
@@ -273,6 +366,7 @@ fn join_instructions(
         InstReport {
             both,
             llvm_only_with_manual,
+            llvm_only_with_supplement,
             llvm_only_no_desc,
             udb_only,
             missing_rv64gc,
@@ -282,22 +376,34 @@ fn join_instructions(
 
 struct CsrReport {
     both: usize,
+    llvm_only_with_supplement: Vec<(String, u16)>,
     llvm_only: Vec<(String, u16)>,
     udb_only: Vec<(String, u16)>,
     deprecated_joined: Vec<(String, String)>,
 }
 
-fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
+fn join_csrs(
+    llvm: &LlvmData,
+    udb: &UdbData,
+    supplements: &SupplementsFile,
+    corrections: &mut Vec<(String, String, String)>,
+) -> (Vec<CsrEntry>, CsrReport) {
     let mut udb_by_name: HashMap<String, &crate::udb::UdbCsr> = HashMap::new();
     let mut udb_by_addr: HashMap<u16, &crate::udb::UdbCsr> = HashMap::new();
     for csr in &udb.csrs {
         udb_by_name.insert(csr.name.clone(), csr);
         udb_by_addr.entry(csr.address).or_insert(csr);
     }
+    let supplement_csrs: HashMap<&str, &str> = supplements
+        .csrs
+        .iter()
+        .map(|c| (c.name.as_str(), c.description.as_str()))
+        .collect();
 
     let mut out = Vec::new();
     let mut matched_udb_names = BTreeSet::new();
     let mut both = 0usize;
+    let mut llvm_only_with_supplement = Vec::new();
     let mut llvm_only = Vec::new();
     let mut deprecated_joined = Vec::new();
     let mut llvm_sorted = llvm.csrs.clone();
@@ -340,12 +446,23 @@ fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
         if let Some(u) = udb_match {
             matched_udb_names.insert(u.name.clone());
             both += 1;
-            let description = match (&u.long_name, &u.description) {
+            let raw_desc = match (&u.long_name, &u.description) {
                 (Some(ln), Some(d)) => Some(format!("**{ln}**\n\n{d}")),
                 (Some(ln), None) => Some(ln.clone()),
                 (None, Some(d)) => Some(d.clone()),
                 (None, None) => None,
             };
+            let description = raw_desc.map(|d| {
+                apply_description_corrections(
+                    &l.name,
+                    d,
+                    &supplements.description_corrections,
+                    corrections,
+                )
+            });
+            let description_source = description
+                .as_ref()
+                .map(|_| "riscv-unified-db (BSD-3-Clause-Clear)".to_owned());
             out.push(CsrEntry {
                 name: l.name.clone(),
                 number: l.number,
@@ -353,19 +470,30 @@ fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
                 required_extensions: u.extensions.clone(),
                 fields: u.fields.clone(),
                 description,
+                description_source,
                 deprecated_names,
                 xlen,
                 llvm_supported: true,
             });
         } else {
-            llvm_only.push((l.name.clone(), l.number));
+            let supp_desc = supplement_csrs
+                .get(l.name.as_str())
+                .map(|s| (*s).to_owned());
+            let description_source = if supp_desc.is_some() {
+                llvm_only_with_supplement.push((l.name.clone(), l.number));
+                Some(supplements.source.clone())
+            } else {
+                llvm_only.push((l.name.clone(), l.number));
+                None
+            };
             out.push(CsrEntry {
                 name: l.name.clone(),
                 number: l.number,
-                privilege: infer_csr_privilege(l.number),
+                privilege: infer_csr_privilege(&l.name, l.number),
                 required_extensions: Vec::new(),
                 fields: Vec::new(),
-                description: None,
+                description: supp_desc,
+                description_source,
                 deprecated_names,
                 xlen,
                 llvm_supported: true,
@@ -387,6 +515,9 @@ fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
             (None, Some(d)) => Some(d.clone()),
             (None, None) => None,
         };
+        let description_source = description
+            .as_ref()
+            .map(|_| "riscv-unified-db (BSD-3-Clause-Clear)".to_owned());
         let xlen = if u.name.ends_with('h')
             && (u.name.starts_with("cycle")
                 || u.name.starts_with("time")
@@ -414,6 +545,7 @@ fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
             required_extensions: u.extensions,
             fields: u.fields,
             description,
+            description_source,
             deprecated_names: Vec::new(),
             xlen,
             llvm_supported: false,
@@ -424,6 +556,7 @@ fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
         out,
         CsrReport {
             both,
+            llvm_only_with_supplement,
             llvm_only,
             udb_only,
             deprecated_joined,
@@ -431,12 +564,20 @@ fn join_csrs(llvm: &LlvmData, udb: &UdbData) -> (Vec<CsrEntry>, CsrReport) {
     )
 }
 
-fn infer_csr_privilege(number: u16) -> Option<String> {
+fn infer_csr_privilege(name: &str, number: u16) -> Option<String> {
     let priv_bits = (number >> 8) & 0b11;
     let label = match priv_bits {
         0b00 => "U",
         0b01 => "S",
-        0b10 => "VS/HS",
+        0b10 => {
+            if name.starts_with("vs") {
+                "VS"
+            } else if name.starts_with('h') {
+                "HS"
+            } else {
+                "VS/HS"
+            }
+        }
         0b11 => "M",
         _ => return None,
     };
@@ -523,7 +664,12 @@ mod tests {
             directives: Vec::new(),
         };
 
-        let (insts, _) = join_instructions(&llvm, &udb, &manual);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root");
+        let supplements = load_supplements(root).expect("load data/supplements.json");
+        let mut corrections = Vec::new();
+        let (insts, _) = join_instructions(&llvm, &udb, &manual, &supplements, &mut corrections);
         let li = insts.iter().find(|i| i.mnemonic == "li").expect("li entry");
         let desc = li.description.as_deref().expect("li description");
         assert_eq!(desc.matches("expands to").count(), 1, "desc: {desc}");
@@ -538,5 +684,98 @@ mod tests {
         assert!(!desc.contains("|==="));
         assert!(!desc.contains("latexmath:"));
         assert!(!desc.contains("xref:"));
+    }
+
+    #[test]
+    fn join_applies_supplements_deprecations_csrs_and_typo_fixes() {
+        let llvm = LlvmData {
+            extensions: Vec::new(),
+            instructions: vec![
+                LlvmInstruction {
+                    mnemonic: "wfi".to_owned(),
+                    kind: InstructionKind::Instruction,
+                    variant: InstructionVariant {
+                        syntax: "wfi".to_owned(),
+                        operands: Vec::new(),
+                        required_extensions: vec!["I".to_owned()],
+                        xlen: Xlen::Both,
+                        alias_of: None,
+                    },
+                },
+                LlvmInstruction {
+                    mnemonic: "frsr".to_owned(),
+                    kind: InstructionKind::Alias,
+                    variant: InstructionVariant {
+                        syntax: "frsr rd".to_owned(),
+                        operands: Vec::new(),
+                        required_extensions: vec!["F".to_owned()],
+                        xlen: Xlen::Both,
+                        alias_of: Some("csrrs".to_owned()),
+                    },
+                },
+            ],
+            csrs: vec![crate::llvm::LlvmCsr {
+                name: "stopi".to_owned(),
+                number: 0xdb0,
+                is_rv32_only: false,
+                alt_name: None,
+                deprecated_name: None,
+            }],
+            registers: Vec::new(),
+        };
+        let udb_insts = vec![crate::udb::UdbInstruction {
+            name: "wfi".to_owned(),
+            long_name: Some("Wait for interrupt".to_owned()),
+            description: Some("Can causes the processor to enter a low-power state.".to_owned()),
+            assembly: None,
+            extensions: vec!["I".to_owned()],
+            xlen: Xlen::Both,
+            alias_of: None,
+            is_pseudo: false,
+        }];
+        let udb = UdbData {
+            instructions: udb_insts,
+            csrs: Vec::new(),
+            registers: HashMap::new(),
+        };
+        let manual = AsmManualData {
+            pseudos: Vec::new(),
+            directives: Vec::new(),
+        };
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root");
+        let supplements = load_supplements(root).expect("load data/supplements.json");
+        let mut corrections = Vec::new();
+        let (insts, inst_report) =
+            join_instructions(&llvm, &udb, &manual, &supplements, &mut corrections);
+        let wfi = insts.iter().find(|i| i.mnemonic == "wfi").expect("wfi");
+        assert_eq!(
+            wfi.description.as_deref(),
+            Some("Can cause the processor to enter a low-power state.")
+        );
+        assert_eq!(corrections.len(), 1);
+
+        let frsr = insts.iter().find(|i| i.mnemonic == "frsr").expect("frsr");
+        assert!(frsr.deprecated);
+        assert_eq!(frsr.preferred_name.as_deref(), Some("frcsr"));
+        assert!(frsr.description.is_some());
+        assert_eq!(
+            frsr.description_source.as_deref(),
+            Some("riscv-asm-lsp (MIT)")
+        );
+        assert_eq!(inst_report.llvm_only_with_supplement, vec!["frsr"]);
+        assert!(inst_report.llvm_only_no_desc.is_empty());
+
+        let (csrs, csr_report) = join_csrs(&llvm, &udb, &supplements, &mut corrections);
+        let stopi = csrs.iter().find(|c| c.name == "stopi").expect("stopi");
+        assert_eq!(stopi.privilege.as_deref(), Some("S"));
+        assert!(stopi.description.is_some());
+        assert_eq!(
+            stopi.description_source.as_deref(),
+            Some("riscv-asm-lsp (MIT)")
+        );
+        assert_eq!(csr_report.llvm_only_with_supplement.len(), 1);
     }
 }

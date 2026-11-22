@@ -137,6 +137,92 @@ fn hover_include_layouts_base_isa_and_march_disabled() {
 }
 
 #[test]
+fn hover_covers_item5_7_8_9_and_16_improvements() {
+    let mut client = LspClient::start(None, None);
+    let uri = path_to_uri(&fixtures_dir().join("hover_new_features_virtual.S"));
+    let src = "\
+.set CNT, 1
+    li t0, CNT
+.set CNT, CNT + 1
+    li t1, CNT
+VAL = 10
+    li t2, VAL
+    csrr a0, 0x105
+    csrw 261, t0
+    addi a0, zero, 0x105
+    csrr t0, stopi
+    vpopc.m v0, v1
+    wfi
+    unimp
+    .ascii \"ok\"
+    .purgem FOO
+.macro M
+lbl_\\@:
+.endm
+";
+    client.open_doc(&uri, 1, src);
+
+    // Item 8: `.set` reassignment shows active value and multi-assignment notice
+    let h_before = hover_markdown(&mut client, &uri, 1, 12).expect("CNT before");
+    assert!(h_before.contains("symbol (.set)"), "got: {h_before}");
+    assert!(h_before.contains("`1`"), "got: {h_before}");
+    assert!(h_before.contains("Assigned 2 times"), "got: {h_before}");
+
+    let h_after = hover_markdown(&mut client, &uri, 3, 12).expect("CNT after");
+    assert!(h_after.contains("`CNT + 1`"), "got: {h_after}");
+
+    let h_eq = hover_markdown(&mut client, &uri, 5, 12).expect("VAL =");
+    assert!(
+        h_eq.contains("symbol (=)") && h_eq.contains("`10`"),
+        "got: {h_eq}"
+    );
+
+    // Item 9: numeric CSR operands resolve when in CSR operand position, not in `addi`
+    let h_csr_hex = hover_markdown(&mut client, &uri, 6, 15).expect("0x105");
+    assert!(
+        h_csr_hex.contains("`stvec`") && h_csr_hex.contains("0x105"),
+        "got: {h_csr_hex}"
+    );
+    let h_csr_dec = hover_markdown(&mut client, &uri, 7, 10).expect("261");
+    assert!(
+        h_csr_dec.contains("`stvec`") && h_csr_dec.contains("0x105"),
+        "got: {h_csr_dec}"
+    );
+    assert!(hover_markdown(&mut client, &uri, 8, 21).is_none());
+
+    // Item 5: AIA CSR (`stopi`), deprecated alias (`vpopc.m`), newly described `unimp`, new directives
+    let h_stopi = hover_markdown(&mut client, &uri, 9, 15).expect("stopi");
+    assert!(
+        h_stopi.contains("0xdb0")
+            && h_stopi.contains("S-mode")
+            && !h_stopi.contains("No description"),
+        "got: {h_stopi}"
+    );
+    let h_vpopc = hover_markdown(&mut client, &uri, 10, 6).expect("vpopc.m");
+    assert!(
+        h_vpopc.contains("Deprecated — prefer `vcpop.m`"),
+        "got: {h_vpopc}"
+    );
+    let h_unimp = hover_markdown(&mut client, &uri, 12, 6).expect("unimp");
+    assert!(!h_unimp.contains("No description"), "got: {h_unimp}");
+    assert!(hover_markdown(&mut client, &uri, 13, 6).is_some());
+    assert!(hover_markdown(&mut client, &uri, 14, 6).is_some());
+
+    // Item 16: fixed `wfi` description typo
+    let h_wfi = hover_markdown(&mut client, &uri, 11, 5).expect("wfi");
+    assert!(h_wfi.contains("Can cause the processor") && !h_wfi.contains("Can causes"));
+
+    // Item 7: `\@` hover
+    let h_counter = hover_markdown(&mut client, &uri, 16, 5).expect("\\@");
+    assert!(
+        h_counter.contains("Macro invocation counter"),
+        "got: {h_counter}"
+    );
+
+    client.shutdown_and_exit();
+}
+
+#[test]
 #[ignore = "requires clang and llvm-mc"]
 fn hover_llvm_mc_and_clang_expansions() {
     assert!(

@@ -33,7 +33,9 @@ pub fn render(data: &RiscvData, report: &JoinReportData) -> String {
         .iter()
         .filter(|i| !i.llvm_supported)
         .count();
-    let llvm_only_total = report.llvm_only_with_manual.len() + report.llvm_only_no_desc.len();
+    let llvm_only_total = report.llvm_only_with_manual.len()
+        + report.llvm_only_with_supplement.len()
+        + report.llvm_only_no_desc.len();
     let llvm_csr_count = data.csrs.iter().filter(|c| c.llvm_supported).count();
     let doc_only_csr_count = data.csrs.iter().filter(|c| !c.llvm_supported).count();
 
@@ -64,6 +66,11 @@ pub fn render(data: &RiscvData, report: &JoinReportData) -> String {
     );
     let _ = writeln!(
         out,
+        "| In LLVM, described by project supplements | {} |",
+        report.llvm_only_with_supplement.len()
+    );
+    let _ = writeln!(
+        out,
         "| In LLVM, no description | {} |",
         report.llvm_only_no_desc.len()
     );
@@ -82,6 +89,11 @@ pub fn render(data: &RiscvData, report: &JoinReportData) -> String {
         out,
         "| CSRs in both LLVM and riscv-unified-db | {} |",
         report.both_csrs
+    );
+    let _ = writeln!(
+        out,
+        "| CSRs only in LLVM, described by project supplements | {} |",
+        report.llvm_only_csrs_with_supplement.len()
     );
     let _ = writeln!(
         out,
@@ -119,6 +131,17 @@ pub fn render(data: &RiscvData, report: &JoinReportData) -> String {
 
     let _ = writeln!(
         out,
+        "## In LLVM, Described by Project Supplements ({})",
+        report.llvm_only_with_supplement.len()
+    );
+    let _ = writeln!(out);
+    for m in &report.llvm_only_with_supplement {
+        let _ = writeln!(out, "- `{m}`");
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(
+        out,
         "## In LLVM, No Description ({})",
         report.llvm_only_no_desc.len()
     );
@@ -141,7 +164,18 @@ pub fn render(data: &RiscvData, report: &JoinReportData) -> String {
 
     let _ = writeln!(
         out,
-        "## CSRs Only in LLVM ({})",
+        "## CSRs Only in LLVM, Described by Project Supplements ({})",
+        report.llvm_only_csrs_with_supplement.len()
+    );
+    let _ = writeln!(out);
+    for (name, num) in &report.llvm_only_csrs_with_supplement {
+        let _ = writeln!(out, "- `{name}` (`0x{num:03x}`)");
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(
+        out,
+        "## CSRs Only in LLVM, No Description ({})",
         report.llvm_only_csrs.len()
     );
     let _ = writeln!(out);
@@ -160,6 +194,19 @@ pub fn render(data: &RiscvData, report: &JoinReportData) -> String {
         let _ = writeln!(out, "- `{name}` (`0x{num:03x}`)");
     }
     let _ = writeln!(out);
+
+    if !report.description_corrections.is_empty() {
+        let _ = writeln!(
+            out,
+            "## Description Corrections ({})",
+            report.description_corrections.len()
+        );
+        let _ = writeln!(out);
+        for (owner, wrong, right) in &report.description_corrections {
+            let _ = writeln!(out, "- `{owner}`: `{wrong}` -> `{right}`");
+        }
+        let _ = writeln!(out);
+    }
 
     if !report.deprecated_joined.is_empty() {
         let _ = writeln!(out, "## CSRs Joined via Deprecated Name");

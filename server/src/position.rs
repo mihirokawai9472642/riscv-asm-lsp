@@ -26,6 +26,45 @@ impl LineIndex {
         self.line_starts.len()
     }
 
+    pub fn line_at_offset(&self, offset: usize) -> usize {
+        if self.line_starts.is_empty() {
+            return 0;
+        }
+        match self.line_starts.binary_search(&offset.min(self.text_len)) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        }
+    }
+
+    /// Update line start offsets incrementally for single-line edits without
+    /// rescanning the full buffer; falls back to full rebuild when newlines change.
+    pub fn apply_edit(
+        &mut self,
+        start_byte: usize,
+        old_end_byte: usize,
+        old_slice_has_newline: bool,
+        new_text: &str,
+        new_full_text: &str,
+    ) {
+        if old_slice_has_newline || new_text.contains('\n') {
+            *self = Self::new(new_full_text);
+            return;
+        }
+        let row = self.line_at_offset(start_byte);
+        let old_len = old_end_byte.saturating_sub(start_byte);
+        let delta = new_text.len() as isize - old_len as isize;
+        self.text_len = new_full_text.len();
+        if delta != 0 && row + 1 < self.line_starts.len() {
+            for ls in &mut self.line_starts[row + 1..] {
+                if delta >= 0 {
+                    *ls = ls.saturating_add(delta as usize);
+                } else {
+                    *ls = ls.saturating_sub(delta.unsigned_abs());
+                }
+            }
+        }
+    }
+
     /// Return `(line_start, content_end, raw_line_end)` for a 0-based line index.
     /// `content_end` excludes trailing `\n` or `\r\n`.
     pub fn line_bounds(&self, text: &str, line: usize) -> (usize, usize, usize) {
@@ -142,6 +181,17 @@ pub fn word_range_at(text: &str, offset: usize) -> (usize, usize) {
     let pos = clamp_to_char_boundary(text, offset);
     let bytes = text.as_bytes();
 
+    // Special 2-byte macro invocation counter token `\@` (Item 7)
+    if bytes.get(pos) == Some(&b'\\') && bytes.get(pos + 1) == Some(&b'@') {
+        return (pos, pos + 2);
+    }
+    if pos > 0 && bytes.get(pos) == Some(&b'@') && bytes.get(pos - 1) == Some(&b'\\') {
+        return (pos - 1, pos + 1);
+    }
+    if pos >= 2 && bytes.get(pos - 2..pos) == Some(b"\\@") {
+        return (pos - 2, pos);
+    }
+
     // If cursor sits right after an identifier char (e.g. end of word), peek left.
     let probe = if pos < bytes.len() && is_word_byte(bytes[pos]) {
         pos
@@ -249,5 +299,37 @@ mod tests {
         // Mid-UTF8 column from external tool snaps cleanly to char boundary.
         let mid_utf8 = idx.clang_pos_to_offset(text, 1, 5);
         assert!(text.is_char_boundary(mid_utf8));
+    }
+
+    #[test]
+    fn incremental_line_index_edit_matches_full_rebuild_and_macro_counter() {
+        let mut text = "first: nop\nsecond: mv a0, a1\nthird: ret\n".to_owned();
+        let mut idx = LineIndex::new(&text);
+
+        // Single-line insertion on line 1
+        let start = "first: nop\nsecond: ".len();
+        let old_end = start + 2; // replace "mv" with "addi_long"
+        let has_nl = text[start..old_end].contains('\n');
+        text.replace_range(start..old_end, "c.mv");
+        idx.apply_edit(start, old_end, has_nl, "c.mv", &text);
+        let expected = LineIndex::new(&text);
+        assert_eq!(idx.line_starts, expected.line_starts);
+        assert_eq!(idx.text_len, expected.text_len);
+
+        // Multi-line edit falls back cleanly
+        let nl_start = 5;
+        let nl_end = 6;
+        let has_nl = text[nl_start..nl_end].contains('\n');
+        text.replace_range(nl_start..nl_end, "\n");
+        idx.apply_edit(nl_start, nl_end, has_nl, "\n", &text);
+        let expected2 = LineIndex::new(&text);
+        assert_eq!(idx.line_starts, expected2.line_starts);
+
+        // `\@` word_range_at
+        let macro_line = "lbl_\\@: li a0, \\@";
+        assert_eq!(word_range_at(macro_line, 4), (4, 6));
+        assert_eq!(word_range_at(macro_line, 5), (4, 6));
+        assert_eq!(word_range_at(macro_line, 15), (15, 17));
+        assert_eq!(word_range_at(macro_line, 17), (15, 17));
     }
 }

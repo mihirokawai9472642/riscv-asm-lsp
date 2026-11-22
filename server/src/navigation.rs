@@ -8,8 +8,8 @@ use lsp_types::{
 use crate::context::{CompileContext, path_to_uri};
 use crate::data::Database;
 use crate::index::{
-    FileIndex, RefKind, SymKind, SymbolDef, WorkspaceIndex, enclosing_macro_at,
-    parse_macro_var_token, parse_numeric_ref_token, resolve_numeric_def,
+    FileIndex, ParamScope, RefKind, SymKind, SymbolDef, WorkspaceIndex, parse_macro_var_token,
+    parse_numeric_ref_token, resolve_numeric_def, resolve_param_scope, visible_params_at,
 };
 use crate::position::word_range_at;
 
@@ -20,7 +20,7 @@ enum TargetSymbol {
         def_span: (usize, usize),
     },
     MacroParam {
-        macro_idx: usize,
+        scope: ParamScope,
         param_name: String,
     },
     LocalLabel {
@@ -37,6 +37,19 @@ enum TargetSymbol {
     GlobalLabel {
         name: String,
     },
+}
+
+impl TargetSymbol {
+    fn current_name(&self) -> Option<&str> {
+        match self {
+            TargetSymbol::Numeric { .. } => None,
+            TargetSymbol::MacroParam { param_name, .. } => Some(param_name.as_str()),
+            TargetSymbol::LocalLabel { name }
+            | TargetSymbol::ScopedEquOrMacro { name, .. }
+            | TargetSymbol::Define { name, .. }
+            | TargetSymbol::GlobalLabel { name } => Some(name.as_str()),
+        }
+    }
 }
 
 pub fn goto_definition(
@@ -63,16 +76,22 @@ pub fn goto_definition(
         TargetSymbol::Numeric { def_span, .. } => {
             locations.push(file.location(def_span));
         }
-        TargetSymbol::MacroParam {
-            macro_idx,
-            param_name,
-        } => {
-            if let Some(macro_def) = file.definitions.get(macro_idx)
-                && let Some(p) = macro_def.params.iter().find(|p| p.name == param_name)
-            {
-                locations.push(file.location(p.span));
+        TargetSymbol::MacroParam { scope, param_name } => match scope {
+            ParamScope::Macro(macro_idx) => {
+                if let Some(macro_def) = file.definitions.get(macro_idx)
+                    && let Some(p) = macro_def.params.iter().find(|p| p.name == param_name)
+                {
+                    locations.push(file.location(p.span));
+                }
             }
-        }
+            ParamScope::Repeat(rep_idx) => {
+                if let Some(rep) = file.repeat_scopes.get(rep_idx)
+                    && rep.param.name == param_name
+                {
+                    locations.push(file.location(rep.param.span));
+                }
+            }
+        },
         TargetSymbol::LocalLabel { name } => {
             for def in &file.definitions {
                 if def.kind == SymKind::LocalLabel && def.name == name {
@@ -213,30 +232,38 @@ pub fn rename_symbol(
     new_name: &str,
     db: &Database,
     ctx: &mut CompileContext,
-) -> Option<WorkspaceEdit> {
-    if new_name.trim().is_empty() {
-        return None;
-    }
-    let file = index.file_by_uri(uri)?.clone();
+) -> Result<Option<WorkspaceEdit>, String> {
+    let Some(file) = index.file_by_uri(uri).cloned() else {
+        return Ok(None);
+    };
     let offset = file.line_index.position_to_offset(&file.text, pos);
     let (tok_start, tok_end) = word_range_at(&file.text, offset);
-    let token = file.text.get(tok_start..tok_end)?;
+    let Some(token) = file.text.get(tok_start..tok_end) else {
+        return Ok(None);
+    };
     if db.instruction(token).is_some()
         || db.register(token).is_some()
         || db.csr(token).is_some()
         || db.directive(token).is_some()
     {
-        return None;
+        return Ok(None);
     }
 
-    let target = identify_target(index, &file, offset, ctx)?;
+    let Some(target) = identify_target(index, &file, offset, ctx) else {
+        return Ok(None);
+    };
     if !is_renameable(index, &file, &target, ctx) {
-        return None;
+        return Ok(None);
+    }
+
+    validate_rename_target(index, &file, &target, new_name, db, ctx)?;
+    if target.current_name() == Some(new_name) {
+        return Ok(None);
     }
 
     let locs = collect_occurrences(index, &file, &target, true, false, ctx);
     if locs.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let is_macro_param = matches!(target, TargetSymbol::MacroParam { .. });
@@ -263,10 +290,112 @@ pub fn rename_symbol(
         });
     }
 
-    Some(WorkspaceEdit {
+    Ok(Some(WorkspaceEdit {
         changes: Some(changes),
         ..WorkspaceEdit::default()
-    })
+    }))
+}
+
+fn validate_rename_target(
+    index: &mut WorkspaceIndex,
+    file: &FileIndex,
+    target: &TargetSymbol,
+    new_name: &str,
+    db: &Database,
+    ctx: &mut CompileContext,
+) -> Result<(), String> {
+    if !is_valid_symbol_name(new_name) {
+        return Err(format!("invalid symbol name `{new_name}`"));
+    }
+    if db.register(new_name).is_some() {
+        return Err(format!(
+            "cannot rename symbol to register name `{new_name}`"
+        ));
+    }
+    if db.csr(new_name).is_some() {
+        return Err(format!("cannot rename symbol to CSR name `{new_name}`"));
+    }
+    if new_name.starts_with('.') && db.directive(new_name).is_some() {
+        return Err(format!(
+            "cannot rename symbol to assembler directive `{new_name}`"
+        ));
+    }
+    if target.current_name() == Some(new_name) {
+        return Ok(());
+    }
+
+    let collides = match target {
+        TargetSymbol::Numeric { .. } => false,
+        TargetSymbol::MacroParam { scope, .. } => match *scope {
+            ParamScope::Macro(macro_idx) => file
+                .definitions
+                .get(macro_idx)
+                .is_some_and(|m| m.params.iter().any(|p| p.name == new_name)),
+            ParamScope::Repeat(rep_idx) => file.repeat_scopes.get(rep_idx).is_some_and(|rep| {
+                visible_params_at(file, rep.param.span.0)
+                    .iter()
+                    .any(|p| p.name == new_name)
+            }),
+        },
+        TargetSymbol::LocalLabel { .. } => file.definitions.iter().any(|d| {
+            !matches!(d.kind, SymKind::NumericLabel | SymKind::MacroParam) && d.name == new_name
+        }),
+        TargetSymbol::ScopedEquOrMacro { def_file, .. } | TargetSymbol::Define { def_file, .. } => {
+            let mut scope_files: HashSet<std::path::PathBuf> = index
+                .resolve_include_closure(&file.path, ctx)
+                .into_iter()
+                .collect();
+            for p in index.files_including(&def_file.path, ctx) {
+                scope_files.insert(p);
+            }
+            scope_files.iter().any(|path| {
+                index.files().find(|f| f.path == *path).is_some_and(|f| {
+                    f.definitions.iter().any(|d| {
+                        !matches!(d.kind, SymKind::NumericLabel | SymKind::MacroParam)
+                            && d.name == new_name
+                    })
+                })
+            })
+        }
+        TargetSymbol::GlobalLabel { name: cur_name } => {
+            let global_collision = index.files().any(|f| {
+                f.definitions
+                    .iter()
+                    .any(|d| d.kind == SymKind::Label && d.name == new_name)
+            });
+            let same_file_collision = index.files().any(|f| {
+                let defines_cur = f.path == file.path
+                    || f.definitions
+                        .iter()
+                        .any(|d| d.kind == SymKind::Label && d.name == *cur_name);
+                defines_cur
+                    && f.definitions.iter().any(|d| {
+                        !matches!(d.kind, SymKind::NumericLabel | SymKind::MacroParam)
+                            && d.name == new_name
+                    })
+            });
+            global_collision || same_file_collision
+        }
+    };
+
+    if collides {
+        return Err(format!(
+            "symbol `{new_name}` is already defined in this scope"
+        ));
+    }
+    Ok(())
+}
+
+fn is_valid_symbol_name(name: &str) -> bool {
+    if name.is_empty() || name == "." {
+        return false;
+    }
+    let bytes = name.as_bytes();
+    let first_ok = matches!(bytes[0], b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'.' | b'$');
+    first_ok
+        && bytes[1..]
+            .iter()
+            .all(|&b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'$'))
 }
 
 fn is_renameable(
@@ -317,7 +446,19 @@ fn identify_target(
         });
     }
 
-    // 2. Check if cursor is on a macro parameter declaration
+    // 2. Check if cursor is on a macro or `.irp` / `.irpc` parameter declaration
+    if let Some((rep_idx, rep)) = file
+        .repeat_scopes
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, s)| offset >= s.param.span.0 && offset <= s.param.span.1)
+    {
+        return Some(TargetSymbol::MacroParam {
+            scope: ParamScope::Repeat(rep_idx),
+            param_name: rep.param.name.clone(),
+        });
+    }
     if let Some((macro_idx, param)) = file.definitions.iter().enumerate().find_map(|(i, d)| {
         if d.kind == SymKind::Macro {
             d.params
@@ -329,7 +470,7 @@ fn identify_target(
         }
     }) {
         return Some(TargetSymbol::MacroParam {
-            macro_idx,
+            scope: ParamScope::Macro(macro_idx),
             param_name: param,
         });
     }
@@ -349,15 +490,13 @@ fn identify_target(
         });
     }
 
-    // 4. Macro parameter reference (`\reg`)
+    // 4. Macro or `.irp` / `.irpc` parameter reference (`\reg`)
     if let Some(param_name) = parse_macro_var_token(token)
-        && let Some(macro_idx) = enclosing_macro_at(file, tok_start)
-        && let Some(macro_def) = file.definitions.get(macro_idx)
-        && macro_def.params.iter().any(|p| p.name == param_name)
+        && let Some((scope, p, ..)) = resolve_param_scope(file, tok_start, param_name)
     {
         return Some(TargetSymbol::MacroParam {
-            macro_idx,
-            param_name: param_name.to_owned(),
+            scope,
+            param_name: p.name.clone(),
         });
     }
 
@@ -438,23 +577,32 @@ fn collect_occurrences(
                 }
             }
         }
-        TargetSymbol::MacroParam {
-            macro_idx,
-            param_name,
-        } => {
-            if let Some(macro_def) = cur_file.definitions.get(*macro_idx) {
-                if include_declaration
-                    && let Some(p) = macro_def.params.iter().find(|p| p.name == *param_name)
-                {
-                    push_unique(&mut out, &mut seen, cur_file.location(p.span));
-                }
-                for r in &cur_file.references {
-                    if r.kind == RefKind::MacroParam
-                        && r.enclosing_macro_idx == Some(*macro_idx)
-                        && r.name == *param_name
-                    {
-                        push_unique(&mut out, &mut seen, cur_file.location(r.span));
+        TargetSymbol::MacroParam { scope, param_name } => {
+            if include_declaration {
+                match scope {
+                    ParamScope::Macro(macro_idx) => {
+                        if let Some(macro_def) = cur_file.definitions.get(*macro_idx)
+                            && let Some(p) = macro_def.params.iter().find(|p| p.name == *param_name)
+                        {
+                            push_unique(&mut out, &mut seen, cur_file.location(p.span));
+                        }
                     }
+                    ParamScope::Repeat(rep_idx) => {
+                        if let Some(rep) = cur_file.repeat_scopes.get(*rep_idx)
+                            && rep.param.name == *param_name
+                        {
+                            push_unique(&mut out, &mut seen, cur_file.location(rep.param.span));
+                        }
+                    }
+                }
+            }
+            for r in &cur_file.references {
+                if r.kind == RefKind::MacroParam
+                    && r.name == *param_name
+                    && resolve_param_scope(cur_file, r.span.0, &r.name)
+                        .is_some_and(|(resolved_scope, ..)| resolved_scope == *scope)
+                {
+                    push_unique(&mut out, &mut seen, cur_file.location(r.span));
                 }
             }
         }

@@ -324,6 +324,9 @@ pub struct FileContext {
     pub clang_flags: Vec<String>,
     pub include_dirs: Vec<PathBuf>,
     pub quote_dirs: Vec<PathBuf>,
+    pub working_dir: Option<PathBuf>,
+    pub client_root: Option<PathBuf>,
+    pub canon_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -336,6 +339,7 @@ struct RawCompileCommand {
 
 #[derive(Debug, Clone)]
 struct ParsedCompileEntry {
+    directory: PathBuf,
     clang_flags: Vec<String>,
     target: Option<String>,
     march: Option<String>,
@@ -409,8 +413,10 @@ impl CompileContext {
                 let dir = item
                     .directory
                     .as_deref()
+                    .filter(|s| !s.is_empty())
                     .map(PathBuf::from)
-                    .unwrap_or_else(|| root.clone());
+                    .map(|p| lexical_normalize_path(&p))
+                    .unwrap_or_else(|| lexical_normalize_path(root));
                 let file_path = resolve_path(&dir, &item.file);
                 let args = if let Some(args) = item.arguments {
                     args
@@ -451,6 +457,9 @@ impl CompileContext {
                     clang_flags,
                     include_dirs: entry.include_dirs.clone(),
                     quote_dirs: entry.quote_dirs.clone(),
+                    working_dir: Some(entry.directory.clone()),
+                    client_root: self.workspace_root.clone(),
+                    canon_root: self.workspace_root.as_deref().map(normalize_path),
                 };
             }
         }
@@ -463,60 +472,44 @@ impl CompileContext {
             clang_flags: vec![format!("--target={target}"), format!("-march={march_str}")],
             include_dirs: Vec::new(),
             quote_dirs: Vec::new(),
+            working_dir: self.workspace_root.clone(),
+            client_root: self.workspace_root.clone(),
+            canon_root: self.workspace_root.as_deref().map(normalize_path),
         }
     }
 }
 
 pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    let raw = uri.as_str();
-    let path_part = raw.strip_prefix("file://")?;
-    let decoded = percent_decode(path_part);
-    Some(PathBuf::from(decoded))
+    let parsed = url::Url::parse(uri.as_str()).ok()?;
+    parsed.to_file_path().ok()
 }
 
+/// Convert a filesystem path to a `file://` URI without dereferencing symlinks.
 pub fn path_to_uri(path: &Path) -> Option<Uri> {
-    let abs = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut s = String::from("file://");
-    for byte in abs.to_string_lossy().as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
-                s.push(*byte as char)
-            }
-            b => {
-                use std::fmt::Write;
-                let _ = write!(s, "%{b:02X}");
-            }
-        }
-    }
-    s.parse().ok()
+    let abs = if path.is_absolute() {
+        lexical_normalize_path(path)
+    } else {
+        let cwd = std::env::current_dir().ok()?;
+        lexical_normalize_path(&cwd.join(path))
+    };
+    let url = url::Url::from_file_path(&abs).ok()?;
+    url.as_str().parse().ok()
 }
 
-fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2]))
-        {
-            out.push((h << 4) | l);
-            i += 3;
-            continue;
+/// Map a path back under the client's workspace root when it lives inside the workspace,
+/// avoiding exposing canonicalized symlink targets in LSP responses.
+pub fn display_path_for_client(
+    path: &Path,
+    client_root: Option<&Path>,
+    canon_root: Option<&Path>,
+) -> PathBuf {
+    if let (Some(c_root), Some(k_root)) = (client_root, canon_root) {
+        let norm_p = normalize_path(path);
+        if let Ok(rel) = norm_p.strip_prefix(k_root) {
+            return lexical_normalize_path(&c_root.join(rel));
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    lexical_normalize_path(path)
 }
 
 fn resolve_path(base: &Path, target: &str) -> PathBuf {
@@ -525,21 +518,29 @@ fn resolve_path(base: &Path, target: &str) -> PathBuf {
     normalize_path(&joined)
 }
 
-pub fn normalize_path(path: &Path) -> PathBuf {
-    if let Ok(canon) = fs::canonicalize(path) {
-        return canon;
-    }
-    let mut stack = Vec::new();
+pub fn lexical_normalize_path(path: &Path) -> PathBuf {
+    let mut stack: Vec<std::path::Component<'_>> = Vec::new();
     for comp in path.components() {
         match comp {
             std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                stack.pop();
-            }
+            std::path::Component::ParentDir => match stack.last() {
+                Some(std::path::Component::Normal(_)) => {
+                    stack.pop();
+                }
+                Some(std::path::Component::RootDir) | Some(std::path::Component::Prefix(_)) => {}
+                _ => stack.push(comp),
+            },
             other => stack.push(other),
         }
     }
     stack.iter().collect()
+}
+
+pub fn normalize_path(path: &Path) -> PathBuf {
+    if let Ok(canon) = fs::canonicalize(path) {
+        return canon;
+    }
+    lexical_normalize_path(path)
 }
 
 fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
@@ -603,6 +604,97 @@ fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
             include_dirs.push(path.clone());
             clang_flags.push("-isystem".to_owned());
             clang_flags.push(path.to_string_lossy().into_owned());
+        } else if let Some(f) = arg.strip_prefix("-include") {
+            let raw = if f.is_empty() && i + 1 < args.len() {
+                i += 1;
+                args[i].as_str()
+            } else {
+                f
+            };
+            if !raw.is_empty() {
+                let path = resolve_path(dir, raw);
+                clang_flags.push("-include".to_owned());
+                clang_flags.push(path.to_string_lossy().into_owned());
+            }
+        } else if let Some(f) = arg.strip_prefix("-imacros") {
+            let raw = if f.is_empty() && i + 1 < args.len() {
+                i += 1;
+                args[i].as_str()
+            } else {
+                f
+            };
+            if !raw.is_empty() {
+                let path = resolve_path(dir, raw);
+                clang_flags.push("-imacros".to_owned());
+                clang_flags.push(path.to_string_lossy().into_owned());
+            }
+        } else if let Some(d) = arg.strip_prefix("--sysroot=") {
+            if !d.is_empty() {
+                let path = resolve_path(dir, d);
+                clang_flags.push(format!("--sysroot={}", path.to_string_lossy()));
+            }
+        } else if arg == "--sysroot" && i + 1 < args.len() {
+            i += 1;
+            let path = resolve_path(dir, &args[i]);
+            clang_flags.push(format!("--sysroot={}", path.to_string_lossy()));
+        } else if let Some(d) = arg.strip_prefix("-isysroot") {
+            let raw = if d.is_empty() && i + 1 < args.len() {
+                i += 1;
+                args[i].as_str()
+            } else {
+                d
+            };
+            if !raw.is_empty() {
+                let path = resolve_path(dir, raw);
+                clang_flags.push("-isysroot".to_owned());
+                clang_flags.push(path.to_string_lossy().into_owned());
+            }
+        } else if let Some(wa) = arg.strip_prefix("-Wa,") {
+            let wa_tokens: Vec<&str> = wa.split(',').collect();
+            let mut wi = 0;
+            let mut allowed_wa = Vec::new();
+            while wi < wa_tokens.len() {
+                let tok = wa_tokens[wi];
+                if let Some(inc) = tok.strip_prefix("-I") {
+                    let raw_path = if inc.is_empty() && wi + 1 < wa_tokens.len() {
+                        wi += 1;
+                        wa_tokens[wi]
+                    } else {
+                        inc
+                    };
+                    if !raw_path.is_empty() {
+                        let p = resolve_path(dir, raw_path);
+                        include_dirs.push(p.clone());
+                        allowed_wa.push(format!("-I{}", p.to_string_lossy()));
+                    }
+                } else if let Some(m) = tok.strip_prefix("-march=") {
+                    if !m.is_empty() {
+                        march = Some(m.to_owned());
+                        allowed_wa.push(format!("-march={m}"));
+                    }
+                } else if tok == "-march" && wi + 1 < wa_tokens.len() {
+                    wi += 1;
+                    let m = wa_tokens[wi];
+                    if !m.is_empty() {
+                        march = Some(m.to_owned());
+                        allowed_wa.push(format!("-march={m}"));
+                    }
+                } else if let Some(abi) = tok.strip_prefix("-mabi=") {
+                    if !abi.is_empty() {
+                        allowed_wa.push(format!("-mabi={abi}"));
+                    }
+                } else if tok == "-mabi" && wi + 1 < wa_tokens.len() {
+                    wi += 1;
+                    let abi = wa_tokens[wi];
+                    if !abi.is_empty() {
+                        allowed_wa.push(format!("-mabi={abi}"));
+                    }
+                }
+                wi += 1;
+            }
+            if !allowed_wa.is_empty() {
+                clang_flags.push(format!("-Wa,{}", allowed_wa.join(",")));
+            }
         } else if arg.starts_with("-D") || arg.starts_with("-U") {
             if (arg == "-D" || arg == "-U") && i + 1 < args.len() {
                 clang_flags.push(arg.clone());
@@ -618,6 +710,7 @@ fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
     }
 
     ParsedCompileEntry {
+        directory: lexical_normalize_path(dir),
         clang_flags,
         target,
         march,
@@ -746,6 +839,100 @@ mod tests {
                 "-c",
                 "foo.S",
             ]
+        );
+    }
+
+    #[test]
+    fn uri_conversion_handles_localhost_special_chars_and_symlinks() {
+        let localhost_uri: Uri = "file://localhost/tmp/ws%20dir%2B%E6%97%A5%E6%9C%AC/a.S"
+            .parse()
+            .expect("uri");
+        let decoded = uri_to_path(&localhost_uri).expect("file path");
+        assert_eq!(decoded, PathBuf::from("/tmp/ws dir+日本/a.S"));
+
+        let round_uri = path_to_uri(Path::new("/tmp/ws dir+日本/a.S")).expect("uri");
+        assert_eq!(uri_to_path(&round_uri), Some(decoded));
+
+        // Symlink path is preserved without canonicalization by path_to_uri & display_path_for_client
+        let base =
+            std::env::temp_dir().join(format!("riscv_asm_lsp_sym_ctx_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real_dir = base.join("real dir");
+        let link_dir = base.join("link");
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::write(real_dir.join("a.S"), "nop\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+            let linked_file = link_dir.join("a.S");
+            let sym_uri = path_to_uri(&linked_file).unwrap();
+            assert!(
+                sym_uri.as_str().contains("/link/a.S"),
+                "got {}",
+                sym_uri.as_str()
+            );
+            let mapped = display_path_for_client(
+                &fs::canonicalize(&linked_file).unwrap(),
+                Some(&link_dir),
+                Some(&fs::canonicalize(&real_dir).unwrap()),
+            );
+            assert_eq!(mapped, linked_file);
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn extract_relevant_flags_allows_sysroot_include_imacros_and_wa_options() {
+        let dir = Path::new("/proj/build");
+        let args: Vec<String> = [
+            "clang",
+            "--target=riscv64-unknown-elf",
+            "-march=rv64gc",
+            "-O2",
+            "-include",
+            "../inc/pre.h",
+            "-imacros../inc/defs.h",
+            "--sysroot=../sys",
+            "-isysroot",
+            "/opt/sdk",
+            "-nostdinc",
+            "-Wa,-I../asm_inc,-march=rv64gcv,--fatal-warnings",
+            "-c",
+            "entry.S",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let entry = extract_relevant_flags(dir, &args);
+        assert_eq!(entry.directory, PathBuf::from("/proj/build"));
+        assert_eq!(entry.march.as_deref(), Some("rv64gcv"));
+        assert!(entry.include_dirs.contains(&PathBuf::from("/proj/asm_inc")));
+        assert!(entry.clang_flags.contains(&"-include".to_owned()));
+        assert!(entry.clang_flags.contains(&"/proj/inc/pre.h".to_owned()));
+        assert!(entry.clang_flags.contains(&"-imacros".to_owned()));
+        assert!(entry.clang_flags.contains(&"/proj/inc/defs.h".to_owned()));
+        assert!(
+            entry
+                .clang_flags
+                .contains(&"--sysroot=/proj/sys".to_owned())
+        );
+        assert!(entry.clang_flags.contains(&"-isysroot".to_owned()));
+        assert!(entry.clang_flags.contains(&"/opt/sdk".to_owned()));
+        assert!(entry.clang_flags.contains(&"-nostdinc".to_owned()));
+        assert!(
+            entry
+                .clang_flags
+                .contains(&"-Wa,-I/proj/asm_inc,-march=rv64gcv".to_owned()),
+            "flags: {:?}",
+            entry.clang_flags
+        );
+        assert!(!entry.clang_flags.iter().any(|f| f == "-O2"));
+        assert!(
+            !entry
+                .clang_flags
+                .iter()
+                .any(|f| f.contains("--fatal-warnings"))
         );
     }
 }

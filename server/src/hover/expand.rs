@@ -32,6 +32,7 @@ pub struct PendingExpansion {
     pub(super) key: ExpansionCacheKey,
     pub(super) clang_flags: Vec<String>,
     pub(super) file_dir: Option<PathBuf>,
+    pub(super) working_dir: Option<PathBuf>,
     pub(super) cpp_preamble: Vec<String>,
     pub(super) known_consts: HashMap<String, String>,
 }
@@ -104,6 +105,7 @@ pub(super) fn resolve_expansion(pending: &PendingExpansion, tools: &ToolRunner) 
             &pending.cpp_preamble,
             &pending.clang_flags,
             pending.file_dir.as_deref(),
+            pending.working_dir.as_deref(),
             tools,
         )
     {
@@ -224,6 +226,7 @@ fn preprocess_with_clang(
     cpp_preamble: &[String],
     clang_flags: &[String],
     file_dir: Option<&Path>,
+    working_dir: Option<&Path>,
     tools: &ToolRunner,
 ) -> Option<String> {
     let mut args = clang_flags.to_vec();
@@ -246,7 +249,7 @@ fn preprocess_with_clang(
     stdin_buf.push_str(stmt);
     stdin_buf.push('\n');
 
-    let out = tools.run_clang(&args, &stdin_buf)?;
+    let out = tools.run_clang(&args, &stdin_buf, working_dir)?;
     if !out.success {
         return None;
     }

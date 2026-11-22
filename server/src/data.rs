@@ -78,10 +78,27 @@ pub struct CsrEntry {
     pub required_extensions: Vec<String>,
     pub fields: Vec<CsrField>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub description_source: Option<String>,
     pub deprecated_names: Vec<String>,
     #[serde(default)]
     pub xlen: Xlen,
     pub llvm_supported: bool,
+}
+
+impl CsrEntry {
+    pub fn privilege_label(&self) -> Option<&str> {
+        self.privilege.as_deref().map(|p| match p {
+            "M" => "M-mode",
+            "S" => "S-mode",
+            "U" => "U-mode",
+            "VS" => "VS-mode",
+            "HS" => "HS-mode",
+            "VS/HS" => "VS/HS-mode",
+            "D" => "Debug",
+            other => other,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +143,7 @@ pub struct Database {
     pub raw: RiscvData,
     instructions_by_mnemonic: HashMap<String, usize>,
     csrs_by_name: HashMap<String, usize>,
+    csrs_by_number: HashMap<u16, usize>,
     registers_by_name: HashMap<String, usize>,
     directives_by_name: HashMap<String, usize>,
     extensions_by_march: HashMap<String, usize>,
@@ -150,6 +168,7 @@ impl Database {
         }
 
         let mut csrs_by_name = HashMap::with_capacity(raw.csrs.len() * 2);
+        let mut csrs_by_number: HashMap<u16, usize> = HashMap::with_capacity(raw.csrs.len());
         for (idx, csr) in raw.csrs.iter().enumerate() {
             csrs_by_name
                 .entry(csr.name.to_ascii_lowercase())
@@ -157,6 +176,14 @@ impl Database {
             for dep in &csr.deprecated_names {
                 csrs_by_name.entry(dep.to_ascii_lowercase()).or_insert(idx);
             }
+            csrs_by_number
+                .entry(csr.number)
+                .and_modify(|existing_idx| {
+                    if !raw.csrs[*existing_idx].llvm_supported && csr.llvm_supported {
+                        *existing_idx = idx;
+                    }
+                })
+                .or_insert(idx);
         }
 
         let mut registers_by_name = HashMap::with_capacity(raw.registers.len() * 3);
@@ -189,6 +216,7 @@ impl Database {
             raw,
             instructions_by_mnemonic,
             csrs_by_name,
+            csrs_by_number,
             registers_by_name,
             directives_by_name,
             extensions_by_march,
@@ -204,6 +232,11 @@ impl Database {
 
     pub fn csr(&self, name: &str) -> Option<&CsrEntry> {
         let idx = self.csrs_by_name.get(&name.to_ascii_lowercase())?;
+        self.raw.csrs.get(*idx)
+    }
+
+    pub fn csr_by_number(&self, number: u16) -> Option<&CsrEntry> {
+        let idx = self.csrs_by_number.get(&number)?;
         self.raw.csrs.get(*idx)
     }
 
@@ -267,6 +300,11 @@ mod tests {
         for csr in &db.raw.csrs {
             if let Some(desc) = &csr.description {
                 assert_clean_description(&csr.name, desc);
+                assert!(
+                    csr.description_source.is_some(),
+                    "CSR `{}` has a description but no description_source",
+                    csr.name
+                );
             }
             for f in &csr.fields {
                 if let Some(desc) = &f.description {
@@ -274,6 +312,16 @@ mod tests {
                 }
             }
         }
+        assert_eq!(
+            db.csr("stvec")
+                .and_then(|c| c.description_source.as_deref()),
+            Some("riscv-unified-db (BSD-3-Clause-Clear)")
+        );
+        assert_eq!(
+            db.csr("stopi")
+                .and_then(|c| c.description_source.as_deref()),
+            Some("riscv-asm-lsp (MIT)")
+        );
     }
 
     fn assert_clean_description(owner: &str, desc: &str) {

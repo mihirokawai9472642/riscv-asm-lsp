@@ -3,10 +3,11 @@ mod scope;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -19,19 +20,21 @@ use lsp_types::{
 };
 use tree_sitter::Parser;
 
-use crate::context::{normalize_path, path_to_uri, uri_to_path};
+use crate::context::{display_path_for_client, normalize_path, path_to_uri, uri_to_path};
 use crate::diagnostics::MessageSink;
 use crate::document::Document;
 use crate::position::LineIndex;
 
 pub use scope::{
     enclosing_macro_at, parse_macro_var_token, parse_numeric_ref_token, resolve_numeric_def,
+    resolve_param_scope, visible_params_at,
 };
 
 use parse::{build_file_index, is_eager_asm_path, is_header_path};
 
 const MAX_INDEX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_WORKSPACE_FILES: usize = 2_000;
+const FOREIGN_PROBE_BYTES: usize = 4096;
 const PROGRESS_TOKEN: &str = "riscv-asm-lsp/index";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +46,20 @@ pub enum SymKind {
     Macro,
     MacroParam,
     Define,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignKind {
+    Equ,
+    Equiv,
+    Set,
+    Equals,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamScope {
+    Macro(usize),
+    Repeat(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,9 +77,18 @@ pub struct MacroParamDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct RepeatScope {
+    pub directive: String,
+    pub param: MacroParamDef,
+    pub full_span: (usize, usize),
+    pub line_text: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct SymbolDef {
     pub name: String,
     pub kind: SymKind,
+    pub assign_kind: Option<AssignKind>,
     pub name_span: (usize, usize),
     pub full_span: (usize, usize),
     pub line_text: String,
@@ -94,6 +120,7 @@ pub struct FileIndex {
     pub text: String,
     pub line_index: LineIndex,
     pub definitions: Vec<SymbolDef>,
+    pub repeat_scopes: Vec<RepeatScope>,
     pub references: Vec<SymbolRef>,
     pub includes: Vec<IncludeDirective>,
     pub globals: HashSet<String>,
@@ -131,6 +158,9 @@ pub struct VisibleCompletions {
 pub struct SymbolHoverInfo {
     pub name: String,
     pub kind: SymKind,
+    pub assign_kind: Option<AssignKind>,
+    pub assignment_count: usize,
+    pub param_label: Option<String>,
     pub def_line: String,
     pub value: Option<String>,
     pub target_uri: Option<Uri>,
@@ -140,8 +170,13 @@ pub struct SymbolHoverInfo {
 
 pub struct WorkspaceIndex {
     pub(super) workspace_root: Option<PathBuf>,
+    pub(super) canon_workspace_root: Option<PathBuf>,
     pub(super) files: HashMap<PathBuf, FileIndex>,
     parser: Parser,
+    seen_paths: Arc<Mutex<HashSet<PathBuf>>>,
+    priority_rxs: Vec<mpsc::Receiver<FileIndex>>,
+    priority_handles: Vec<JoinHandle<()>>,
+    prioritized_roots: HashSet<PathBuf>,
     bg_rx: Option<mpsc::Receiver<FileIndex>>,
     bg_cancel: Arc<AtomicBool>,
     bg_handle: Option<JoinHandle<()>>,
@@ -154,18 +189,33 @@ impl WorkspaceIndex {
         parser
             .set_language(&language)
             .map_err(|err| format!("failed to initialize tree-sitter-riscv: {err}"))?;
+        let canon_workspace_root = workspace_root.as_deref().map(normalize_path);
         Ok(Self {
             workspace_root,
+            canon_workspace_root,
             files: HashMap::new(),
             parser,
+            seen_paths: Arc::new(Mutex::new(HashSet::new())),
+            priority_rxs: Vec::new(),
+            priority_handles: Vec::new(),
+            prioritized_roots: HashSet::new(),
             bg_rx: None,
             bg_cancel: Arc::new(AtomicBool::new(false)),
             bg_handle: None,
         })
     }
 
+    pub fn display_path(&self, path: &Path) -> PathBuf {
+        display_path_for_client(
+            path,
+            self.workspace_root.as_deref(),
+            self.canon_workspace_root.as_deref(),
+        )
+    }
+
     /// Spawn a background worker that indexes assembly files under `workspace_root`,
-    /// skipping hidden and `.gitignore`d directories and stopping at `MAX_WORKSPACE_FILES`.
+    /// skipping hidden, `.gitignore`d, and foreign-architecture files and stopping at
+    /// `MAX_WORKSPACE_FILES`.
     pub fn start_background_scan(&mut self, progress_sink: Option<MessageSink>) {
         self.start_background_scan_with_cap(progress_sink, MAX_WORKSPACE_FILES);
     }
@@ -199,14 +249,23 @@ impl WorkspaceIndex {
             );
         }
 
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.bg_cancel = Arc::clone(&cancel);
+        let cancel = Arc::clone(&self.bg_cancel);
+        let seen = Arc::clone(&self.seen_paths);
+        let canon_root = self.canon_workspace_root.clone();
         let (tx, rx) = mpsc::channel();
         self.bg_rx = Some(rx);
 
         let handle = thread::spawn(move || {
-            let scanned =
-                scan_directory_in_background(&root, cap, &cancel, &tx, progress_sink.as_ref());
+            let scanned = scan_directory_in_background(
+                &root,
+                Some(&root),
+                canon_root.as_deref(),
+                cap,
+                &cancel,
+                &seen,
+                &tx,
+                progress_sink.as_ref(),
+            );
             if let Some(sink) = &progress_sink {
                 send_progress(
                     sink,
@@ -219,57 +278,83 @@ impl WorkspaceIndex {
         self.bg_handle = Some(handle);
     }
 
-    /// Non-blocking drain of completed background file parses into the index.
-    pub fn drain_background(&mut self, is_open: &impl Fn(&Uri) -> bool) {
+    /// Prioritize scanning the project subtree owning a newly opened document so
+    /// cross-file lookups work rapidly even when `workspace_root` is a broad directory
+    /// such as `$HOME`.
+    pub fn prioritize_open_document(&mut self, uri: &Uri) {
+        let Some(file_path) = uri_to_path(uri) else {
+            return;
+        };
+        let Some(scan_root) = find_priority_root(
+            &file_path,
+            self.workspace_root.as_deref(),
+            self.canon_workspace_root.as_deref(),
+        ) else {
+            return;
+        };
+        let norm_root = normalize_path(&scan_root);
+        if !self.prioritized_roots.insert(norm_root.clone()) {
+            return;
+        }
+        let display_root = self.display_path(&scan_root);
+        let client_root = self.workspace_root.clone();
+        let canon_root = self.canon_workspace_root.clone();
+        let cancel = Arc::clone(&self.bg_cancel);
+        let seen = Arc::clone(&self.seen_paths);
+        let (tx, rx) = mpsc::channel();
+        self.priority_rxs.push(rx);
+
+        let handle = thread::spawn(move || {
+            scan_directory_in_background(
+                &display_root,
+                client_root.as_deref(),
+                canon_root.as_deref(),
+                MAX_WORKSPACE_FILES,
+                &cancel,
+                &seen,
+                &tx,
+                None,
+            );
+        });
+        self.priority_handles.push(handle);
+    }
+
+    /// Non-blocking drain of completed priority and background file parses into the index.
+    pub fn drain_background(&mut self, is_open_path: &impl Fn(&Path) -> bool) {
+        drain_receiver_vec(&mut self.priority_rxs, &mut self.files, is_open_path);
         let Some(rx) = self.bg_rx.take() else {
             return;
         };
-        let mut disconnected = false;
-        loop {
-            match rx.try_recv() {
-                Ok(entry) => {
-                    if !is_open(&entry.uri) {
-                        self.files.entry(entry.path.clone()).or_insert(entry);
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
-        }
+        let disconnected = drain_single_rx_nonblocking(&rx, &mut self.files, is_open_path);
         if !disconnected {
             self.bg_rx = Some(rx);
         }
     }
 
-    /// Drain background scan results, waiting up to `budget` if scanning is still running.
-    pub fn drain_background_wait(&mut self, is_open: &impl Fn(&Uri) -> bool, budget: Duration) {
-        self.drain_background(is_open);
+    /// Drain background scan results, prioritizing open-document project scans and
+    /// waiting up to `budget` if scanning is still running.
+    pub fn drain_background_wait(
+        &mut self,
+        is_open_path: &impl Fn(&Path) -> bool,
+        budget: Duration,
+    ) {
+        self.drain_background(is_open_path);
+        let deadline = Instant::now() + budget;
+
+        // First finish any active priority project scans within budget.
+        let mut remaining_priority = Vec::new();
+        for rx in self.priority_rxs.drain(..) {
+            let disconnected = drain_single_rx_until(&rx, &mut self.files, is_open_path, deadline);
+            if !disconnected {
+                remaining_priority.push(rx);
+            }
+        }
+        self.priority_rxs = remaining_priority;
+
         let Some(rx) = self.bg_rx.take() else {
             return;
         };
-        let deadline = Instant::now() + budget;
-        let mut disconnected = false;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match rx.recv_timeout(remaining) {
-                Ok(entry) => {
-                    if !is_open(&entry.uri) {
-                        self.files.entry(entry.path.clone()).or_insert(entry);
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
-        }
+        let disconnected = drain_single_rx_until(&rx, &mut self.files, is_open_path, deadline);
         if !disconnected {
             self.bg_rx = Some(rx);
         }
@@ -277,6 +362,9 @@ impl WorkspaceIndex {
 
     #[cfg(test)]
     pub(crate) fn wait_for_background_scan(&mut self) {
+        for h in self.priority_handles.drain(..) {
+            let _ = h.join();
+        }
         if let Some(handle) = self.bg_handle.take() {
             let _ = handle.join();
         }
@@ -285,7 +373,11 @@ impl WorkspaceIndex {
 
     pub fn shutdown(&mut self) {
         self.bg_cancel.store(true, Ordering::Relaxed);
+        self.priority_rxs.clear();
         self.bg_rx.take();
+        for h in self.priority_handles.drain(..) {
+            let _ = h.join();
+        }
         if let Some(handle) = self.bg_handle.take() {
             let _ = handle.join();
         }
@@ -329,7 +421,8 @@ impl WorkspaceIndex {
         };
         let norm = normalize_path(&path);
         if norm.exists() {
-            self.index_path_from_disk(&norm);
+            let display = self.display_path(&path);
+            self.index_path_from_disk_with_display(&display, &norm);
         } else {
             self.files.remove(&norm);
         }
@@ -345,7 +438,20 @@ impl WorkspaceIndex {
     }
 
     pub(super) fn index_path_from_disk(&mut self, path: &Path) {
-        if let Some(entry) = parse_file_from_disk(path, &mut self.parser) {
+        let norm = normalize_path(path);
+        let display = self.display_path(path);
+        self.index_path_from_disk_with_display(&display, &norm);
+    }
+
+    fn index_path_from_disk_with_display(&mut self, display_path: &Path, norm_path: &Path) {
+        if let Some(entry) = parse_file_from_disk(
+            display_path,
+            Some(norm_path),
+            self.workspace_root.as_deref(),
+            self.canon_workspace_root.as_deref(),
+            None,
+            &mut self.parser,
+        ) {
             self.files.insert(entry.path.clone(), entry);
         }
     }
@@ -357,14 +463,131 @@ impl Drop for WorkspaceIndex {
     }
 }
 
-fn parse_file_from_disk(path: &Path, parser: &mut Parser) -> Option<FileIndex> {
-    let meta = fs::metadata(path).ok()?;
+fn drain_receiver_vec(
+    rxs: &mut Vec<mpsc::Receiver<FileIndex>>,
+    files: &mut HashMap<PathBuf, FileIndex>,
+    is_open_path: &impl Fn(&Path) -> bool,
+) {
+    let mut keep = Vec::with_capacity(rxs.len());
+    for rx in rxs.drain(..) {
+        if !drain_single_rx_nonblocking(&rx, files, is_open_path) {
+            keep.push(rx);
+        }
+    }
+    *rxs = keep;
+}
+
+fn drain_single_rx_nonblocking(
+    rx: &mpsc::Receiver<FileIndex>,
+    files: &mut HashMap<PathBuf, FileIndex>,
+    is_open_path: &impl Fn(&Path) -> bool,
+) -> bool {
+    loop {
+        match rx.try_recv() {
+            Ok(entry) => {
+                if !is_open_path(&entry.path) {
+                    files.entry(entry.path.clone()).or_insert(entry);
+                }
+            }
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => return true,
+        }
+    }
+}
+
+fn drain_single_rx_until(
+    rx: &mpsc::Receiver<FileIndex>,
+    files: &mut HashMap<PathBuf, FileIndex>,
+    is_open_path: &impl Fn(&Path) -> bool,
+    deadline: Instant,
+) -> bool {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(entry) => {
+                if !is_open_path(&entry.path) {
+                    files.entry(entry.path.clone()).or_insert(entry);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => return false,
+            Err(RecvTimeoutError::Disconnected) => return true,
+        }
+    }
+}
+
+fn find_priority_root(
+    file_path: &Path,
+    client_root: Option<&Path>,
+    canon_root: Option<&Path>,
+) -> Option<PathBuf> {
+    let parent = file_path.parent()?;
+    if !parent.is_dir() {
+        return None;
+    }
+    let norm_parent = normalize_path(parent);
+    if canon_root.is_some_and(|ws| ws == norm_parent) || client_root.is_some_and(|ws| ws == parent)
+    {
+        return None;
+    }
+
+    let mut cur = Some(norm_parent.as_path());
+    while let Some(dir) = cur {
+        if canon_root.is_some_and(|ws| ws == dir) {
+            return Some(parent.to_path_buf());
+        }
+        if dir.join(".git").exists() || dir.join("compile_commands.json").exists() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    Some(parent.to_path_buf())
+}
+
+fn parse_file_from_disk(
+    path: &Path,
+    known_norm: Option<&Path>,
+    client_root: Option<&Path>,
+    canon_root: Option<&Path>,
+    seen: Option<&Mutex<HashSet<PathBuf>>>,
+    parser: &mut Parser,
+) -> Option<FileIndex> {
+    let mut file = fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_INDEX_FILE_BYTES {
         return None;
     }
-    let text = fs::read_to_string(path).ok()?;
-    let norm = normalize_path(path);
-    let uri = path_to_uri(&norm)?;
+
+    // Read only a small prefix first to reject binary / foreign assembly (such as Go Plan 9 `.s`)
+    // before spending time allocating or invoking tree-sitter error recovery.
+    let mut buf = Vec::with_capacity((meta.len() as usize).min(FOREIGN_PROBE_BYTES));
+    (&mut file)
+        .take(FOREIGN_PROBE_BYTES as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if is_foreign_assembly(&buf) {
+        return None;
+    }
+
+    let norm = known_norm
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| normalize_path(path));
+    if let Some(seen_lock) = seen {
+        let mut guard = seen_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !guard.insert(norm.clone()) {
+            return None;
+        }
+    }
+
+    if (meta.len() as usize) > buf.len() {
+        buf.reserve((meta.len() as usize).saturating_sub(buf.len()));
+        file.read_to_end(&mut buf).ok()?;
+    }
+    let text = String::from_utf8(buf).ok()?;
+    let display = display_path_for_client(path, client_root, canon_root);
+    let uri = path_to_uri(&display)?;
     let line_index = LineIndex::new(&text);
     let is_header = is_header_path(&norm);
     Some(build_file_index(
@@ -372,10 +595,40 @@ fn parse_file_from_disk(path: &Path, parser: &mut Parser) -> Option<FileIndex> {
     ))
 }
 
+fn is_foreign_assembly(head: &[u8]) -> bool {
+    if head.contains(&0) {
+        return true;
+    }
+    let s = String::from_utf8_lossy(head);
+    for line in s.lines() {
+        let t = line.trim();
+        if t.contains("#include \"textflag.h\"")
+            || t.contains("#include \"go_asm.h\"")
+            || t.contains("#include \"funcdata.h\"")
+        {
+            return true;
+        }
+        let is_go_decl = t.starts_with("TEXT ")
+            || t.starts_with("TEXT\t")
+            || t.starts_with("DATA ")
+            || t.starts_with("DATA\t")
+            || t.starts_with("GLOBL ")
+            || t.starts_with("GLOBL\t");
+        if is_go_decl && t.contains("(SB)") {
+            return true;
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
 fn scan_directory_in_background(
     root: &Path,
+    client_root: Option<&Path>,
+    canon_root: Option<&Path>,
     cap: usize,
     cancel: &AtomicBool,
+    seen: &Mutex<HashSet<PathBuf>>,
     tx: &mpsc::Sender<FileIndex>,
     progress_sink: Option<&MessageSink>,
 ) -> usize {
@@ -421,7 +674,9 @@ fn scan_directory_in_background(
             eprintln!("riscv-asm-lsp: workspace scan capped at {cap} files");
             break;
         }
-        if let Some(file_idx) = parse_file_from_disk(path, &mut parser) {
+        if let Some(file_idx) =
+            parse_file_from_disk(path, None, client_root, canon_root, Some(seen), &mut parser)
+        {
             if tx.send(file_idx).is_err() {
                 break;
             }
@@ -567,12 +822,80 @@ mod tests {
         let mut idx = WorkspaceIndex::new(None).unwrap();
         idx.upsert_open_document(doc);
 
-        let consts = idx.constant_defines_in_scope(&uri, &mut ctx);
+        let consts = idx.constant_defines_in_scope(&uri, None, &mut ctx);
         assert_eq!(consts.get("LOCAL_VALUE").map(String::as_str), Some("42"));
         let hover = idx
             .token_hover_info(&uri, 46, &mut ctx)
             .expect("LOCAL_VALUE hover");
         assert_eq!(hover.kind, SymKind::Define);
         assert_eq!(hover.value.as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn skips_go_plan9_assembly_and_prioritizes_open_project() {
+        let tmp =
+            std::env::temp_dir().join(format!("riscv_asm_lsp_go_prio_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let go_dir = tmp.join("go_pkg");
+        let rv_dir = tmp.join("rv_proj");
+        fs::create_dir_all(&go_dir).unwrap();
+        fs::create_dir_all(rv_dir.join(".git")).unwrap();
+
+        fs::write(
+            go_dir.join("plan9_foo.s"),
+            "#include \"textflag.h\"\nTEXT \u{00b7}foo(SB), NOSPLIT, $0-0\n    RET\n",
+        )
+        .unwrap();
+        fs::write(rv_dir.join("a.S"), "_start:\n    call helper_fn\n").unwrap();
+        fs::write(rv_dir.join("b.S"), "helper_fn:\n    ret\n").unwrap();
+
+        let mut idx = WorkspaceIndex::new(Some(tmp.clone())).unwrap();
+        idx.start_background_scan(None);
+
+        let a_uri = path_to_uri(&rv_dir.join("a.S")).unwrap();
+        idx.prioritize_open_document(&a_uri);
+        idx.wait_for_background_scan();
+
+        assert!(
+            idx.files()
+                .any(|f| f.definitions.iter().any(|d| d.name == "helper_fn"))
+        );
+        assert!(!idx.files().any(|f| f.path.ends_with("plan9_foo.s")));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn indexes_irp_irpc_scopes_and_reassigned_set_symbols() {
+        let mut store = DocumentStore::new().unwrap();
+        let uri = Uri::from_str("file:///irp_set.S").unwrap();
+        let src = "\
+.set CNT, 1
+    li t0, CNT
+.set CNT, CNT + 1
+    li t1, CNT
+.irp r, a0, a1
+    mv \\r, zero
+.endr
+";
+        let doc = store.open(uri.clone(), 1, src.to_owned());
+        let mut ctx = CompileContext::new(None, Default::default());
+        let mut idx = WorkspaceIndex::new(None).unwrap();
+        idx.upsert_open_document(doc);
+
+        let before_off = src.find("li t0, CNT").unwrap() + 8;
+        let h_before = idx.token_hover_info(&uri, before_off, &mut ctx).unwrap();
+        assert_eq!(h_before.value.as_deref(), Some("1"));
+        assert_eq!(h_before.assign_kind, Some(AssignKind::Set));
+        assert_eq!(h_before.assignment_count, 2);
+
+        let after_off = src.find("li t1, CNT").unwrap() + 8;
+        let h_after = idx.token_hover_info(&uri, after_off, &mut ctx).unwrap();
+        assert_eq!(h_after.value.as_deref(), Some("CNT + 1"));
+        assert_eq!(h_after.assignment_count, 2);
+
+        let irp_use_off = src.find("\\r").unwrap() + 1;
+        let h_irp = idx.token_hover_info(&uri, irp_use_off, &mut ctx).unwrap();
+        assert_eq!(h_irp.name, "r");
+        assert_eq!(h_irp.param_label.as_deref(), Some(".irp parameter"));
     }
 }

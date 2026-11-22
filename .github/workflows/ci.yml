@@ -9,7 +9,7 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Clang 19 and LLVM 19
         run: |
@@ -23,7 +23,9 @@ jobs:
           targets: wasm32-wasip2
 
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.22.0
 
       - name: Check formatting
         run: |
@@ -49,3 +51,20 @@ jobs:
           out="$(cargo test --test integration -- --ignored)"
           echo "$out"
           echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed; 0 failed;'
+
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90"
+          targets: wasm32-wasip2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check MSRV compilation
+        run: |
+          cargo check --all-targets
+          cargo check --manifest-path zed/Cargo.toml --target wasm32-wasip2

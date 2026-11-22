@@ -20,9 +20,9 @@ fn initialize_capabilities_and_shutdown() {
             .capabilities
             .completion_provider
             .as_ref()
-            .and_then(|c| c.trigger_characters.as_ref())
-            .is_some_and(|chars| chars.iter().any(|c| c == " ")),
-        "expected space trigger character in completion capabilities"
+            .and_then(|c| c.resolve_provider)
+            == Some(true),
+        "expected resolve_provider capability"
     );
     assert!(
         client
@@ -261,4 +261,94 @@ fn background_index_skips_hidden_and_gitignored_and_reports_progress() {
 
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn priority_scan_resolves_project_before_go_assembly_and_skips_it() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_prio_ws_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let go_mod = tmp.join("go/pkg/mod/some_pkg");
+    let proj = tmp.join("projects/my_rv");
+    std::fs::create_dir_all(&go_mod).unwrap();
+    std::fs::create_dir_all(proj.join(".git")).unwrap();
+
+    for i in 0..100 {
+        std::fs::write(
+            go_mod.join(format!("go_{i:03}.s")),
+            format!(
+                "#include \"textflag.h\"\nTEXT \u{00b7}go_sym_{i:03}(SB), NOSPLIT, $0-0\n    RET\n"
+            ),
+        )
+        .unwrap();
+    }
+    let main_s = proj.join("main.S");
+    let lib_s = proj.join("lib.S");
+    std::fs::write(&main_s, "_start:\n    call rv_helper\n").unwrap();
+    std::fs::write(&lib_s, "rv_helper:\n    ret\n").unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let main_uri = path_to_uri(&main_s);
+    let lib_uri = path_to_uri(&lib_s);
+    let mut client = LspClient::start(None, Some(&root_uri));
+    client.open_doc(&main_uri, 1, "_start:\n    call rv_helper\n");
+
+    let start_t = std::time::Instant::now();
+    let def = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": main_uri.as_str() },
+            "position": { "line": 1, "character": 11 }
+        }),
+    );
+    assert!(
+        start_t.elapsed() < std::time::Duration::from_secs(2),
+        "priority lookup took {:?}",
+        start_t.elapsed()
+    );
+    assert_eq!(
+        def.result.as_ref().and_then(|r| r["uri"].as_str()),
+        Some(lib_uri.as_str())
+    );
+
+    let syms = workspace_symbol_names(&mut client, "go_sym");
+    assert!(syms.is_empty(), "Go Plan 9 symbols leaked: {syms:?}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn large_file_rapid_incremental_edits_and_hover() {
+    use std::fmt::Write;
+    let mut src = String::with_capacity(120_000);
+    for i in 0..2_000 {
+        let _ = writeln!(src, "lbl_{i:04}:\n    addi a0, a0, 1");
+    }
+    let mut client = LspClient::start(None, None);
+    let uri = path_to_uri(&fixtures_dir().join("large_edit_virtual.S"));
+    client.open_doc(&uri, 1, &src);
+
+    for step in 0..20 {
+        client.change_doc_incremental(
+            &uri,
+            step + 2,
+            Range::new(Position::new(1, 17), Position::new(1, 18)),
+            &((step % 9) + 1).to_string(),
+        );
+    }
+
+    let hover = client.send_request(
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 1, "character": 6 }
+        }),
+    );
+    assert!(hover.error.is_none());
+    let md = hover.result.as_ref().unwrap()["contents"]["value"]
+        .as_str()
+        .unwrap_or("");
+    assert!(md.contains("Add immediate"), "got: {md}");
+
+    client.shutdown_and_exit();
 }

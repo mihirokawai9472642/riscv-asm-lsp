@@ -1,19 +1,109 @@
 use std::collections::BTreeSet;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, InsertTextFormat, MarkupContent, MarkupKind,
-    Range,
+    CompletionItem, CompletionItemKind, CompletionItemTag, Documentation, InsertTextFormat,
+    MarkupContent, MarkupKind, Range,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::context::MarchSpec;
-use crate::data::{Database, InstructionKind, InstructionVariant, RegisterClass};
+use crate::data::{CsrEntry, Database, InstructionKind, InstructionVariant, RegisterClass};
 use crate::index::{CompletionSymbol, SymKind};
 
 use super::snippets::{
     build_instruction_snippet, deduplicate_and_sort_variants, directive_snippet, syntax_args,
     trailing_operand_sep, variant_slot_count,
 };
-use super::{CompletionClientCaps, make_item, make_rich_item, match_rank};
+use super::{
+    CompletionClientCaps, MAX_SYMBOL_CANDIDATES, make_item_with_data, make_rich_item, match_rank,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "k")]
+pub(super) enum ResolvePayload {
+    Inst {
+        m: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        s: Option<String>,
+    },
+    Dir {
+        n: String,
+    },
+    Reg {
+        n: String,
+    },
+    Csr {
+        n: String,
+    },
+    Opt {
+        n: String,
+    },
+    Reloc {
+        n: String,
+    },
+    Frm {
+        n: String,
+    },
+    Fence {
+        n: String,
+    },
+}
+
+pub(super) fn serialize_payload(payload: &ResolvePayload) -> Option<serde_json::Value> {
+    serde_json::to_value(payload).ok()
+}
+
+pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Option<Documentation> {
+    let data = item.data.as_ref()?;
+    let payload: ResolvePayload = serde_json::from_value(data.clone()).ok()?;
+    match payload {
+        ResolvePayload::Inst { m, s } => {
+            let inst = db.instruction(&m)?;
+            format_instruction_doc(
+                s.as_deref(),
+                inst.long_name.as_deref(),
+                inst.description.as_deref(),
+                inst.deprecated,
+                inst.preferred_name.as_deref(),
+            )
+        }
+        ResolvePayload::Dir { n } => {
+            let dir = db.directive(&n)?;
+            Some(Documentation::String(dir.description.clone()))
+        }
+        ResolvePayload::Reg { n } => {
+            let reg = db.register(&n)?;
+            reg.description.clone().map(Documentation::String)
+        }
+        ResolvePayload::Csr { n } => {
+            let csr = db.csr(&n)?;
+            if let Some(desc) = &csr.description {
+                Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: desc.clone(),
+                }))
+            } else {
+                Some(Documentation::String(format_csr_detail(csr)))
+            }
+        }
+        ResolvePayload::Opt { n } => OPTION_SUBCOMMANDS
+            .iter()
+            .find(|(name, _)| *name == n)
+            .map(|(_, desc)| Documentation::String((*desc).to_owned())),
+        ResolvePayload::Reloc { n } => RELOCATION_FUNCTIONS
+            .iter()
+            .find(|(name, _)| *name == n)
+            .map(|(_, desc)| Documentation::String((*desc).to_owned())),
+        ResolvePayload::Frm { n } => ROUNDING_MODES
+            .iter()
+            .find(|(name, _)| *name == n)
+            .map(|(_, desc)| Documentation::String((*desc).to_owned())),
+        ResolvePayload::Fence { n } => FENCE_ARGS
+            .iter()
+            .find(|(name, _)| *name == n)
+            .map(|(_, desc)| Documentation::String((*desc).to_owned())),
+    }
+}
 
 pub(super) const OPTION_SUBCOMMANDS: &[(&str, &str)] = &[
     ("arch", "Modify or set active ISA architecture extensions"),
@@ -105,6 +195,8 @@ pub(super) fn collect_instruction_completions(
             InstructionKind::Alias | InstructionKind::Pseudo => CompletionItemKind::SNIPPET,
         };
         let rank = match_rank(&inst.mnemonic, typed_lower);
+        let cat_tier = if inst.deprecated { '3' } else { '1' };
+        let tags = inst.deprecated.then(|| vec![CompletionItemTag::DEPRECATED]);
         let mut unique_variants = deduplicate_and_sort_variants(&inst.mnemonic, &matching_variants);
 
         if !caps.snippet_support {
@@ -118,19 +210,19 @@ pub(super) fn collect_instruction_completions(
                 inst.mnemonic.clone()
             };
             let detail = best.map(|v| v.syntax.clone());
-            let documentation = format_instruction_doc(
-                None,
-                inst.long_name.as_deref(),
-                inst.description.as_deref(),
-            );
-            let sort = format!("{rank}_1_{}", inst.mnemonic);
+            let data = serialize_payload(&ResolvePayload::Inst {
+                m: inst.mnemonic.clone(),
+                s: None,
+            });
+            let sort = format!("{rank}_{cat_tier}_{}", inst.mnemonic);
             items.push(make_rich_item(
                 inst.mnemonic.clone(),
                 inst.mnemonic.clone(),
                 new_text,
                 kind,
                 detail,
-                documentation,
+                tags,
+                data,
                 Some(InsertTextFormat::PLAIN_TEXT),
                 sort,
                 replace_range,
@@ -145,12 +237,11 @@ pub(super) fn collect_instruction_completions(
             // keep the mnemonic in `filterText`, and keep the long name in `detail` (Item 4c).
             let label = v.syntax.clone();
             let detail = inst.long_name.clone();
-            let documentation = format_instruction_doc(
-                Some(&v.syntax),
-                inst.long_name.as_deref(),
-                inst.description.as_deref(),
-            );
-            let sort = format!("{rank}_1_{}_{idx:02}", inst.mnemonic);
+            let data = serialize_payload(&ResolvePayload::Inst {
+                m: inst.mnemonic.clone(),
+                s: Some(v.syntax.clone()),
+            });
+            let sort = format!("{rank}_{cat_tier}_{}_{idx:02}", inst.mnemonic);
 
             items.push(make_rich_item(
                 label,
@@ -158,7 +249,8 @@ pub(super) fn collect_instruction_completions(
                 new_text,
                 kind,
                 detail,
-                documentation,
+                tags.clone(),
+                data,
                 Some(format),
                 sort,
                 replace_range,
@@ -171,6 +263,8 @@ fn format_instruction_doc(
     variant_syntax: Option<&str>,
     long_name: Option<&str>,
     desc: Option<&str>,
+    deprecated: bool,
+    preferred_name: Option<&str>,
 ) -> Option<Documentation> {
     let mut parts = Vec::new();
     if let Some(syn) = variant_syntax {
@@ -178,6 +272,13 @@ fn format_instruction_doc(
     }
     if let Some(ln) = long_name {
         parts.push(format!("**{ln}**"));
+    }
+    if deprecated {
+        if let Some(pref) = preferred_name {
+            parts.push(format!("> Deprecated — prefer `{pref}`."));
+        } else {
+            parts.push("> Deprecated.".to_owned());
+        }
     }
     if let Some(d) = desc.map(first_sentence).filter(|s| !s.is_empty()) {
         parts.push(d);
@@ -224,6 +325,10 @@ pub(super) fn collect_directive_completions(
         }
         let rank = match_rank(&dir.name, typed_lower);
 
+        let dir_data = serialize_payload(&ResolvePayload::Dir {
+            n: dir.name.clone(),
+        });
+
         if caps.snippet_support && dir.name == ".option" {
             items.push(make_rich_item(
                 ".option push ... pop".to_owned(),
@@ -231,7 +336,8 @@ pub(super) fn collect_directive_completions(
                 ".option push\n.option ${1:norvc}\n$0\n.option pop".to_owned(),
                 CompletionItemKind::SNIPPET,
                 None,
-                Some(Documentation::String(dir.description.clone())),
+                None,
+                dir_data.clone(),
                 Some(InsertTextFormat::SNIPPET),
                 format!("{rank}_2_.option_0"),
                 replace_range,
@@ -248,7 +354,8 @@ pub(super) fn collect_directive_completions(
                 inline_text,
                 CompletionItemKind::KEYWORD,
                 None,
-                Some(Documentation::String(dir.description.clone())),
+                None,
+                dir_data,
                 Some(InsertTextFormat::PLAIN_TEXT),
                 format!("{rank}_2_.option_1"),
                 replace_range,
@@ -280,7 +387,8 @@ pub(super) fn collect_directive_completions(
             new_text,
             CompletionItemKind::KEYWORD,
             dir.arguments.clone(),
-            Some(Documentation::String(dir.description.clone())),
+            None,
+            dir_data,
             Some(format),
             sort,
             replace_range,
@@ -301,6 +409,7 @@ pub(super) fn collect_operand_completions(
     typed_lower: &str,
     replace_range: Range,
     items: &mut Vec<CompletionItem>,
+    is_incomplete: &mut bool,
 ) {
     let mut want_int = false;
     let mut want_float = false;
@@ -407,7 +516,7 @@ pub(super) fn collect_operand_completions(
     }
     if want_frm {
         let frm_sep = sep_for(CandidateHint::Frm);
-        for (name, desc) in ROUNDING_MODES {
+        for (name, _) in ROUNDING_MODES {
             let rank = match_rank(name, typed_lower);
             items.push(make_rich_item(
                 (*name).to_owned(),
@@ -415,7 +524,10 @@ pub(super) fn collect_operand_completions(
                 format!("{name}{frm_sep}"),
                 CompletionItemKind::ENUM_MEMBER,
                 Some("rounding mode".to_owned()),
-                Some(Documentation::String((*desc).to_owned())),
+                None,
+                serialize_payload(&ResolvePayload::Frm {
+                    n: (*name).to_owned(),
+                }),
                 None,
                 format!("{rank}_0_{name}"),
                 replace_range,
@@ -424,7 +536,7 @@ pub(super) fn collect_operand_completions(
     }
     if want_fence {
         let fence_sep = sep_for(CandidateHint::Fence);
-        for (name, desc) in FENCE_ARGS {
+        for (name, _) in FENCE_ARGS {
             let rank = match_rank(name, typed_lower);
             items.push(make_rich_item(
                 (*name).to_owned(),
@@ -432,7 +544,10 @@ pub(super) fn collect_operand_completions(
                 format!("{name}{fence_sep}"),
                 CompletionItemKind::ENUM_MEMBER,
                 Some("fence ordering".to_owned()),
-                Some(Documentation::String((*desc).to_owned())),
+                None,
+                serialize_payload(&ResolvePayload::Fence {
+                    n: (*name).to_owned(),
+                }),
                 None,
                 format!("{rank}_0_{name}"),
                 replace_range,
@@ -450,16 +565,31 @@ pub(super) fn collect_operand_completions(
             Some("vector mask register".to_owned()),
             None,
             None,
+            None,
             format!("{rank}_0_v0.t"),
             replace_range,
         ));
     }
     if want_symbol_or_reloc {
         let sym_sep = sep_for(CandidateHint::SymbolOrImm);
-        for sym in visible_syms {
-            if sym.kind == SymKind::MacroParam {
-                continue;
+        let mut syms: Vec<&CompletionSymbol> = visible_syms
+            .iter()
+            .filter(|s| s.kind != SymKind::MacroParam)
+            .collect();
+        if syms.len() > MAX_SYMBOL_CANDIDATES {
+            *is_incomplete = true;
+            if !typed_lower.is_empty() {
+                syms.retain(|s| s.name.to_ascii_lowercase().contains(typed_lower));
             }
+            syms.sort_by_key(|s| {
+                (
+                    match_rank(&s.name, typed_lower),
+                    s.name.to_ascii_lowercase(),
+                )
+            });
+            syms.truncate(MAX_SYMBOL_CANDIDATES);
+        }
+        for sym in syms {
             let kind = match sym.kind {
                 SymKind::Equ | SymKind::Define => CompletionItemKind::CONSTANT,
                 _ => CompletionItemKind::REFERENCE,
@@ -472,6 +602,7 @@ pub(super) fn collect_operand_completions(
                 format!("{}{sym_sep}", sym.name),
                 kind,
                 sym.detail.clone(),
+                None,
                 None,
                 None,
                 sort,
@@ -519,13 +650,15 @@ pub(super) fn push_relocation_completions(
     replace_range: Range,
     items: &mut Vec<CompletionItem>,
 ) {
-    for (reloc, desc) in RELOCATION_FUNCTIONS {
+    for &(reloc, _) in RELOCATION_FUNCTIONS {
         let rank = match_rank(reloc, typed_lower);
-        items.push(make_item(
-            (*reloc).to_owned(),
+        items.push(make_item_with_data(
+            reloc.to_owned(),
             CompletionItemKind::FUNCTION,
             Some("relocation modifier".to_owned()),
-            Some(Documentation::String((*desc).to_owned())),
+            serialize_payload(&ResolvePayload::Reloc {
+                n: reloc.to_owned(),
+            }),
             format!("{rank}_3_{reloc}"),
             replace_range,
         ));
@@ -548,6 +681,7 @@ pub(super) fn push_macro_param_completions(
                 format!("{}{sep}", sym.name),
                 CompletionItemKind::VARIABLE,
                 Some("macro parameter".to_owned()),
+                None,
                 None,
                 None,
                 format!("{rank}_0_{}", sym.name),
@@ -609,6 +743,9 @@ fn push_register_completions(
         if reg.class != class {
             continue;
         }
+        let reg_data = serialize_payload(&ResolvePayload::Reg {
+            n: reg.name.clone(),
+        });
         for abi in &reg.abi_names {
             if seen.insert(abi.clone()) {
                 let rank = match_rank(abi, typed_lower);
@@ -618,7 +755,8 @@ fn push_register_completions(
                     format!("{abi}{sep}"),
                     CompletionItemKind::VARIABLE,
                     Some(reg.name.clone()),
-                    reg.description.clone().map(Documentation::String),
+                    None,
+                    reg_data.clone(),
                     None,
                     format!("{rank}_0_{:02}_{abi}", reg.number),
                     replace_range,
@@ -638,7 +776,8 @@ fn push_register_completions(
                 format!("{}{sep}", reg.name),
                 CompletionItemKind::VARIABLE,
                 detail,
-                reg.description.clone().map(Documentation::String),
+                None,
+                reg_data,
                 None,
                 format!("{rank}_1_{:02}_{}", reg.number, reg.name),
                 replace_range,
@@ -665,16 +804,21 @@ fn push_csr_completions(
             csr.name.clone(),
             format!("{}{sep}", csr.name),
             CompletionItemKind::CONSTANT,
-            Some(format!("0x{:03x}", csr.number)),
-            csr.description.as_ref().map(|d| {
-                Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: d.clone(),
-                })
+            Some(format_csr_detail(csr)),
+            None,
+            serialize_payload(&ResolvePayload::Csr {
+                n: csr.name.clone(),
             }),
             None,
             format!("{rank}_0_{}", csr.name),
             replace_range,
         ));
+    }
+}
+
+fn format_csr_detail(csr: &CsrEntry) -> String {
+    match csr.privilege_label() {
+        Some(label) => format!("0x{:03x} · {label}", csr.number),
+        None => format!("0x{:03x}", csr.number),
     }
 }

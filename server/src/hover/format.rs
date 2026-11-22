@@ -5,7 +5,7 @@ use crate::context::MarchSpec;
 use crate::data::{
     CsrEntry, DirectiveEntry, InstructionEntry, InstructionKind, RegisterEntry, Xlen,
 };
-use crate::index::{SymKind, SymbolHoverInfo};
+use crate::index::{AssignKind, SymKind, SymbolHoverInfo};
 
 pub(super) fn format_instruction_hover(
     inst: &InstructionEntry,
@@ -232,16 +232,7 @@ fn normalize_syntax(s: &str) -> String {
 pub(super) fn format_csr_hover(csr: &CsrEntry) -> String {
     let mut md = String::new();
     let mut header = vec![format!("`{}`", csr.name), format!("0x{:03x}", csr.number)];
-    if let Some(priv_lvl) = &csr.privilege {
-        let priv_label = match priv_lvl.as_str() {
-            "M" => "M-mode",
-            "S" => "S-mode",
-            "U" => "U-mode",
-            "VS" => "VS-mode",
-            "VS/HS" => "VS/HS-mode",
-            "D" => "Debug",
-            other => other,
-        };
+    if let Some(priv_label) = csr.privilege_label() {
         header.push(priv_label.to_owned());
     }
     if !csr.llvm_supported {
@@ -339,9 +330,14 @@ pub(super) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
         SymKind::Label => "label",
         SymKind::LocalLabel => "local label",
         SymKind::NumericLabel => "numeric label",
-        SymKind::Equ => "constant (.equ)",
+        SymKind::Equ => match info.assign_kind {
+            Some(AssignKind::Set) => "symbol (.set)",
+            Some(AssignKind::Equals) => "symbol (=)",
+            Some(AssignKind::Equiv) => "constant (.equiv)",
+            Some(AssignKind::Equ) | None => "constant (.equ)",
+        },
         SymKind::Macro => "macro",
-        SymKind::MacroParam => "macro parameter",
+        SymKind::MacroParam => info.param_label.as_deref().unwrap_or("macro parameter"),
         SymKind::Define => "#define",
     };
 
@@ -364,6 +360,13 @@ pub(super) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
 
     let _ = writeln!(md, "{}", header.join(" · "));
     let _ = writeln!(md, "\n```riscv\n{}\n```", info.def_line);
+    if info.assignment_count > 1 {
+        let _ = writeln!(
+            md,
+            "\n*Assigned {} times in scope; showing the assignment in effect here.*",
+            info.assignment_count
+        );
+    }
     md.trim_end().to_owned()
 }
 

@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -38,12 +39,18 @@ impl ToolRunner {
         }
     }
 
-    pub fn run_clang(&self, args: &[String], stdin_text: &str) -> Option<ToolOutput> {
+    pub fn run_clang(
+        &self,
+        args: &[String],
+        stdin_text: &str,
+        working_dir: Option<&Path>,
+    ) -> Option<ToolOutput> {
         self.run(
             ToolKind::Clang,
             &self.clang_bin,
             args,
             stdin_text,
+            working_dir,
             Duration::from_secs(5),
         )
     }
@@ -54,6 +61,7 @@ impl ToolRunner {
             &self.llvm_mc_bin,
             args,
             stdin_text,
+            None,
             Duration::from_secs(2),
         )
     }
@@ -71,19 +79,25 @@ impl ToolRunner {
         bin: &str,
         args: &[String],
         stdin_text: &str,
+        working_dir: Option<&Path>,
         timeout: Duration,
     ) -> Option<ToolOutput> {
         if self.is_disabled(kind) {
             return None;
         }
 
-        let mut child = match Command::new(bin)
-            .args(args)
+        let mut cmd = Command::new(bin);
+        cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        if let Some(dir) = working_dir
+            && dir.is_dir()
         {
+            cmd.current_dir(dir);
+        }
+
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(err) => {
                 self.disable_once(kind, bin, &format!("failed to execute `{bin}`: {err}"));

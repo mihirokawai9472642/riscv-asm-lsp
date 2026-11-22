@@ -361,6 +361,71 @@
       "name": ".uleb128",
       "arguments": "expression[, ...]",
       "description": "Emits unsigned LEB128 variable-length encoded integers."
+    },
+    {
+      "name": ".ascii",
+      "arguments": "\"string\"[, ...]",
+      "description": "Emits the characters of each string literal consecutively without appending a trailing null byte."
+    },
+    {
+      "name": ".hword",
+      "arguments": "expression[, ...]",
+      "description": "Emits one or more 16-bit integer values."
+    },
+    {
+      "name": ".octa",
+      "arguments": "bignum[, ...]",
+      "description": "Emits one or more 16-byte (128-bit) integer values."
+    },
+    {
+      "name": ".single",
+      "arguments": "flonum[, ...]",
+      "description": "Emits one or more 32-bit IEEE 754 single-precision floating-point values (alias for .float)."
+    },
+    {
+      "name": ".balignw",
+      "arguments": "alignment[, fill[, max]]",
+      "description": "Advances the location counter to a multiple of alignment bytes, padding with 2-byte fill values."
+    },
+    {
+      "name": ".balignl",
+      "arguments": "alignment[, fill[, max]]",
+      "description": "Advances the location counter to a multiple of alignment bytes, padding with 4-byte fill values."
+    },
+    {
+      "name": ".p2alignw",
+      "arguments": "power[, fill[, max]]",
+      "description": "Advances the location counter to a multiple of 2^power bytes, padding with 2-byte fill values."
+    },
+    {
+      "name": ".p2alignl",
+      "arguments": "power[, fill[, max]]",
+      "description": "Advances the location counter to a multiple of 2^power bytes, padding with 4-byte fill values."
+    },
+    {
+      "name": ".purgem",
+      "arguments": "name",
+      "description": "Undefines a macro previously defined with .macro so its name can be reused."
+    },
+    {
+      "name": ".ifeqs",
+      "arguments": "\"str1\", \"str2\"",
+      "description": "Assembles the following block if the two quoted string arguments are identical."
+    },
+    {
+      "name": ".ifnes",
+      "arguments": "\"str1\", \"str2\"",
+      "description": "Assembles the following block if the two quoted string arguments differ."
+    },
+    {
+      "name": ".end",
+      "arguments": null,
+      "description": "Marks the end of an assembly source file; lines after it are ignored."
+    },
+    {
+      "name": ".tls_common",
+      "arguments": "symbol, size[, alignment]",
+      "description": "Declares a thread-local (TLS) common symbol of size bytes in .tbss."
     }
   ]
 }

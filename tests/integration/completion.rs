@@ -73,6 +73,7 @@ my_sym:
     );
     assert!(fadd_s["sortText"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(!fadd_s["documentation"].is_null());
+    assert!(fadd_s["data"].is_null());
 
     let op_resp = client.send_request(
         "textDocument/completion",
@@ -231,11 +232,39 @@ fn completion_snippets_variant_order_distinct_labels_and_separators() {
         ld_items[0]["textEdit"]["newText"],
         json!("ld ${1:rd}, ${2:0}(${3:rs1})$0")
     );
+    assert!(ld_items[0]["documentation"].is_null());
+
+    let resolved_ld = snip_client
+        .send_request("completionItem/resolve", ld_items[0].clone())
+        .result
+        .expect("resolved ld");
     assert!(
-        ld_items[0]["documentation"]["value"]
+        resolved_ld["documentation"]["value"]
             .as_str()
             .unwrap_or("")
             .starts_with("```riscv\nld rd, imm12(rs1)\n```")
+    );
+
+    // Item 5: deprecated aliases carry DEPRECATED tag (1) and sort after preferred names
+    let frsr = stmt_items
+        .iter()
+        .find(|i| i["filterText"] == "frsr")
+        .expect("frsr");
+    assert_eq!(frsr["tags"], json!([1]));
+    let frcsr = stmt_items
+        .iter()
+        .find(|i| i["filterText"] == "frcsr")
+        .expect("frcsr");
+    assert!(frcsr["sortText"].as_str() < frsr["sortText"].as_str());
+    let resolved_frsr = snip_client
+        .send_request("completionItem/resolve", frsr.clone())
+        .result
+        .expect("resolved frsr");
+    assert!(
+        resolved_frsr["documentation"]["value"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Deprecated — prefer `frcsr`")
     );
 
     let mut csrw_items: Vec<_> = stmt_items
@@ -379,4 +408,46 @@ fn completion_snippets_variant_order_distinct_labels_and_separators() {
     );
 
     plain_client.shutdown_and_exit();
+}
+
+#[test]
+fn completion_caps_large_symbol_lists_with_is_incomplete_and_prefix_filter() {
+    use std::fmt::Write;
+    let mut client = LspClient::start(None, None);
+    let uri = path_to_uri(&fixtures_dir().join("many_syms_virtual.S"));
+    let mut src = String::new();
+    for i in 0..260 {
+        let _ = writeln!(src, "label_{i:03}:\n    nop");
+    }
+    src.push_str("    j \n    j label_25\n");
+    client.open_doc(&uri, 1, &src);
+
+    let unfiltered = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 520, "character": 6 }
+        }),
+    );
+    let res = unfiltered.result.as_ref().expect("CompletionList");
+    assert_eq!(res["isIncomplete"], json!(true));
+    let sym_items = res["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .filter(|i| i["kind"] == json!(18)) // CompletionItemKind::REFERENCE == 18
+        .count();
+    assert_eq!(sym_items, 200);
+
+    let filtered = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 521, "character": 14 }
+        }),
+    );
+    let labels = completion_labels(&filtered.result);
+    assert!(labels.iter().any(|l| l == "label_259"));
+
+    client.shutdown_and_exit();
 }

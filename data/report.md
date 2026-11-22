@@ -19,15 +19,17 @@
 | Instructions in both LLVM and riscv-unified-db | 1381 |
 | Instructions only in LLVM vs riscv-unified-db (total) | 51 |
 | In LLVM, described by riscv-asm-manual | 21 |
-| In LLVM, no description | 30 |
+| In LLVM, described by project supplements | 30 |
+| In LLVM, no description | 0 |
 | Only in riscv-unified-db (not accepted by LLVM 19) | 99 |
 | rv64gc instructions in riscv-unified-db missing from LLVM | 0 |
 | CSRs (LLVM supported) | 427 |
 | CSRs in both LLVM and riscv-unified-db | 401 |
-| CSRs only in LLVM (no description) | 26 |
+| CSRs only in LLVM, described by project supplements | 26 |
+| CSRs only in LLVM (no description) | 0 |
 | CSRs only in riscv-unified-db (not accepted by LLVM 19) | 16 |
 | Registers | 96 |
-| Directives | 101 |
+| Directives | 114 |
 
 ## In LLVM, Described by riscv-asm-manual (21)
 
@@ -53,7 +55,7 @@
 - `tail`
 - `vmsgeu.vx`
 
-## In LLVM, No Description (30)
+## In LLVM, Described by Project Supplements (30)
 
 - `c.slli64`
 - `c.srai64`
@@ -85,6 +87,9 @@
 - `vmsge.vx`
 - `vpopc.m`
 - `vse1.v`
+
+## In LLVM, No Description (0)
+
 
 ## Only in riscv-unified-db (99)
 
@@ -188,7 +193,7 @@
 - `vwabdau.vx`
 - `vzip.vv`
 
-## CSRs Only in LLVM (26)
+## CSRs Only in LLVM, Described by Project Supplements (26)
 
 - `sieh` (`0x114`)
 - `siph` (`0x154`)
@@ -217,6 +222,9 @@
 - `vstopi` (`0xeb0`)
 - `mtopi` (`0xfb0`)
 
+## CSRs Only in LLVM, No Description (0)
+
+
 ## CSRs Only in riscv-unified-db (16)
 
 - `sctrctl` (`0x14e`)
@@ -235,4 +243,8 @@
 - `tinfo` (`0x7a4`)
 - `tcontrol` (`0x7a5`)
 - `mscontext` (`0x7aa`)
+
+## Description Corrections (1)
+
+- `wfi`: `Can causes the processor` -> `Can cause the processor`
 

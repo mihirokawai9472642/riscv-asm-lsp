@@ -76,6 +76,128 @@ fn unsaved_diagnostics_and_code_actions_with_clang() {
 }
 
 #[test]
+#[ignore = "requires clang"]
+fn macro_and_included_file_diagnostics_and_compile_working_dir() {
+    assert!(
+        has_tool("clang"),
+        "clang must be on PATH for ignored tool tests"
+    );
+
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_inc_diag_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let sub_dir = tmp.join("sub_build");
+    std::fs::create_dir_all(&sub_dir).unwrap();
+
+    // Case 1 (Item 2): macro instantiation error + `.include "bad.inc"`
+    std::fs::write(tmp.join("bad.inc"), "    mov a0, a1\n").unwrap();
+    let main_s = tmp.join("main.S");
+    let main_src = "\
+    .include \"bad.inc\"
+.macro TWICE
+    nop
+    mvx a0, a1
+.endm
+    TWICE
+";
+    std::fs::write(&main_s, main_src).unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let main_uri = path_to_uri(&main_s);
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&main_uri, 1, main_src);
+
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("expected publishDiagnostics");
+    let diags = notif.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags.len(), 2, "diags: {diags:?}");
+    assert_eq!(diags[0]["range"]["start"]["line"], 0);
+    assert!(
+        diags[0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("bad.inc:1:"),
+        "diag0: {:?}",
+        diags[0]
+    );
+    assert!(diags[0]["relatedInformation"].is_array());
+    assert_eq!(diags[1]["range"]["start"]["line"], 5);
+    assert!(
+        diags[1]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("in macro instantiation"),
+        "diag1: {:?}",
+        diags[1]
+    );
+    client.shutdown_and_exit();
+
+    // Case 2 (Item 3): `compile_commands.json` sets `"directory"` to `sub_dir`, allowing
+    // `.include "from_cwd.inc"` without `-I` when clang runs in `current_dir = directory`.
+    std::fs::write(sub_dir.join("from_cwd.inc"), "    nop\n").unwrap();
+    let sub_main = tmp.join("cwd_test.S");
+    let sub_src = "    .include \"from_cwd.inc\"\n";
+    std::fs::write(&sub_main, sub_src).unwrap();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        serde_json::to_string_pretty(&json!([{
+            "directory": sub_dir.to_string_lossy(),
+            "command": format!("clang --target=riscv64-unknown-elf -march=rv64gc -c {}", sub_main.display()),
+            "file": sub_main.to_string_lossy()
+        }]))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut client2 = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+    let sub_uri = path_to_uri(&sub_main);
+    client2.open_doc(&sub_uri, 1, sub_src);
+    let notif2 = client2
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("expected publishDiagnostics for cwd test");
+    let diags2 = notif2.params["diagnostics"].as_array().unwrap();
+    assert!(
+        diags2.is_empty(),
+        "expected 0 diags using cwd, got {diags2:?}"
+    );
+
+    // Case 3 (Item 5): missing `.include "not_there.inc"` spans the quoted filename.
+    let miss_src = "    .include \"not_there.inc\"\n";
+    client2.open_doc(&sub_uri, 2, miss_src);
+    let notif3 = client2
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("expected publishDiagnostics for missing include");
+    let diags3 = notif3.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags3.len(), 1, "diags3: {diags3:?}");
+    assert_eq!(
+        diags3[0]["range"]["start"],
+        json!({ "line": 0, "character": 13 })
+    );
+    assert_eq!(
+        diags3[0]["range"]["end"],
+        json!({ "line": 0, "character": 28 })
+    );
+
+    client2.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
 #[ignore = "requires llvm-mc"]
 fn data_validation_rv64gc_instructions_assemble_with_llvm_mc() {
     assert!(

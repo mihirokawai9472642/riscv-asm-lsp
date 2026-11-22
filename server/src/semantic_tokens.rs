@@ -111,6 +111,17 @@ fn collect_semantic_tokens(
                 }
             }
         }
+        for scope in &file_idx.repeat_scopes {
+            if scope.param.span.0 < scope.param.span.1 {
+                decl_spans.insert(scope.param.span);
+                raw.push(RawToken {
+                    start_byte: scope.param.span.0,
+                    end_byte: scope.param.span.1,
+                    token_type: IDX_PARAMETER,
+                    modifiers: MOD_DECLARATION,
+                });
+            }
+        }
     }
 
     if let Some(tree) = &doc.tree {
@@ -208,7 +219,11 @@ fn walk_ast(node: Node<'_>, in_csr_stmt: bool, ctx: &mut WalkCtx<'_>) {
     let span = (node.start_byte(), node.end_byte());
 
     match kind {
-        "comment" | "string" | "char" => return,
+        "comment" | "char" => return,
+        "string" => {
+            walk_string_macro_vars(node, ctx);
+            return;
+        }
         "register" => {
             if !ctx.decl_spans.contains(&span) {
                 ctx.out.push(RawToken {
@@ -347,6 +362,30 @@ fn walk_ast(node: Node<'_>, in_csr_stmt: bool, ctx: &mut WalkCtx<'_>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_ast(child, in_csr_stmt, ctx);
+    }
+}
+
+fn walk_string_macro_vars(node: Node<'_>, ctx: &mut WalkCtx<'_>) {
+    if node.kind() == "string_macro_variable" {
+        let span = (node.start_byte(), node.end_byte());
+        if let Some(raw) = ctx.text.get(span.0..span.1)
+            && let Some(param) = parse_macro_var_token(raw)
+        {
+            let end = (span.0 + 1 + param.len()).min(span.1);
+            if !ctx.decl_spans.contains(&(span.0, end)) {
+                ctx.out.push(RawToken {
+                    start_byte: span.0,
+                    end_byte: end,
+                    token_type: IDX_PARAMETER,
+                    modifiers: 0,
+                });
+            }
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_string_macro_vars(child, ctx);
     }
 }
 

@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # extension crate, and cargo-deny for dependency license auditing.
 RUN rustup component add rustfmt clippy \
     && rustup target add wasm32-wasip2 \
-    && cargo install --locked cargo-deny
+    && cargo install --locked --version 0.22.0 cargo-deny
 
 # Match host WSL UID/GID 1000 so files written to the bind-mounted repo are
 # owned by the host user, and prepare user-writable Cargo cache directories.

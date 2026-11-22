@@ -1,4 +1,6 @@
-use crate::common::{LspClient, fixtures_dir, path_to_uri};
+use crate::common::{
+    LspClient, fixtures_dir, lexical_path_to_uri, path_to_uri, workspace_symbol_names,
+};
 use serde_json::json;
 
 #[test]
@@ -250,4 +252,260 @@ fn define_in_assembly_file_navigation_and_references() {
     assert_eq!(arr.len(), 2);
 
     client.shutdown_and_exit();
+}
+
+#[test]
+fn rename_rejects_invalid_names_builtins_and_scope_collisions() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_ren_val_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let a_path = tmp.join("a.S");
+    let b_path = tmp.join("b.S");
+    let a_src = "\
+#define DEF_A 1
+.equ CONST_A, 2
+start:
+    j .Llocal
+    ret
+.Llocal:
+    nop
+data:
+    .word 0
+";
+    let b_src = "other_global:\n    ret\n";
+    std::fs::write(&a_path, a_src).unwrap();
+    std::fs::write(&b_path, b_src).unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let a_uri = path_to_uri(&a_path);
+    let mut client = LspClient::start(None, Some(&root_uri));
+    client.open_doc(&a_uri, 1, a_src);
+
+    // Renaming `start` (line 2, col 1) must reject invalid identifiers, registers, CSRs,
+    // directives, same-file labels (`data`), and cross-file global labels (`other_global`).
+    for bad in [
+        "1bad",
+        "bad name",
+        "",
+        "a0",
+        "x5",
+        "fa0",
+        "stvec",
+        ".globl",
+        "data",
+        "other_global",
+    ] {
+        let resp = client.send_request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": a_uri.as_str() },
+                "position": { "line": 2, "character": 1 },
+                "newName": bad
+            }),
+        );
+        assert!(
+            resp.error.is_some(),
+            "expected rename `start` -> `{bad}` to error, got {:?}",
+            resp.result
+        );
+    }
+
+    // Renaming `.Llocal` (line 5, col 2) to same-file `data` must fail.
+    let local_col = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": a_uri.as_str() },
+            "position": { "line": 5, "character": 2 },
+            "newName": "data"
+        }),
+    );
+    assert!(local_col.error.is_some());
+
+    // Renaming `CONST_A` (line 1, col 6) to `#define DEF_A` in same file must fail.
+    let const_col = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": a_uri.as_str() },
+            "position": { "line": 1, "character": 6 },
+            "newName": "DEF_A"
+        }),
+    );
+    assert!(const_col.error.is_some());
+
+    // Valid unique name still succeeds.
+    let ok = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": a_uri.as_str() },
+            "position": { "line": 2, "character": 1 },
+            "newName": "entry_point"
+        }),
+    );
+    assert!(ok.error.is_none());
+    assert!(ok.result.as_ref().unwrap()["changes"][a_uri.as_str()].is_array());
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn irp_and_irpc_navigation_references_and_rename() {
+    let mut client = LspClient::start(None, None);
+    let uri = path_to_uri(&fixtures_dir().join("irp_nav_virtual.S"));
+    let src = "\
+.irp r, a0, a1
+    mv \\r, zero
+.endr
+.irpc c, 01
+    .byte \\c
+.endr
+";
+    client.open_doc(&uri, 1, src);
+
+    // Definition from `\r` (line 1, col 8) -> `r` on line 0
+    let def = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 1, "character": 8 }
+        }),
+    );
+    assert_eq!(def.result.as_ref().unwrap()["range"]["start"]["line"], 0);
+
+    // References on `.irp r` -> decl + `\r`
+    let refs = client.send_request(
+        "textDocument/references",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 1, "character": 8 },
+            "context": { "includeDeclaration": true }
+        }),
+    );
+    assert_eq!(refs.result.as_ref().unwrap().as_array().unwrap().len(), 2);
+
+    // Rename `r` -> `reg_v` preserves `\` on line 1
+    let ren = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 1, "character": 8 },
+            "newName": "reg_v"
+        }),
+    );
+    assert!(ren.error.is_none());
+    let edits = ren.result.as_ref().unwrap()["changes"][uri.as_str()]
+        .as_array()
+        .unwrap();
+    assert_eq!(edits.len(), 2);
+    assert!(edits.iter().all(|e| e["newText"] == "reg_v"));
+    let ref_edit = edits
+        .iter()
+        .find(|e| e["range"]["start"]["line"] == 1)
+        .unwrap();
+    assert_eq!(ref_edit["range"]["start"]["character"], 8); // after `\`
+
+    // Definition from `\c` in `.irpc` (line 4, col 11) -> line 3
+    let def_irpc = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 4, "character": 11 }
+        }),
+    );
+    assert_eq!(
+        def_irpc.result.as_ref().unwrap()["range"]["start"]["line"],
+        3
+    );
+
+    client.shutdown_and_exit();
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_workspace_preserves_client_uris_in_navigation_and_symbols() {
+    let base = std::env::temp_dir().join(format!("riscv_asm_lsp_sym_ws_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let real_dir = base.join("ws dir+日本");
+    let link_dir = base.join("link");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    std::fs::write(real_dir.join("defs.h"), "#define SYM_CONST 7\n").unwrap();
+    std::fs::write(real_dir.join("b.S"), "sym_helper:\n    ret\n").unwrap();
+    let a_src = "#include \"defs.h\"\n_start:\n    li a0, SYM_CONST\n    call sym_helper\n";
+    std::fs::write(real_dir.join("a.S"), a_src).unwrap();
+    std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
+
+    let link_root_uri = lexical_path_to_uri(&link_dir);
+    let link_a_uri = lexical_path_to_uri(&link_dir.join("a.S"));
+    let link_b_uri = lexical_path_to_uri(&link_dir.join("b.S"));
+    let link_h_uri = lexical_path_to_uri(&link_dir.join("defs.h"));
+
+    let mut client = LspClient::start(None, Some(&link_root_uri));
+    client.open_doc(&link_a_uri, 1, a_src);
+
+    // `#include "defs.h"` -> symlink URI
+    let def_inc = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": link_a_uri.as_str() },
+            "position": { "line": 0, "character": 12 }
+        }),
+    );
+    assert_eq!(
+        def_inc.result.as_ref().unwrap()["uri"],
+        json!(link_h_uri.as_str())
+    );
+
+    // `SYM_CONST` -> symlink URI
+    let def_hdr = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": link_a_uri.as_str() },
+            "position": { "line": 2, "character": 12 }
+        }),
+    );
+    assert_eq!(
+        def_hdr.result.as_ref().unwrap()["uri"],
+        json!(link_h_uri.as_str())
+    );
+
+    // `sym_helper` -> symlink `b.S` URI
+    let def_cross = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": link_a_uri.as_str() },
+            "position": { "line": 3, "character": 10 }
+        }),
+    );
+    assert_eq!(
+        def_cross.result.as_ref().unwrap()["uri"],
+        json!(link_b_uri.as_str())
+    );
+
+    // Rename `sym_helper` returns edits keyed with symlink URIs
+    let ren = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": link_a_uri.as_str() },
+            "position": { "line": 3, "character": 10 },
+            "newName": "sym_helper_v2"
+        }),
+    );
+    let changes = ren.result.as_ref().unwrap()["changes"].as_object().unwrap();
+    assert!(
+        changes.contains_key(link_a_uri.as_str()),
+        "changes: {changes:?}"
+    );
+    assert!(
+        changes.contains_key(link_b_uri.as_str()),
+        "changes: {changes:?}"
+    );
+
+    assert!(
+        workspace_symbol_names(&mut client, "sym_helper")
+            .iter()
+            .any(|s| s == "sym_helper")
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&base);
 }

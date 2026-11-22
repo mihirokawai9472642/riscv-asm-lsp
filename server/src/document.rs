@@ -1,7 +1,9 @@
 use lsp_types::{TextDocumentContentChangeEvent, Uri};
 use std::collections::HashMap;
+use std::path::Path;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 
+use crate::context::{normalize_path, uri_to_path};
 use crate::position::LineIndex;
 
 #[derive(Debug, Clone)]
@@ -52,11 +54,21 @@ impl Document {
                     let start_point = byte_to_ts_point(&self.line_index, &self.text, start_byte);
                     let old_end_point =
                         byte_to_ts_point(&self.line_index, &self.text, old_end_byte);
+                    let old_has_newline = self
+                        .text
+                        .get(start_byte..old_end_byte)
+                        .is_some_and(|s| s.contains('\n'));
 
                     let new_end_byte = start_byte + change.text.len();
                     self.text
                         .replace_range(start_byte..old_end_byte, &change.text);
-                    self.line_index = LineIndex::new(&self.text);
+                    self.line_index.apply_edit(
+                        start_byte,
+                        old_end_byte,
+                        old_has_newline,
+                        &change.text,
+                        &self.text,
+                    );
                     let new_end_point =
                         byte_to_ts_point(&self.line_index, &self.text, new_end_byte);
 
@@ -130,6 +142,12 @@ impl DocumentStore {
 
     pub fn get(&self, uri: &Uri) -> Option<&Document> {
         self.docs.get(uri.as_str())
+    }
+
+    pub fn is_open_path(&self, canon_path: &Path) -> bool {
+        self.docs
+            .values()
+            .any(|doc| uri_to_path(&doc.uri).is_some_and(|p| normalize_path(&p) == canon_path))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Document> {

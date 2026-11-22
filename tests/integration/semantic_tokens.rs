@@ -113,9 +113,9 @@ fn semantic_tokens_full_and_range_classify_arch_and_project_symbols() {
     assert!(!range_decoded.contains(&("KERNEL_BASE".to_owned(), type_idx("constant"), 1)));
     assert!(!range_decoded.contains(&("trap_vector".to_owned(), type_idx("label"), 1)));
 
-    // Item 4d: `#define` inside `.S` file gets `constant` (+ declaration) tokens
+    // Item 4d + Item 7: `#define` inside `.S` and `.irp` parameter declaration/usage
     let local_uri = path_to_uri(&fixtures.join("semantic_define_virtual.S"));
-    let local_src = "#define LOCAL_VALUE 42\n_start:\n    li t0, LOCAL_VALUE\n";
+    let local_src = "#define LOCAL_VALUE 42\n_start:\n    li t0, LOCAL_VALUE\n.irp reg_arg, a0, a1\n    mv \\reg_arg, zero\n.endr\n";
     client.open_doc(&local_uri, 1, local_src);
     let local_resp = client.send_request(
         "textDocument/semanticTokens/full",
@@ -130,6 +130,8 @@ fn semantic_tokens_full_and_range_classify_arch_and_project_symbols() {
     let local_decoded = decode_semantic_tokens(local_src, &local_data);
     assert!(local_decoded.contains(&("LOCAL_VALUE".to_owned(), type_idx("constant"), 1)));
     assert!(local_decoded.contains(&("LOCAL_VALUE".to_owned(), type_idx("constant"), 0)));
+    assert!(local_decoded.contains(&("reg_arg".to_owned(), type_idx("parameter"), 1)));
+    assert!(local_decoded.contains(&("\\reg_arg".to_owned(), type_idx("parameter"), 0)));
 
     client.shutdown_and_exit();
 }

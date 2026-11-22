@@ -48,17 +48,35 @@ impl LspClient {
         root_uri: Option<&Uri>,
         envs: &[(&str, &str)],
     ) -> Self {
-        Self::start_with_options(init_options, root_uri, envs, false, false, false, false)
+        Self::start_with_options(
+            init_options,
+            root_uri,
+            envs,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
     }
 
     #[allow(dead_code)]
     pub fn start_with_watched_files(init_options: Option<Value>, root_uri: Option<&Uri>) -> Self {
-        Self::start_with_options(init_options, root_uri, &[], true, false, false, false)
+        Self::start_with_options(
+            init_options,
+            root_uri,
+            &[],
+            true,
+            false,
+            false,
+            false,
+            false,
+        )
     }
 
     #[allow(dead_code)]
     pub fn start_with_snippets(init_options: Option<Value>, root_uri: Option<&Uri>) -> Self {
-        Self::start_with_options(init_options, root_uri, &[], false, true, true, false)
+        Self::start_with_options(init_options, root_uri, &[], false, true, true, true, false)
     }
 
     #[allow(dead_code)]
@@ -66,9 +84,19 @@ impl LspClient {
         init_options: Option<Value>,
         root_uri: Option<&Uri>,
     ) -> Self {
-        Self::start_with_options(init_options, root_uri, &[], false, false, false, true)
+        Self::start_with_options(
+            init_options,
+            root_uri,
+            &[],
+            false,
+            false,
+            false,
+            false,
+            true,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_with_options(
         init_options: Option<Value>,
         root_uri: Option<&Uri>,
@@ -76,6 +104,7 @@ impl LspClient {
         watched_files_dynamic: bool,
         snippet_support: bool,
         label_details_support: bool,
+        resolve_documentation: bool,
         work_done_progress: bool,
     ) -> Self {
         let bin = env!("CARGO_BIN_EXE_riscv-asm-lsp");
@@ -153,7 +182,14 @@ impl LspClient {
                     "completionItem": {
                         "snippetSupport": snippet_support,
                         "labelDetailsSupport": label_details_support,
-                        "documentationFormat": ["markdown", "plaintext"]
+                        "documentationFormat": ["markdown", "plaintext"],
+                        "resolveSupport": {
+                            "properties": if resolve_documentation {
+                                vec!["documentation"]
+                            } else {
+                                Vec::<&str>::new()
+                            }
+                        }
                     }
                 },
                 "documentSymbol": {
@@ -335,8 +371,12 @@ pub fn fixtures_dir() -> PathBuf {
 
 pub fn path_to_uri(path: &std::path::Path) -> Uri {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let s = format!("file://{}", abs.display());
-    s.parse().expect("valid file URI")
+    riscv_asm_lsp::context::path_to_uri(&abs).expect("valid file URI")
+}
+
+#[allow(dead_code)]
+pub fn lexical_path_to_uri(path: &std::path::Path) -> Uri {
+    riscv_asm_lsp::context::path_to_uri(path).expect("valid file URI")
 }
 
 #[allow(dead_code)]

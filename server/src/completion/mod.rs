@@ -2,24 +2,28 @@ mod candidates;
 mod snippets;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit, Documentation,
-    InsertTextFormat, Position, Range, TextEdit,
+    CompletionItem, CompletionItemKind, CompletionItemTag, CompletionList, CompletionResponse,
+    CompletionTextEdit, InsertTextFormat, Position, Range, TextEdit,
 };
 
 use crate::context::{CompileContext, effective_options_at_line};
 use crate::data::Database;
 use crate::document::Document;
-use crate::index::{WorkspaceIndex, enclosing_macro_at};
+use crate::index::{WorkspaceIndex, visible_params_at};
 
 use candidates::{
-    OPTION_SUBCOMMANDS, collect_directive_completions, collect_instruction_completions,
-    collect_operand_completions, push_macro_param_completions, push_relocation_completions,
+    OPTION_SUBCOMMANDS, ResolvePayload, collect_directive_completions,
+    collect_instruction_completions, collect_operand_completions, push_macro_param_completions,
+    push_relocation_completions, resolve_documentation, serialize_payload,
 };
+
+pub(super) const MAX_SYMBOL_CANDIDATES: usize = 200;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompletionClientCaps {
     pub snippet_support: bool,
     pub label_details_support: bool,
+    pub resolve_documentation_support: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,28 +72,29 @@ pub fn provide_completion(
     let visible = index.visible_symbols_for_completion(&doc.uri, offset, ctx);
     let in_macro_body = index
         .file_by_uri(&doc.uri)
-        .and_then(|f| enclosing_macro_at(f, offset))
-        .is_some();
+        .is_some_and(|f| !visible_params_at(f, offset).is_empty());
 
     let mut items = Vec::new();
+    let mut is_incomplete = false;
 
     match comp_ctx {
         CompletionContext::Comment => return None,
         CompletionContext::OptionSubcommand => {
-            for (name, desc) in OPTION_SUBCOMMANDS {
+            for &(name, _) in OPTION_SUBCOMMANDS {
                 let rank = match_rank(name, &typed_lower);
-                let new_text = if *name == "arch" && !next_is_comma {
+                let new_text = if name == "arch" && !next_is_comma {
                     "arch, ".to_owned()
                 } else {
-                    (*name).to_owned()
+                    name.to_owned()
                 };
                 items.push(make_rich_item(
-                    (*name).to_owned(),
-                    (*name).to_owned(),
+                    name.to_owned(),
+                    name.to_owned(),
                     new_text,
                     CompletionItemKind::KEYWORD,
                     Some(".option".to_owned()),
-                    Some(Documentation::String((*desc).to_owned())),
+                    None,
+                    serialize_payload(&ResolvePayload::Opt { n: name.to_owned() }),
                     None,
                     format!("{rank}_0_{name}"),
                     replace_range,
@@ -117,14 +122,23 @@ pub fn provide_completion(
                         caps,
                         &mut items,
                     );
-                    for macro_name in visible.macros {
+                    let mut macros = visible.macros;
+                    if macros.len() > MAX_SYMBOL_CANDIDATES {
+                        is_incomplete = true;
+                        if !typed_lower.is_empty() {
+                            macros.retain(|m| m.to_ascii_lowercase().contains(&typed_lower));
+                        }
+                        macros
+                            .sort_by_key(|m| (match_rank(m, &typed_lower), m.to_ascii_lowercase()));
+                        macros.truncate(MAX_SYMBOL_CANDIDATES);
+                    }
+                    for macro_name in macros {
                         let rank = match_rank(&macro_name, &typed_lower);
                         let sort = format!("{rank}_1_{}", macro_name.to_ascii_lowercase());
                         items.push(make_item(
                             macro_name,
                             CompletionItemKind::FUNCTION,
                             Some("macro".to_owned()),
-                            None,
                             sort,
                             replace_range,
                         ));
@@ -168,12 +182,34 @@ pub fn provide_completion(
                     &typed_lower,
                     replace_range,
                     &mut items,
+                    &mut is_incomplete,
                 );
             }
         }
     }
 
-    Some(CompletionResponse::Array(items))
+    if !caps.resolve_documentation_support {
+        for item in &mut items {
+            if item.documentation.is_none() {
+                item.documentation = resolve_documentation(item, db);
+            }
+            item.data = None;
+        }
+    }
+
+    Some(CompletionResponse::List(CompletionList {
+        is_incomplete,
+        items,
+    }))
+}
+
+pub fn resolve_completion_item(mut item: CompletionItem, db: &Database) -> CompletionItem {
+    if item.documentation.is_none()
+        && let Some(doc) = resolve_documentation(&item, db)
+    {
+        item.documentation = Some(doc);
+    }
+    item
 }
 
 fn completion_token_prefix(text: &str, line_start: usize, offset: usize) -> (usize, &str) {
@@ -212,7 +248,17 @@ pub(super) fn make_item(
     label: String,
     kind: CompletionItemKind,
     detail: Option<String>,
-    documentation: Option<Documentation>,
+    sort_text: String,
+    replace_range: Range,
+) -> CompletionItem {
+    make_item_with_data(label, kind, detail, None, sort_text, replace_range)
+}
+
+pub(super) fn make_item_with_data(
+    label: String,
+    kind: CompletionItemKind,
+    detail: Option<String>,
+    data: Option<serde_json::Value>,
     sort_text: String,
     replace_range: Range,
 ) -> CompletionItem {
@@ -224,7 +270,8 @@ pub(super) fn make_item(
         new_text,
         kind,
         detail,
-        documentation,
+        None,
+        data,
         None,
         sort_text,
         replace_range,
@@ -238,7 +285,8 @@ pub(super) fn make_rich_item(
     new_text: String,
     kind: CompletionItemKind,
     detail: Option<String>,
-    documentation: Option<Documentation>,
+    tags: Option<Vec<CompletionItemTag>>,
+    data: Option<serde_json::Value>,
     insert_text_format: Option<InsertTextFormat>,
     sort_text: String,
     replace_range: Range,
@@ -253,7 +301,8 @@ pub(super) fn make_rich_item(
         label,
         kind: Some(kind),
         detail,
-        documentation,
+        tags,
+        data,
         sort_text: Some(sort_text),
         ..CompletionItem::default()
     }
@@ -419,7 +468,9 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::document::DocumentStore;
+    use lsp_types::Documentation;
     use std::collections::BTreeSet;
+    use std::fmt::Write;
     use std::str::FromStr;
 
     fn ctx_and_index(march: &str) -> (CompileContext, WorkspaceIndex) {
@@ -433,11 +484,15 @@ mod tests {
         )
     }
 
+    fn items_vec(resp: CompletionResponse) -> Vec<CompletionItem> {
+        match resp {
+            CompletionResponse::Array(arr) => arr,
+            CompletionResponse::List(list) => list.items,
+        }
+    }
+
     fn labels(resp: CompletionResponse) -> BTreeSet<String> {
-        let CompletionResponse::Array(arr) = resp else {
-            return BTreeSet::new();
-        };
-        arr.into_iter().map(|i| i.label).collect()
+        items_vec(resp).into_iter().map(|i| i.label).collect()
     }
 
     #[test]
@@ -532,12 +587,10 @@ mod tests {
         index.upsert_open_document(doc);
         let plain = CompletionClientCaps::default();
 
-        // `fadd.` -> replaces columns 4..9 and appends trailing space (E3)
-        let CompletionResponse::Array(arr) =
-            provide_completion(doc, Position::new(1, 9), &db, &mut ctx, &mut index, plain).unwrap()
-        else {
-            panic!();
-        };
+        // `fadd.` -> without resolveSupport, docs are inlined directly and `data` is omitted (Item 4)
+        let arr = items_vec(
+            provide_completion(doc, Position::new(1, 9), &db, &mut ctx, &mut index, plain).unwrap(),
+        );
         let fadd_s = arr.iter().find(|i| i.label == "fadd.s").expect("fadd.s");
         let Some(CompletionTextEdit::Edit(te)) = &fadd_s.text_edit else {
             panic!("missing textEdit");
@@ -548,14 +601,13 @@ mod tests {
         );
         assert_eq!(te.new_text, "fadd.s ");
         assert!(fadd_s.documentation.is_some());
+        assert!(fadd_s.data.is_none());
 
         // `lui a0, %` -> only relocations, replacing 12..13
-        let CompletionResponse::Array(relocs) =
+        let relocs = items_vec(
             provide_completion(doc, Position::new(3, 13), &db, &mut ctx, &mut index, plain)
-                .unwrap()
-        else {
-            panic!();
-        };
+                .unwrap(),
+        );
         assert!(relocs.iter().all(|i| i.label.starts_with('%')));
         assert!(!relocs.iter().any(|i| i.label == "my_sym"));
         let Some(CompletionTextEdit::Edit(rte)) = &relocs[0].text_edit else {
@@ -579,12 +631,11 @@ mod tests {
         let caps = CompletionClientCaps {
             snippet_support: true,
             label_details_support: true,
+            resolve_documentation_support: true,
         };
-        let CompletionResponse::Array(arr) =
-            provide_completion(doc, Position::new(0, 4), &db, &mut ctx, &mut index, caps).unwrap()
-        else {
-            panic!();
-        };
+        let arr = items_vec(
+            provide_completion(doc, Position::new(0, 4), &db, &mut ctx, &mut index, caps).unwrap(),
+        );
 
         // `add` (Item 2): real instruction -> alias -> special TLS form
         let mut add_items: Vec<_> = arr
@@ -627,14 +678,30 @@ mod tests {
             panic!();
         };
         assert_eq!(ld_first.new_text, "ld ${1:rd}, ${2:0}(${3:rs1})$0");
-        let Some(Documentation::MarkupContent(ld_doc0)) = &ld_items[0].documentation else {
-            panic!("expected markup doc");
+        let ld_resolved = resolve_completion_item(ld_items[0].clone(), &db);
+        let Some(Documentation::MarkupContent(ld_doc0)) = &ld_resolved.documentation else {
+            panic!("expected markup doc on resolve");
         };
         assert!(
             ld_doc0
                 .value
                 .starts_with("```riscv\nld rd, imm12(rs1)\n```")
         );
+
+        // Deprecated alias carries DEPRECATED tag and sorts after preferred instruction
+        let deprecated_vpopc = arr
+            .iter()
+            .find(|i| i.filter_text.as_deref() == Some("frsr"))
+            .expect("frsr");
+        assert_eq!(
+            deprecated_vpopc.tags.as_deref(),
+            Some([CompletionItemTag::DEPRECATED].as_slice())
+        );
+        let active_frcsr = arr
+            .iter()
+            .find(|i| i.filter_text.as_deref() == Some("frcsr"))
+            .expect("frcsr");
+        assert!(active_frcsr.sort_text < deprecated_vpopc.sort_text);
 
         // `csrw`: register variant must sort before immediate variant
         let mut csrw_items: Vec<_> = arr
@@ -658,11 +725,9 @@ mod tests {
         assert_eq!(ret_te.new_text, "ret");
 
         // Directive snippets
-        let CompletionResponse::Array(dirs) =
-            provide_completion(doc, Position::new(1, 5), &db, &mut ctx, &mut index, caps).unwrap()
-        else {
-            panic!();
-        };
+        let dirs = items_vec(
+            provide_completion(doc, Position::new(1, 5), &db, &mut ctx, &mut index, caps).unwrap(),
+        );
         let mac = dirs
             .iter()
             .find(|i| i.filter_text.as_deref() == Some(".macro"))
@@ -713,47 +778,82 @@ mod tests {
             te.new_text.clone()
         };
 
-        let CompletionResponse::Array(l1) =
-            provide_completion(doc, Position::new(1, 8), &db, &mut ctx, &mut index, plain).unwrap()
-        else {
-            panic!();
-        };
+        let l1 = items_vec(
+            provide_completion(doc, Position::new(1, 8), &db, &mut ctx, &mut index, plain).unwrap(),
+        );
         assert_eq!(new_text_for(&l1, "addi"), "addi ");
         assert_eq!(new_text_for(&l1, "ret"), "ret");
         assert_eq!(new_text_for(&l1, ".globl"), ".globl ");
         assert_eq!(new_text_for(&l1, ".text"), ".text");
 
-        let CompletionResponse::Array(l5) =
+        let l5 = items_vec(
             provide_completion(doc, Position::new(5, 12), &db, &mut ctx, &mut index, plain)
-                .unwrap()
-        else {
-            panic!();
-        };
+                .unwrap(),
+        );
         assert_eq!(new_text_for(&l5, "arch"), "arch, ");
         assert_eq!(new_text_for(&l5, "rvc"), "rvc");
 
-        let CompletionResponse::Array(l6) =
+        let l6 = items_vec(
             provide_completion(doc, Position::new(6, 10), &db, &mut ctx, &mut index, plain)
-                .unwrap()
-        else {
-            panic!();
-        };
+                .unwrap(),
+        );
         assert_eq!(new_text_for(&l6, "a0"), "a0, ");
 
-        let CompletionResponse::Array(l7) =
+        let l7 = items_vec(
             provide_completion(doc, Position::new(7, 16), &db, &mut ctx, &mut index, plain)
-                .unwrap()
-        else {
-            panic!();
-        };
+                .unwrap(),
+        );
         assert_eq!(new_text_for(&l7, "my_lbl"), "my_lbl");
 
-        let CompletionResponse::Array(l8) =
-            provide_completion(doc, Position::new(8, 9), &db, &mut ctx, &mut index, plain).unwrap()
-        else {
-            panic!();
-        };
+        let l8 = items_vec(
+            provide_completion(doc, Position::new(8, 9), &db, &mut ctx, &mut index, plain).unwrap(),
+        );
         assert_eq!(new_text_for(&l8, "t0"), "t0, ");
         assert_eq!(new_text_for(&l8, "my_lbl"), "my_lbl");
+    }
+
+    #[test]
+    fn symbol_cap_sets_is_incomplete_and_filters_by_prefix() {
+        let db = Database::load().expect("db");
+        let mut store = DocumentStore::new().expect("store");
+        let uri = lsp_types::Uri::from_str("file:///many_syms.S").expect("uri");
+        let mut src = String::new();
+        for i in 0..260 {
+            let _ = writeln!(src, "sym_{i:03}:\n    nop");
+        }
+        src.push_str("    j \n    j sym_25\n");
+        let doc = store.open(uri, 1, src);
+        let (mut ctx, mut index) = ctx_and_index("rv64gc");
+        index.upsert_open_document(doc);
+        let plain = CompletionClientCaps::default();
+
+        // Line 520: `    j ` -> 260 symbols > MAX_SYMBOL_CANDIDATES (200) -> isIncomplete: true
+        let CompletionResponse::List(unfiltered) =
+            provide_completion(doc, Position::new(520, 6), &db, &mut ctx, &mut index, plain)
+                .unwrap()
+        else {
+            panic!("expected CompletionList");
+        };
+        assert!(unfiltered.is_incomplete);
+        let ref_count = unfiltered
+            .items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::REFERENCE))
+            .count();
+        assert_eq!(ref_count, MAX_SYMBOL_CANDIDATES);
+
+        // Line 521: `    j sym_25` -> prefix filter catches late symbol `sym_259`
+        let CompletionResponse::List(filtered) = provide_completion(
+            doc,
+            Position::new(521, 12),
+            &db,
+            &mut ctx,
+            &mut index,
+            plain,
+        )
+        .unwrap() else {
+            panic!("expected CompletionList");
+        };
+        assert!(filtered.items.iter().any(|i| i.label == "sym_259"));
     }
 }

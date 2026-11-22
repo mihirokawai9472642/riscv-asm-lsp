@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 use lsp_server::{Message, RequestId, Response};
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 
-use crate::context::{CompileContext, effective_options_at_line, uri_to_path};
+use crate::context::{CompileContext, MarchSpec, effective_options_at_line, uri_to_path};
 use crate::data::{CsrEntry, Database, DirectiveEntry, InstructionEntry, RegisterEntry};
 use crate::diagnostics::MessageSink;
 use crate::document::Document;
@@ -130,6 +130,13 @@ pub fn prepare_hover(
     };
     let range = doc.line_index.byte_span_to_range(&doc.text, start, end);
 
+    if token == "\\@" {
+        return HoverResolution::Ready(Some(make_hover(
+            "### Macro invocation counter (`\\@`)\n\nExpands to the number of macros executed so far, useful for generating unique local labels such as `loop_\\@:` inside `.macro` bodies.".to_owned(),
+            range,
+        )));
+    }
+
     let (line_start, line_end, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
     let line_prefix = doc.text.get(line_start..start).unwrap_or("");
     let full_line = doc.text.get(line_start..line_end).unwrap_or("");
@@ -172,6 +179,11 @@ pub fn prepare_hover(
         Target::Register(reg)
     } else if let Some(csr) = db.csr(&token) {
         Target::Csr(csr)
+    } else if is_csr_operand_position(line_prefix, db, &effective_march)
+        && let Some(num) = parse_csr_number(&token)
+        && let Some(csr) = db.csr_by_number(num)
+    {
+        Target::Csr(csr)
     } else if let Some(sym) = index.token_hover_info(&doc.uri, offset, ctx) {
         Target::Symbol(sym)
     } else if let Some(inst) = db.instruction(&token) {
@@ -206,7 +218,7 @@ pub fn prepare_hover(
                 return HoverResolution::Ready(Some(make_hover(base_markdown, range)));
             };
 
-            let known_consts = index.constant_defines_in_scope(&doc.uri, ctx);
+            let known_consts = index.constant_defines_in_scope(&doc.uri, Some(offset), ctx);
             let mut const_pairs: Vec<(String, String)> = known_consts
                 .iter()
                 .filter(|(name, _)| expand::contains_ident(&stmt, name))
@@ -238,6 +250,7 @@ pub fn prepare_hover(
                     key,
                     clang_flags: file_ctx.clang_flags,
                     file_dir,
+                    working_dir: file_ctx.working_dir,
                     cpp_preamble,
                     known_consts,
                 },
@@ -396,6 +409,103 @@ fn is_statement_head(line_prefix: &str) -> bool {
     }
     if let Some(after_colon) = trimmed.rsplit(':').next() {
         return trimmed.contains(':') && after_colon.trim().is_empty();
+    }
+    false
+}
+
+fn parse_csr_number(token: &str) -> Option<u16> {
+    let val = if let Some(hex) = token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"))
+    {
+        u16::from_str_radix(hex, 16).ok()?
+    } else if let Some(bin) = token
+        .strip_prefix("0b")
+        .or_else(|| token.strip_prefix("0B"))
+    {
+        u16::from_str_radix(bin, 2).ok()?
+    } else if token.starts_with('0') && token.len() > 1 {
+        u16::from_str_radix(&token[1..], 8).ok()?
+    } else {
+        token.parse::<u16>().ok()?
+    };
+    (val <= 0xfff).then_some(val)
+}
+
+fn is_csr_operand_position(line_prefix: &str, db: &Database, march: &MarchSpec) -> bool {
+    let mut stmt = line_prefix
+        .rsplit(';')
+        .next()
+        .unwrap_or(line_prefix)
+        .trim_start();
+    while let Some(colon) = stmt.find(':') {
+        let label = stmt[..colon].trim();
+        if !label.is_empty() && !label.contains(char::is_whitespace) {
+            stmt = stmt[colon + 1..].trim_start();
+        } else {
+            break;
+        }
+    }
+    let Some(ws) = stmt.find(char::is_whitespace) else {
+        return false;
+    };
+    let head = stmt[..ws].trim();
+    let args = stmt[ws..].trim_start();
+    let Some(inst) = db.instruction(head) else {
+        return false;
+    };
+
+    let mut depth = 0usize;
+    let mut op_idx = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = args.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_single {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == '\'' {
+                in_single = false;
+            }
+        } else if in_double {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == '"' {
+                in_double = false;
+            }
+        } else {
+            match ch {
+                '\'' => in_single = true,
+                '"' => in_double = true,
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => op_idx += 1,
+                _ => {}
+            }
+        }
+    }
+    if depth > 0 {
+        return false;
+    }
+
+    let mut matched_march = false;
+    for v in &inst.variants {
+        if march.supports_extensions(&v.required_extensions, v.xlen) {
+            matched_march = true;
+            if v.operands
+                .get(op_idx)
+                .is_some_and(|op| op.class == "csr_sysreg")
+            {
+                return true;
+            }
+        }
+    }
+    if !matched_march {
+        return inst.variants.iter().any(|v| {
+            v.operands
+                .get(op_idx)
+                .is_some_and(|op| op.class == "csr_sysreg")
+        });
     }
     false
 }
@@ -633,5 +743,75 @@ mod tests {
         assert!(!multi_md.contains("0bAAAA"));
         assert!(!multi_md.contains(".Lpcrel_hi0:"));
         assert!(multi_md.contains("auipc t0, %pcrel_hi(sym)  # (relocated)"));
+    }
+
+    #[test]
+    fn hover_handles_numeric_csr_set_reassignment_irp_and_macro_counter() {
+        let db = Database::load().expect("db");
+        let mut store = DocumentStore::new().expect("store");
+        let uri = lsp_types::Uri::from_str("file:///extra.S").expect("uri");
+        let src = "\
+.set CNT, 1
+    li t0, CNT
+.set CNT, CNT + 1
+    li t1, CNT
+    csrr a0, 0x105
+    addi a0, zero, 0x105
+.macro UNIQ
+loop_\\@:
+.endm
+.irp r, a0, a1
+    mv \\r, zero
+.endr
+";
+        let doc = store.open(uri, 1, src.to_owned());
+        let (mut ctx, mut index) = test_ctx_and_index();
+        let tools = ToolRunner::new(
+            "/nonexistent/clang".to_owned(),
+            "/nonexistent/llvm-mc".to_owned(),
+        );
+        index.upsert_open_document(doc);
+
+        let h_before = provide_hover(doc, Position::new(1, 12), &db, &mut ctx, &mut index, &tools)
+            .expect("CNT before");
+        let HoverContents::Markup(m) = h_before.contents else {
+            panic!();
+        };
+        assert!(m.value.contains("symbol (.set)"), "got: {}", m.value);
+        assert!(m.value.contains("`1`"), "got: {}", m.value);
+        assert!(m.value.contains("Assigned 2 times"), "got: {}", m.value);
+
+        let h_after = provide_hover(doc, Position::new(3, 12), &db, &mut ctx, &mut index, &tools)
+            .expect("CNT after");
+        let HoverContents::Markup(m) = h_after.contents else {
+            panic!();
+        };
+        assert!(m.value.contains("`CNT + 1`"), "got: {}", m.value);
+
+        let h_csr_num = provide_hover(doc, Position::new(4, 15), &db, &mut ctx, &mut index, &tools)
+            .expect("numeric CSR 0x105");
+        let HoverContents::Markup(m) = h_csr_num.contents else {
+            panic!();
+        };
+        assert!(m.value.contains("`stvec`") && m.value.contains("0x105"));
+
+        // Immediate operand on `addi` must NOT resolve as CSR 0x105
+        assert!(
+            provide_hover(doc, Position::new(5, 21), &db, &mut ctx, &mut index, &tools).is_none()
+        );
+
+        let h_counter = provide_hover(doc, Position::new(7, 6), &db, &mut ctx, &mut index, &tools)
+            .expect("\\@ hover");
+        let HoverContents::Markup(m) = h_counter.contents else {
+            panic!();
+        };
+        assert!(m.value.contains("Macro invocation counter"));
+
+        let h_irp = provide_hover(doc, Position::new(10, 8), &db, &mut ctx, &mut index, &tools)
+            .expect("\\r hover");
+        let HoverContents::Markup(m) = h_irp.contents else {
+            panic!();
+        };
+        assert!(m.value.contains(".irp parameter"));
     }
 }
