@@ -2,12 +2,13 @@ mod expand;
 mod format;
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use lsp_server::{Message, RequestId, Response};
+use lsp_server::{ErrorCode, Message, RequestId, Response};
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Range};
 
 use crate::context::{CompileContext, MarchSpec, effective_options_at_line, uri_to_path};
@@ -16,6 +17,7 @@ use crate::diagnostics::MessageSink;
 use crate::document::Document;
 use crate::index::{SymbolHoverInfo, WorkspaceIndex};
 use crate::position::word_range_at;
+use crate::preprocessor::{HashLineKind, classify_hash_line};
 use crate::tools::{ToolKind, ToolRunner};
 
 use expand::{
@@ -23,8 +25,8 @@ use expand::{
     collect_cpp_preamble, resolve_expansion,
 };
 use format::{
-    format_csr_hover, format_directive_hover, format_instruction_hover, format_register_hover,
-    format_symbol_hover,
+    format_cpp_directive_hover, format_csr_hover, format_directive_hover, format_instruction_hover,
+    format_register_hover, format_symbol_hover,
 };
 
 #[derive(Clone, Default)]
@@ -64,10 +66,29 @@ impl HoverWorker {
         let (tx, rx) = mpsc::channel::<HoverJob>();
 
         let handle = thread::spawn(move || {
+            let mut logged_panic = false;
             for job in rx {
-                let hover = finish_deferred_hover(job.deferred, &tools, &cache_bg);
-                if let Ok(val) = serde_json::to_value(hover) {
-                    lsp_sender(Message::Response(Response::new_ok(job.id, val)));
+                let job_id = job.id.clone();
+                match catch_unwind(AssertUnwindSafe(|| {
+                    finish_deferred_hover(job.deferred, &tools, &cache_bg)
+                })) {
+                    Ok(hover) => {
+                        if let Ok(val) = serde_json::to_value(hover) {
+                            lsp_sender(Message::Response(Response::new_ok(job_id, val)));
+                        }
+                    }
+                    Err(payload) => {
+                        if !logged_panic {
+                            logged_panic = true;
+                            let msg = crate::server::panic_payload_message(&*payload);
+                            eprintln!("riscv-asm-lsp: panic in hover worker: {msg}");
+                        }
+                        lsp_sender(Message::Response(Response::new_err(
+                            job_id,
+                            ErrorCode::InternalError as i32,
+                            "internal error during hover expansion".to_owned(),
+                        )));
+                    }
                 }
             }
         });
@@ -102,12 +123,38 @@ pub fn prepare_hover(
     tools: &ToolRunner,
     cache: &ExpansionCache,
 ) -> HoverResolution {
+    let file_ctx = ctx.for_uri(&doc.uri);
+    index.sync_preprocessed(&doc.uri, file_ctx.preprocessed);
+    let offset = doc.line_index.position_to_offset(&doc.text, pos);
+    let (line_start, line_end, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
+    let full_line = doc.text.get(line_start..line_end).unwrap_or("");
+
+    // Hover on `#<directive>` keyword in preprocessed files before `#include` path resolution
+    if file_ctx.preprocessed
+        && let Some(HashLineKind::Directive {
+            hash_offset,
+            name,
+            name_span,
+            ..
+        }) = classify_hash_line(full_line)
+        && offset >= line_start + hash_offset
+        && offset <= line_start + name_span.1
+    {
+        let range = doc.line_index.byte_span_to_range(
+            &doc.text,
+            line_start + hash_offset,
+            line_start + name_span.1,
+        );
+        return HoverResolution::Ready(Some(make_hover(format_cpp_directive_hover(name), range)));
+    }
+
     // Handle `#include` / `.include` lines even though tree-sitter classifies `#include` as comment
     if let Some((inc_target, resolved_path)) =
         index.resolve_include_on_line(&doc.uri, pos.line, ctx)
     {
-        let (ls, le, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
-        let range = doc.line_index.byte_span_to_range(&doc.text, ls, le);
+        let range = doc
+            .line_index
+            .byte_span_to_range(&doc.text, line_start, line_end);
         let md = format!(
             "### Include `{inc_target}`\n\nResolved path: `{}`",
             resolved_path.display()
@@ -115,9 +162,7 @@ pub fn prepare_hover(
         return HoverResolution::Ready(Some(make_hover(md, range)));
     }
 
-    let file_ctx = ctx.for_uri(&doc.uri);
-    let offset = doc.line_index.position_to_offset(&doc.text, pos);
-    if is_inside_comment(&doc.text, doc, offset) {
+    if is_inside_comment(&doc.text, doc, offset, file_ctx.preprocessed) {
         return HoverResolution::Ready(None);
     }
 
@@ -137,9 +182,7 @@ pub fn prepare_hover(
         )));
     }
 
-    let (line_start, line_end, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
     let line_prefix = doc.text.get(line_start..start).unwrap_or("");
-    let full_line = doc.text.get(line_start..line_end).unwrap_or("");
     let is_head = is_statement_head(line_prefix);
 
     let (effective_march, option_lines) =
@@ -242,7 +285,11 @@ pub fn prepare_hover(
             }
 
             let file_dir = uri_to_path(&doc.uri).and_then(|p| p.parent().map(Path::to_path_buf));
-            let cpp_preamble = collect_cpp_preamble(&doc.text, pos.line as usize);
+            let cpp_preamble = if file_ctx.preprocessed {
+                collect_cpp_preamble(&doc.text, pos.line as usize)
+            } else {
+                Vec::new()
+            };
             HoverResolution::Deferred(Box::new(DeferredHover {
                 base_markdown,
                 range,
@@ -376,7 +423,7 @@ fn strip_comment_from_line(line: &str) -> &str {
     line
 }
 
-fn is_inside_comment(text: &str, doc: &Document, offset: usize) -> bool {
+fn is_inside_comment(text: &str, doc: &Document, offset: usize, preprocessed: bool) -> bool {
     if let Some(tree) = &doc.tree {
         let probe = if offset >= text.len() && offset > 0 {
             offset - 1
@@ -386,12 +433,12 @@ fn is_inside_comment(text: &str, doc: &Document, offset: usize) -> bool {
         if let Some(node) = tree.root_node().descendant_for_byte_range(probe, probe)
             && node.kind() == "comment"
         {
-            // `#define` lines in `.S` files parse as `comment` in tree-sitter-riscv; allow hover on them (Item 4d).
-            if let Ok(raw) = node.utf8_text(text.as_bytes())
-                && raw
-                    .trim_start()
-                    .strip_prefix('#')
-                    .is_some_and(|r| r.trim_start().starts_with("define"))
+            if preprocessed
+                && let Ok(raw) = node.utf8_text(text.as_bytes())
+                && matches!(
+                    classify_hash_line(raw),
+                    Some(HashLineKind::Directive { .. })
+                )
             {
                 return false;
             }

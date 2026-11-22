@@ -15,7 +15,7 @@ accepts is what the server offers.
 | --- | --- |
 | `server/` | The language server crate (binary `riscv-asm-lsp`) |
 | `xtask/` | Data generation (`cargo xtask gen-data`) |
-| `data/` | Generated instruction data, the difference report, hand-written directive descriptions |
+| `data/` | Generated instruction data, the difference report, hand-written directive descriptions, and `supplements.json` |
 | `zed/` | The Zed extension (its own crate, built for `wasm32-wasip2`; not a workspace member) |
 | `tests/` | Integration tests and assembly fixtures |
 | `docs/design.md` | The design |
@@ -56,8 +56,9 @@ available there.
 
 ## Code style
 
-- Rust stable, edition 2024. Formatting follows `rustfmt`; clippy reports no
-  warnings.
+- Rust stable, edition 2024 (minimum Rust version 1.90, required by
+  `tree-sitter` 0.27; checked by the `msrv` CI job). Formatting follows
+  `rustfmt`; clippy reports no warnings.
 - Keep dependencies few. Before adding one, check that its license is
   permissive (MIT, Apache-2.0, BSD, zlib or similar) and that it is
   maintained. Do not copy code or text from GPL or GFDL sources (for example
@@ -121,6 +122,10 @@ and every change reaches it through a pull request.
   agent contributed, it says so there as well.
 - Merging happens through the pull request after review; delete the branch
   afterwards.
+- Dependabot pull requests run the CI workflow and are reviewed and merged
+  through the pull request like other changes; `tree-sitter-riscv` and
+  `zed_extension_api` are ignored in `.github/dependabot.yml` and updated by
+  hand together with `zed/extension.toml` / the supported Zed version.
 
 ## Commits
 

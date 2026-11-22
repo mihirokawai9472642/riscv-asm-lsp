@@ -153,6 +153,13 @@ impl DocumentStore {
     pub fn iter(&self) -> impl Iterator<Item = &Document> {
         self.docs.values()
     }
+
+    pub fn all_open_snapshots(&self) -> Vec<(Uri, i32, String)> {
+        self.docs
+            .values()
+            .map(|doc| (doc.uri.clone(), doc.version, doc.text.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]

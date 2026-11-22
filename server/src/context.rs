@@ -327,6 +327,15 @@ pub struct FileContext {
     pub working_dir: Option<PathBuf>,
     pub client_root: Option<PathBuf>,
     pub canon_root: Option<PathBuf>,
+    pub preprocessed: bool,
+}
+
+pub fn is_preprocessed_by_suffix(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("S" | "sx" | "h" | "H" | "hpp") => true,
+        Some("s" | "inc") => false,
+        _ => true,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,6 +354,7 @@ struct ParsedCompileEntry {
     march: Option<String>,
     include_dirs: Vec<PathBuf>,
     quote_dirs: Vec<PathBuf>,
+    lang_override: Option<bool>,
 }
 
 pub struct CompileContext {
@@ -434,9 +444,25 @@ impl CompileContext {
         }
     }
 
+    pub fn is_preprocessed_path(&mut self, path: &Path) -> bool {
+        self.reload_if_needed();
+        let norm = normalize_path(path);
+        if let Some(entry) = self.entries.get(&norm).or_else(|| self.entries.get(path))
+            && let Some(override_pre) = entry.lang_override
+        {
+            return override_pre;
+        }
+        is_preprocessed_by_suffix(path)
+    }
+
     pub fn for_uri(&mut self, uri: &Uri) -> FileContext {
         self.reload_if_needed();
-        if let Some(path) = uri_to_path(uri) {
+        let path_opt = uri_to_path(uri);
+        let default_pre = path_opt
+            .as_deref()
+            .map(is_preprocessed_by_suffix)
+            .unwrap_or(true);
+        if let Some(path) = path_opt {
             let norm = normalize_path(&path);
             if let Some(entry) = self.entries.get(&norm).or_else(|| self.entries.get(&path)) {
                 let target = entry
@@ -460,6 +486,7 @@ impl CompileContext {
                     working_dir: Some(entry.directory.clone()),
                     client_root: self.workspace_root.clone(),
                     canon_root: self.workspace_root.as_deref().map(normalize_path),
+                    preprocessed: entry.lang_override.unwrap_or(default_pre),
                 };
             }
         }
@@ -475,6 +502,7 @@ impl CompileContext {
             working_dir: self.workspace_root.clone(),
             client_root: self.workspace_root.clone(),
             canon_root: self.workspace_root.as_deref().map(normalize_path),
+            preprocessed: default_pre,
         }
     }
 }
@@ -549,6 +577,7 @@ fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
     let mut march = None;
     let mut include_dirs = Vec::new();
     let mut quote_dirs = Vec::new();
+    let mut lang_override = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -557,7 +586,19 @@ fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
             i += 1;
             continue;
         }
-        if let Some(val) = arg.strip_prefix("--target=") {
+        if let Some(lang) = arg.strip_prefix("-x") {
+            let lang_val = if lang.is_empty() && i + 1 < args.len() {
+                i += 1;
+                args[i].as_str()
+            } else {
+                lang
+            };
+            match lang_val {
+                "assembler-with-cpp" => lang_override = Some(true),
+                "assembler" => lang_override = Some(false),
+                _ => {}
+            }
+        } else if let Some(val) = arg.strip_prefix("--target=") {
             target = Some(val.to_owned());
             clang_flags.push(arg.clone());
         } else if (arg == "--target" || arg == "-target") && i + 1 < args.len() {
@@ -716,6 +757,7 @@ fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
         march,
         include_dirs,
         quote_dirs,
+        lang_override,
     }
 }
 
@@ -934,5 +976,47 @@ mod tests {
                 .iter()
                 .any(|f| f.contains("--fatal-warnings"))
         );
+    }
+
+    #[test]
+    fn preprocessor_mode_respects_suffix_and_x_flag_overrides() {
+        assert!(is_preprocessed_by_suffix(Path::new("boot.S")));
+        assert!(is_preprocessed_by_suffix(Path::new("boot.sx")));
+        assert!(is_preprocessed_by_suffix(Path::new("defs.h")));
+        assert!(!is_preprocessed_by_suffix(Path::new("boot.s")));
+        assert!(!is_preprocessed_by_suffix(Path::new("inc.inc")));
+
+        let tmp =
+            std::env::temp_dir().join(format!("riscv_asm_lsp_pre_ctx_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let dot_s = tmp.join("plain.s");
+        let dot_big_s = tmp.join("raw.S");
+        fs::write(&dot_s, "nop\n").unwrap();
+        fs::write(&dot_big_s, "nop\n").unwrap();
+        fs::write(
+            tmp.join("compile_commands.json"),
+            serde_json::json!([
+                {
+                    "directory": tmp.to_string_lossy(),
+                    "arguments": ["clang", "-x", "assembler-with-cpp", "-c", dot_s.to_string_lossy()],
+                    "file": dot_s.to_string_lossy()
+                },
+                {
+                    "directory": tmp.to_string_lossy(),
+                    "arguments": ["clang", "-xassembler", "-c", dot_big_s.to_string_lossy()],
+                    "file": dot_big_s.to_string_lossy()
+                }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut ctx = CompileContext::new(Some(tmp.clone()), Config::default());
+        assert!(ctx.is_preprocessed_path(&dot_s));
+        assert!(ctx.for_uri(&path_to_uri(&dot_s).unwrap()).preprocessed);
+        assert!(!ctx.is_preprocessed_path(&dot_big_s));
+        assert!(!ctx.for_uri(&path_to_uri(&dot_big_s).unwrap()).preprocessed);
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

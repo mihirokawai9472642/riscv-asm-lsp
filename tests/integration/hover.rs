@@ -333,3 +333,116 @@ fn hover_llvm_mc_and_clang_expansions() {
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn preprocessor_hover_distinguishes_s_suffix_and_x_override() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_hover_pp_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    std::fs::write(tmp.join("defs.h"), "#define HDR_CONST 9\n").unwrap();
+    std::fs::write(tmp.join("inc.inc"), ".equ INC_CONST, 7\n").unwrap();
+
+    let pre_path = tmp.join("pre.S");
+    let raw_path = tmp.join("raw.s");
+    let forced_pre_path = tmp.join("forced_pre.s");
+    let forced_raw_path = tmp.join("forced_raw.S");
+
+    let pre_src = "\
+#include \"defs.h\"
+#define A 1
+# if the value is zero
+_start:
+    li a0, A
+    li a1, HDR_CONST
+";
+    let raw_src = "\
+#include \"defs.h\"
+    .include \"inc.inc\"
+#define A 1
+_start:
+    li a0, A
+    li a1, HDR_CONST
+    li a2, INC_CONST
+";
+    std::fs::write(&pre_path, pre_src).unwrap();
+    std::fs::write(&raw_path, raw_src).unwrap();
+    std::fs::write(&forced_pre_path, pre_src).unwrap();
+    std::fs::write(&forced_raw_path, pre_src).unwrap();
+
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([
+            {
+                "directory": tmp.to_string_lossy(),
+                "arguments": ["clang", "-x", "assembler-with-cpp", "-c", forced_pre_path.to_string_lossy()],
+                "file": forced_pre_path.to_string_lossy()
+            },
+            {
+                "directory": tmp.to_string_lossy(),
+                "arguments": ["clang", "-xassembler", "-c", forced_raw_path.to_string_lossy()],
+                "file": forced_raw_path.to_string_lossy()
+            }
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let pre_uri = path_to_uri(&pre_path);
+    let raw_uri = path_to_uri(&raw_path);
+    let forced_pre_uri = path_to_uri(&forced_pre_path);
+    let forced_raw_uri = path_to_uri(&forced_raw_path);
+
+    let mut client = LspClient::start(None, Some(&root_uri));
+    client.open_doc(&pre_uri, 1, pre_src);
+    client.open_doc(&raw_uri, 1, raw_src);
+    client.open_doc(&forced_pre_uri, 1, pre_src);
+    client.open_doc(&forced_raw_uri, 1, pre_src);
+
+    // `.S` preprocessed: directive hover, include path hover, `#define` symbol hover
+    let h_inc_kw = hover_markdown(&mut client, &pre_uri, 0, 3).expect("#include keyword hover");
+    assert!(
+        h_inc_kw.contains("#include") && h_inc_kw.contains("not treated as a comment"),
+        "got: {h_inc_kw}"
+    );
+    let h_inc_path = hover_markdown(&mut client, &pre_uri, 0, 12).expect("#include path hover");
+    assert!(h_inc_path.contains("defs.h"), "got: {h_inc_path}");
+    let h_def_kw = hover_markdown(&mut client, &pre_uri, 1, 3).expect("#define keyword hover");
+    assert!(h_def_kw.contains("#define"), "got: {h_def_kw}");
+    let h_if_kw = hover_markdown(&mut client, &pre_uri, 2, 2).expect("#if keyword hover");
+    assert!(h_if_kw.contains("#if"), "got: {h_if_kw}");
+    let h_a = hover_markdown(&mut client, &pre_uri, 4, 11).expect("A hover");
+    assert!(h_a.contains("#define") && h_a.contains("1"), "got: {h_a}");
+    let h_hdr = hover_markdown(&mut client, &pre_uri, 5, 14).expect("HDR_CONST hover");
+    assert!(
+        h_hdr.contains("#define") && h_hdr.contains("9"),
+        "got: {h_hdr}"
+    );
+
+    // `.s` not preprocessed: `#include` and `#define` are comments, `.include` still resolves
+    assert!(hover_markdown(&mut client, &raw_uri, 0, 3).is_none());
+    assert!(hover_markdown(&mut client, &raw_uri, 0, 12).is_none());
+    assert!(hover_markdown(&mut client, &raw_uri, 2, 3).is_none());
+    assert!(hover_markdown(&mut client, &raw_uri, 2, 8).is_none());
+    assert!(hover_markdown(&mut client, &raw_uri, 4, 11).is_none());
+    assert!(hover_markdown(&mut client, &raw_uri, 5, 14).is_none());
+    let h_asm_inc = hover_markdown(&mut client, &raw_uri, 1, 16).expect(".include path hover");
+    assert!(h_asm_inc.contains("inc.inc"), "got: {h_asm_inc}");
+    let h_inc_sym = hover_markdown(&mut client, &raw_uri, 6, 14).expect("INC_CONST hover");
+    assert!(h_inc_sym.contains("7"), "got: {h_inc_sym}");
+
+    // `.s` with `-x assembler-with-cpp` acts as preprocessed
+    let h_forced_a = hover_markdown(&mut client, &forced_pre_uri, 4, 11).expect("forced .s A");
+    assert!(h_forced_a.contains("#define") && h_forced_a.contains("1"));
+    let h_forced_kw =
+        hover_markdown(&mut client, &forced_pre_uri, 2, 2).expect("forced .s #if hover");
+    assert!(h_forced_kw.contains("#if"));
+
+    // `.S` with `-x assembler` acts as non-preprocessed
+    assert!(hover_markdown(&mut client, &forced_raw_uri, 0, 3).is_none());
+    assert!(hover_markdown(&mut client, &forced_raw_uri, 4, 11).is_none());
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

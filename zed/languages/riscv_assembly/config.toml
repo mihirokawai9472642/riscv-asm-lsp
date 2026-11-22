@@ -1,6 +1,6 @@
 name = "RISC-V Assembly"
 grammar = "riscv"
-path_suffixes = ["S", "s", "riscv"]
+path_suffixes = ["S", "s", "sx", "riscv"]
 line_comments = ["// ", "# "]
 block_comment = { start = "/*", prefix = "", end = "*/", tab_size = 1 }
 documentation_comment = { start = "/*", prefix = "* ", end = "*/", tab_size = 1 }

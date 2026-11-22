@@ -324,6 +324,19 @@ pub(super) fn format_directive_hover(dir: &DirectiveEntry) -> String {
     md.trim_end().to_owned()
 }
 
+pub(super) fn format_cpp_directive_hover(name: &str) -> String {
+    let mut md = String::new();
+    let _ = writeln!(md, "```c\n#{name}\n```");
+    if let Some(desc) = crate::preprocessor::directive_description(name) {
+        let _ = writeln!(md, "\n{desc}");
+    }
+    let _ = writeln!(
+        md,
+        "\n> In preprocessed assembly files, a `#` line starting with a directive name is handled by the C preprocessor, not treated as a comment. Use `//` for comments."
+    );
+    md.trim_end().to_owned()
+}
+
 pub(super) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
     let mut md = String::new();
     let kind_label = match info.kind {

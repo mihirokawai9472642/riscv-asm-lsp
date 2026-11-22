@@ -4,6 +4,7 @@ mod scope;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
@@ -20,7 +21,9 @@ use lsp_types::{
 };
 use tree_sitter::Parser;
 
-use crate::context::{display_path_for_client, normalize_path, path_to_uri, uri_to_path};
+use crate::context::{
+    display_path_for_client, is_preprocessed_by_suffix, normalize_path, path_to_uri, uri_to_path,
+};
 use crate::diagnostics::MessageSink;
 use crate::document::Document;
 use crate::position::LineIndex;
@@ -117,6 +120,7 @@ pub struct FileIndex {
     pub path: PathBuf,
     pub uri: Uri,
     pub is_header: bool,
+    pub preprocessed: bool,
     pub text: String,
     pub line_index: LineIndex,
     pub definitions: Vec<SymbolDef>,
@@ -256,16 +260,20 @@ impl WorkspaceIndex {
         self.bg_rx = Some(rx);
 
         let handle = thread::spawn(move || {
-            let scanned = scan_directory_in_background(
-                &root,
-                Some(&root),
-                canon_root.as_deref(),
-                cap,
-                &cancel,
-                &seen,
-                &tx,
-                progress_sink.as_ref(),
-            );
+            let mut logged_panic = false;
+            let scanned = run_guarded_index_step("background scan", &mut logged_panic, || {
+                scan_directory_in_background(
+                    &root,
+                    Some(&root),
+                    canon_root.as_deref(),
+                    cap,
+                    &cancel,
+                    &seen,
+                    &tx,
+                    progress_sink.as_ref(),
+                )
+            })
+            .unwrap_or(0);
             if let Some(sink) = &progress_sink {
                 send_progress(
                     sink,
@@ -305,16 +313,19 @@ impl WorkspaceIndex {
         self.priority_rxs.push(rx);
 
         let handle = thread::spawn(move || {
-            scan_directory_in_background(
-                &display_root,
-                client_root.as_deref(),
-                canon_root.as_deref(),
-                MAX_WORKSPACE_FILES,
-                &cancel,
-                &seen,
-                &tx,
-                None,
-            );
+            let mut logged_panic = false;
+            let _ = run_guarded_index_step("priority scan", &mut logged_panic, || {
+                scan_directory_in_background(
+                    &display_root,
+                    client_root.as_deref(),
+                    canon_root.as_deref(),
+                    MAX_WORKSPACE_FILES,
+                    &cancel,
+                    &seen,
+                    &tx,
+                    None,
+                );
+            });
         });
         self.priority_handles.push(handle);
     }
@@ -402,17 +413,60 @@ impl WorkspaceIndex {
             return;
         };
         let norm = normalize_path(&path);
+        let preprocessed = is_preprocessed_by_suffix(&norm);
+        self.upsert_open_document_with_preprocessed(doc, preprocessed);
+    }
+
+    pub fn upsert_open_document_with_preprocessed(&mut self, doc: &Document, preprocessed: bool) {
+        let Some(path) = uri_to_path(&doc.uri) else {
+            return;
+        };
+        let norm = normalize_path(&path);
         let is_header = is_header_path(&norm);
+        let effective_pre = if is_header { true } else { preprocessed };
         let entry = build_file_index(
             norm.clone(),
             doc.uri.clone(),
             is_header,
+            effective_pre,
             doc.text.clone(),
             doc.line_index.clone(),
             doc.tree.as_ref(),
             &mut self.parser,
         );
         self.files.insert(norm, entry);
+    }
+
+    pub fn sync_preprocessed(&mut self, uri: &Uri, preprocessed: bool) {
+        let Some(path) = uri_to_path(uri) else {
+            return;
+        };
+        let norm = normalize_path(&path);
+        self.sync_preprocessed_path(&norm, preprocessed);
+    }
+
+    pub(super) fn sync_preprocessed_path(&mut self, path: &Path, preprocessed: bool) {
+        let norm = normalize_path(path);
+        let Some(existing) = self.files.get(&norm) else {
+            return;
+        };
+        if existing.is_header || existing.preprocessed == preprocessed {
+            return;
+        }
+        let uri = existing.uri.clone();
+        let text = existing.text.clone();
+        let line_index = existing.line_index.clone();
+        let rebuilt = build_file_index(
+            norm.clone(),
+            uri,
+            false,
+            preprocessed,
+            text,
+            line_index,
+            None,
+            &mut self.parser,
+        );
+        self.files.insert(norm, rebuilt);
     }
 
     pub fn reload_path(&mut self, uri: &Uri) {
@@ -590,8 +644,16 @@ fn parse_file_from_disk(
     let uri = path_to_uri(&display)?;
     let line_index = LineIndex::new(&text);
     let is_header = is_header_path(&norm);
+    let preprocessed = is_preprocessed_by_suffix(&norm);
     Some(build_file_index(
-        norm, uri, is_header, text, line_index, None, parser,
+        norm,
+        uri,
+        is_header,
+        preprocessed,
+        text,
+        line_index,
+        None,
+        parser,
     ))
 }
 
@@ -659,6 +721,7 @@ fn scan_directory_in_background(
         });
 
     let mut scanned = 0usize;
+    let mut logged_panic = false;
     for entry in builder.build().flatten() {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -674,9 +737,11 @@ fn scan_directory_in_background(
             eprintln!("riscv-asm-lsp: workspace scan capped at {cap} files");
             break;
         }
-        if let Some(file_idx) =
+        let parsed = run_guarded_index_step("parse file", &mut logged_panic, || {
             parse_file_from_disk(path, None, client_root, canon_root, Some(seen), &mut parser)
-        {
+        })
+        .flatten();
+        if let Some(file_idx) = parsed {
             if tx.send(file_idx).is_err() {
                 break;
             }
@@ -696,6 +761,23 @@ fn scan_directory_in_background(
         }
     }
     scanned
+}
+
+fn run_guarded_index_step<T, F>(context: &str, logged_panic: &mut bool, f: F) -> Option<T>
+where
+    F: FnOnce() -> T,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(val) => Some(val),
+        Err(payload) => {
+            if !*logged_panic {
+                *logged_panic = true;
+                let msg = crate::server::panic_payload_message(&*payload);
+                eprintln!("riscv-asm-lsp: panic in index worker ({context}): {msg}");
+            }
+            None
+        }
+    }
 }
 
 fn send_progress(sink: &MessageSink, progress: WorkDoneProgress) {
@@ -897,5 +979,18 @@ mod tests {
         let h_irp = idx.token_hover_info(&uri, irp_use_off, &mut ctx).unwrap();
         assert_eq!(h_irp.name, "r");
         assert_eq!(h_irp.param_label.as_deref(), Some(".irp parameter"));
+    }
+
+    #[test]
+    fn index_worker_guard_catches_panic_and_keeps_running() {
+        let mut logged = false;
+        let first: Option<usize> = run_guarded_index_step("test", &mut logged, || {
+            panic!("simulated index panic");
+        });
+        assert!(first.is_none());
+        assert!(logged);
+
+        let second = run_guarded_index_step("test", &mut logged, || 42usize);
+        assert_eq!(second, Some(42));
     }
 }

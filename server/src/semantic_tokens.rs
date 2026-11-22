@@ -10,6 +10,7 @@ use crate::context::CompileContext;
 use crate::data::Database;
 use crate::document::Document;
 use crate::index::{SymKind, WorkspaceIndex, parse_macro_var_token, parse_numeric_ref_token};
+use crate::preprocessor::{HashLineKind, classify_hash_line};
 
 pub const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::new("register"),
@@ -18,6 +19,8 @@ pub const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::new("constant"),
     SemanticTokenType::new("macro"),
     SemanticTokenType::new("parameter"),
+    SemanticTokenType::new("preprocessor"),
+    SemanticTokenType::COMMENT,
 ];
 
 pub const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[SemanticTokenModifier::DECLARATION];
@@ -28,6 +31,8 @@ const IDX_LABEL: u32 = 2;
 const IDX_CONSTANT: u32 = 3;
 const IDX_MACRO: u32 = 4;
 const IDX_PARAMETER: u32 = 5;
+const IDX_PREPROCESSOR: u32 = 6;
+const IDX_COMMENT: u32 = 7;
 
 const MOD_DECLARATION: u32 = 1 << 0;
 
@@ -72,10 +77,57 @@ fn collect_semantic_tokens(
     index: &mut WorkspaceIndex,
     range_filter: Option<Range>,
 ) -> Option<SemanticTokens> {
+    let file_ctx = ctx.for_uri(&doc.uri);
+    index.sync_preprocessed(&doc.uri, file_ctx.preprocessed);
     let symbol_kinds = index.symbol_kinds_in_scope(&doc.uri, ctx);
     let mut raw = Vec::new();
     let mut decl_spans: HashSet<(usize, usize)> = HashSet::new();
     let mut local_non_csr_defs: HashSet<String> = HashSet::new();
+
+    for line_idx in 0..doc.line_index.line_count() {
+        let (ls, ce, _) = doc.line_index.line_bounds(&doc.text, line_idx);
+        let line = doc.text.get(ls..ce).unwrap_or("");
+        let Some(kind) = classify_hash_line(line) else {
+            continue;
+        };
+        if file_ctx.preprocessed {
+            match kind {
+                HashLineKind::Directive {
+                    hash_offset,
+                    name_span,
+                    ..
+                } => raw.push(RawToken {
+                    start_byte: ls + hash_offset,
+                    end_byte: ls + name_span.1,
+                    token_type: IDX_PREPROCESSOR,
+                    modifiers: 0,
+                }),
+                HashLineKind::LineMarker {
+                    hash_offset,
+                    num_span,
+                } => raw.push(RawToken {
+                    start_byte: ls + hash_offset,
+                    end_byte: ls + num_span.1,
+                    token_type: IDX_PREPROCESSOR,
+                    modifiers: 0,
+                }),
+                HashLineKind::NullDirective { hash_offset } => raw.push(RawToken {
+                    start_byte: ls + hash_offset,
+                    end_byte: ls + hash_offset + 1,
+                    token_type: IDX_PREPROCESSOR,
+                    modifiers: 0,
+                }),
+                HashLineKind::Comment { .. } => {}
+            }
+        } else {
+            raw.push(RawToken {
+                start_byte: ls + kind.hash_offset(),
+                end_byte: ce,
+                token_type: IDX_COMMENT,
+                modifiers: 0,
+            });
+        }
+    }
 
     if let Some(file_idx) = index.file_by_uri(&doc.uri) {
         for def in &file_idx.definitions {

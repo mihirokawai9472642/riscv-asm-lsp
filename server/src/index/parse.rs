@@ -5,6 +5,9 @@ use lsp_types::Uri;
 use tree_sitter::{Node, Parser};
 
 use crate::position::{LineIndex, clamp_to_char_boundary};
+use crate::preprocessor::{
+    parse_cpp_define_line as parse_cpp_define_raw, parse_cpp_include_line as parse_cpp_include_raw,
+};
 
 use super::{
     AssignKind, FileIndex, IncludeDirective, MacroParamDef, RefKind, RepeatScope, SymKind,
@@ -21,7 +24,7 @@ pub(super) fn is_header_path(path: &Path) -> bool {
 pub(super) fn is_eager_asm_path(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("S" | "s" | "inc")
+        Some("S" | "s" | "sx" | "inc")
     )
 }
 
@@ -67,10 +70,12 @@ pub(super) fn resolve_include_path(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_file_index(
     path: PathBuf,
     uri: Uri,
     is_header: bool,
+    preprocessed: bool,
     text: String,
     line_index: LineIndex,
     existing_tree: Option<&tree_sitter::Tree>,
@@ -93,9 +98,11 @@ pub(super) fn build_file_index(
     let mut includes = Vec::new();
     let mut globals = HashSet::new();
 
-    // Scan preprocessor `#include` and `#define` lines (tree-sitter treats `#...` as comment).
-    scan_cpp_includes(&text, &mut includes);
-    scan_cpp_defines(&text, &mut definitions);
+    if preprocessed {
+        // Scan preprocessor `#include` and `#define` lines (tree-sitter treats `#...` as comment).
+        scan_cpp_includes(&text, &mut includes);
+        scan_cpp_defines(&text, &mut definitions);
+    }
 
     if let Some(tree) = tree {
         let mut ctx = ExtractCtx {
@@ -132,6 +139,7 @@ pub(super) fn build_file_index(
         path,
         uri,
         is_header: false,
+        preprocessed,
         text,
         line_index,
         definitions,
@@ -152,6 +160,7 @@ fn parse_header_file(path: PathBuf, uri: Uri, text: String, line_index: LineInde
         path,
         uri,
         is_header: true,
+        preprocessed: true,
         text,
         line_index,
         definitions,
@@ -166,62 +175,30 @@ fn scan_cpp_defines(text: &str, definitions: &mut Vec<SymbolDef>) {
     let mut line_start = 0usize;
     for raw_line in text.split_inclusive('\n') {
         let line_end = line_start + raw_line.len();
-        let trimmed = raw_line.trim();
-        if let Some(rest) = trimmed.strip_prefix('#')
-            && let Some(after_def) = rest.trim_start().strip_prefix("define")
-            && after_def.chars().next().is_some_and(char::is_whitespace)
-        {
-            let after_ws = after_def.trim_start();
-            let ident: String = after_ws
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            let after_ident = &after_ws[ident.len()..];
-            if !ident.is_empty()
-                && (after_ident.is_empty()
-                    || after_ident.starts_with(char::is_whitespace)
-                    || after_ident.starts_with('('))
-                && let Some(rel) = raw_line.find(&ident)
-            {
-                let name_start = line_start + rel;
-                let name_end = name_start + ident.len();
-                let raw_val = if after_ident.starts_with('(') {
-                    after_ident.trim()
-                } else {
-                    strip_cpp_line_comment(after_ident).trim()
-                };
-                let value_text = (!raw_val.is_empty()).then(|| raw_val.to_owned());
-                definitions.push(SymbolDef {
-                    name: ident,
-                    kind: SymKind::Define,
-                    assign_kind: None,
-                    name_span: (name_start, name_end),
-                    full_span: (line_start, line_end),
-                    line_text: trimmed.to_owned(),
-                    value_text,
-                    params: Vec::new(),
-                    enclosing_label_idx: None,
-                    enclosing_macro_idx: None,
-                });
-            }
+        if let Some(parsed) = parse_cpp_define_raw(raw_line) {
+            definitions.push(SymbolDef {
+                name: parsed.name.to_owned(),
+                kind: SymKind::Define,
+                assign_kind: None,
+                name_span: (
+                    line_start + parsed.name_span.0,
+                    line_start + parsed.name_span.1,
+                ),
+                full_span: (line_start, line_end),
+                line_text: raw_line.trim().to_owned(),
+                value_text: parsed.value,
+                params: Vec::new(),
+                enclosing_label_idx: None,
+                enclosing_macro_idx: None,
+            });
         }
         line_start = line_end;
     }
 }
 
-fn strip_cpp_line_comment(s: &str) -> &str {
-    if let Some(idx) = s.find("//") {
-        &s[..idx]
-    } else if let Some(idx) = s.find("/*") {
-        &s[..idx]
-    } else {
-        s
-    }
-}
-
 fn scan_cpp_includes(text: &str, out: &mut Vec<IncludeDirective>) {
     for line in text.lines() {
-        if let Some(inc) = parse_cpp_include_line(line.trim()) {
+        if let Some(inc) = parse_cpp_include_line(line) {
             out.push(inc);
         }
     }
@@ -237,24 +214,8 @@ pub(super) fn parse_asm_include_line(trimmed: &str) -> Option<IncludeDirective> 
     })
 }
 
-pub(super) fn parse_cpp_include_line(trimmed: &str) -> Option<IncludeDirective> {
-    let rest = trimmed.strip_prefix('#')?.trim_start();
-    let after_inc = rest.strip_prefix("include")?.trim_start();
-    if let Some(inner) = after_inc.strip_prefix('"') {
-        let end = inner.find('"')?;
-        return Some(IncludeDirective {
-            target: inner[..end].to_owned(),
-            is_system: false,
-        });
-    }
-    if let Some(inner) = after_inc.strip_prefix('<') {
-        let end = inner.find('>')?;
-        return Some(IncludeDirective {
-            target: inner[..end].to_owned(),
-            is_system: true,
-        });
-    }
-    None
+pub(super) fn parse_cpp_include_line(line: &str) -> Option<IncludeDirective> {
+    parse_cpp_include_raw(line).map(|(target, is_system)| IncludeDirective { target, is_system })
 }
 
 struct ExtractCtx<'a> {

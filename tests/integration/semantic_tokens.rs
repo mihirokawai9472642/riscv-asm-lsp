@@ -135,3 +135,117 @@ fn semantic_tokens_full_and_range_classify_arch_and_project_symbols() {
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn semantic_tokens_distinguish_preprocessor_and_comment_per_file() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_sem_pp_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let pre_s = tmp.join("pre.S");
+    let raw_s = tmp.join("raw.s");
+    let forced_pre = tmp.join("forced.s");
+    let forced_raw = tmp.join("forced_raw.S");
+
+    let src = "\
+#include \"regs.h\"
+# define X 5
+# 100 note
+# just a comment
+_start:
+    li a0, X
+    nop # if define error
+";
+    std::fs::write(&pre_s, src).unwrap();
+    std::fs::write(&raw_s, src).unwrap();
+    std::fs::write(&forced_pre, src).unwrap();
+    std::fs::write(&forced_raw, src).unwrap();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([
+            {
+                "directory": tmp.to_string_lossy(),
+                "arguments": ["clang", "-x", "assembler-with-cpp", "-c", forced_pre.to_string_lossy()],
+                "file": forced_pre.to_string_lossy()
+            },
+            {
+                "directory": tmp.to_string_lossy(),
+                "arguments": ["clang", "-x", "assembler", "-c", forced_raw.to_string_lossy()],
+                "file": forced_raw.to_string_lossy()
+            }
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let pre_uri = path_to_uri(&pre_s);
+    let raw_uri = path_to_uri(&raw_s);
+    let forced_pre_uri = path_to_uri(&forced_pre);
+    let forced_raw_uri = path_to_uri(&forced_raw);
+
+    let mut client = LspClient::start(None, Some(&root_uri));
+    let token_types = legend_token_types(&client);
+    let idx_of = |name: &str| {
+        token_types
+            .iter()
+            .position(|t| t == name)
+            .expect("legend type") as u32
+    };
+    let pp_idx = idx_of("preprocessor");
+    let comment_idx = idx_of("comment");
+    let const_idx = idx_of("constant");
+
+    for uri in [&pre_uri, &forced_pre_uri] {
+        client.open_doc(uri, 1, src);
+        let resp = client.send_request(
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": uri.as_str() } }),
+        );
+        let data: Vec<u32> = resp.result.expect("tokens")["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect();
+        let decoded = decode_semantic_tokens(src, &data);
+        assert!(decoded.contains(&("#include".to_owned(), pp_idx, 0)));
+        assert!(decoded.contains(&("# define".to_owned(), pp_idx, 0)));
+        assert!(decoded.contains(&("# 100".to_owned(), pp_idx, 0)));
+        assert!(decoded.contains(&("X".to_owned(), const_idx, 1)));
+        assert!(decoded.contains(&("X".to_owned(), const_idx, 0)));
+        assert!(
+            !decoded
+                .iter()
+                .any(|(lex, _, _)| lex == "# just a comment" || lex.contains("if define error"))
+        );
+    }
+
+    for uri in [&raw_uri, &forced_raw_uri] {
+        client.open_doc(uri, 1, src);
+        let resp = client.send_request(
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": uri.as_str() } }),
+        );
+        let data: Vec<u32> = resp.result.expect("tokens")["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u32)
+            .collect();
+        let decoded = decode_semantic_tokens(src, &data);
+        assert!(decoded.contains(&("#include \"regs.h\"".to_owned(), comment_idx, 0)));
+        assert!(decoded.contains(&("# define X 5".to_owned(), comment_idx, 0)));
+        assert!(decoded.contains(&("# 100 note".to_owned(), comment_idx, 0)));
+        assert!(decoded.contains(&("# just a comment".to_owned(), comment_idx, 0)));
+        assert!(!decoded.iter().any(|(_, ty, _)| *ty == pp_idx));
+        assert!(
+            !decoded
+                .iter()
+                .any(|(lex, ty, _)| lex == "X" && *ty == const_idx)
+        );
+    }
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

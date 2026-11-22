@@ -9,8 +9,12 @@ fn main() {
         return;
     }
 
-    if let Err(err) = riscv_asm_lsp::server::run_stdio() {
-        eprintln!("riscv-asm-lsp fatal error: {err}");
-        std::process::exit(1);
+    match riscv_asm_lsp::server::run_stdio() {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(err) => {
+            eprintln!("riscv-asm-lsp fatal error: {err}");
+            std::process::exit(1);
+        }
     }
 }

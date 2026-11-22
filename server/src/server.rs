@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -73,7 +75,7 @@ pub fn server_capabilities() -> ServerCapabilities {
     }
 }
 
-pub fn run_stdio() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
     let db = Database::load()?;
     let (connection, io_threads) = Connection::stdio();
 
@@ -133,8 +135,24 @@ pub fn run_stdio() -> Result<(), Box<dyn std::error::Error>> {
     diag_worker.shutdown();
     hover_worker.shutdown();
     drop(connection);
-    io_threads.join()?;
-    loop_res
+
+    let (shutdown_received, exit_code) = match loop_res {
+        Ok(res) => res,
+        Err(err) => {
+            let _ = io_threads.join();
+            return Err(err);
+        }
+    };
+    if let Err(err) = io_threads.join() {
+        if shutdown_received && exit_code == 0 {
+            eprintln!("riscv-asm-lsp: non-fatal teardown error after shutdown: {err}");
+            return Ok(0);
+        }
+        if exit_code == 0 {
+            return Err(err.into());
+        }
+    }
+    Ok(exit_code)
 }
 
 fn make_message_sink(connection: &Connection) -> MessageSink {
@@ -159,7 +177,7 @@ fn register_watched_files_if_supported(connection: &Connection, init_params: &In
     let reg_options = DidChangeWatchedFilesRegistrationOptions {
         watchers: vec![
             FileSystemWatcher {
-                glob_pattern: GlobPattern::String("**/*.{S,s,h,inc}".to_owned()),
+                glob_pattern: GlobPattern::String("**/*.{S,s,sx,h,inc}".to_owned()),
                 kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
             },
             FileSystemWatcher {
@@ -234,8 +252,11 @@ fn main_loop(
     diag_worker: &DiagnosticsWorker,
     hover_worker: &HoverWorker,
     completion_caps: CompletionClientCaps,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(bool, i32), Box<dyn std::error::Error>> {
     let mut dirty_docs: HashMap<String, (Uri, Instant)> = HashMap::new();
+    let mut logged_panics: HashSet<String> = HashSet::new();
+    let mut shutdown_received = false;
+    let mut exit_code = 0i32;
 
     loop {
         let msg = if let Some(next_due) = dirty_docs.values().map(|(_, due)| *due).min() {
@@ -243,7 +264,7 @@ fn main_loop(
             match connection.receiver.recv_timeout(remaining) {
                 Ok(m) => m,
                 Err(err) if err.is_timeout() => {
-                    flush_due_dirty_docs(store, index, &mut dirty_docs);
+                    flush_due_dirty_docs(ctx, store, index, &mut dirty_docs);
                     continue;
                 }
                 Err(_) => break,
@@ -257,61 +278,147 @@ fn main_loop(
 
         match msg {
             Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    return Ok(());
+                if req.method == "shutdown" {
+                    if shutdown_received {
+                        reply_err(
+                            connection,
+                            req.id,
+                            ErrorCode::InvalidRequest,
+                            "server is already shutting down".to_owned(),
+                        )?;
+                    } else {
+                        reply_ok(connection, req.id, serde_json::Value::Null)?;
+                        shutdown_received = true;
+                    }
+                    continue;
                 }
-                if !matches!(
-                    req.method.as_str(),
-                    "completionItem/resolve" | "textDocument/codeAction"
-                ) {
-                    flush_all_dirty_docs(store, index, &mut dirty_docs);
+                if shutdown_received {
+                    reply_err(
+                        connection,
+                        req.id,
+                        ErrorCode::InvalidRequest,
+                        "server is shutting down".to_owned(),
+                    )?;
+                    continue;
                 }
-                if matches!(
-                    req.method.as_str(),
-                    "textDocument/definition"
-                        | "textDocument/references"
-                        | "textDocument/rename"
-                        | "workspace/symbol"
-                ) {
-                    index.drain_background_wait(
-                        &|p| store.is_open_path(p),
-                        Duration::from_millis(200),
-                    );
-                } else {
-                    index.drain_background(&|p| store.is_open_path(p));
-                }
-                handle_request(
-                    connection,
-                    req,
-                    db,
-                    ctx,
-                    store,
-                    index,
-                    tools,
-                    &diag_worker.cache,
-                    hover_worker,
-                    completion_caps,
-                )?;
+                let id = req.id.clone();
+                let method = req.method.clone();
+                run_guarded_request(connection, id, &method, &mut logged_panics, || {
+                    if !matches!(
+                        method.as_str(),
+                        "completionItem/resolve" | "textDocument/codeAction"
+                    ) {
+                        flush_all_dirty_docs(ctx, store, index, &mut dirty_docs);
+                    }
+                    if matches!(
+                        method.as_str(),
+                        "textDocument/definition"
+                            | "textDocument/references"
+                            | "textDocument/rename"
+                            | "workspace/symbol"
+                    ) {
+                        index.drain_background_wait(
+                            &|p| store.is_open_path(p),
+                            Duration::from_millis(200),
+                        );
+                    } else {
+                        index.drain_background(&|p| store.is_open_path(p));
+                    }
+                    handle_request(
+                        connection,
+                        req,
+                        db,
+                        ctx,
+                        store,
+                        index,
+                        tools,
+                        &diag_worker.cache,
+                        hover_worker,
+                        completion_caps,
+                    )
+                })?;
             }
             Message::Notification(not) => {
-                index.drain_background(&|p| store.is_open_path(p));
-                handle_notification(
-                    &not.method,
-                    not.params,
-                    ctx,
-                    store,
-                    index,
-                    diag_worker,
-                    &mut dirty_docs,
-                );
+                if not.method == "exit" {
+                    exit_code = if shutdown_received { 0 } else { 1 };
+                    break;
+                }
+                if shutdown_received {
+                    continue;
+                }
+                let method = not.method;
+                let params = not.params;
+                run_guarded_notification(&method, &mut logged_panics, || {
+                    index.drain_background(&|p| store.is_open_path(p));
+                    handle_notification(
+                        &method,
+                        params,
+                        ctx,
+                        store,
+                        index,
+                        diag_worker,
+                        &mut dirty_docs,
+                    );
+                });
             }
             Message::Response(_) => {}
         }
     }
-    Ok(())
+    Ok((shutdown_received, exit_code))
+}
+
+pub(crate) fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_owned()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_owned()
+    }
+}
+
+fn run_guarded_request<F>(
+    connection: &Connection,
+    id: RequestId,
+    method: &str,
+    logged_panics: &mut HashSet<String>,
+    f: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(res) => res,
+        Err(payload) => {
+            if logged_panics.insert(method.to_owned()) {
+                let msg = panic_payload_message(&*payload);
+                eprintln!("riscv-asm-lsp: panic while handling request `{method}`: {msg}");
+            }
+            reply_err(
+                connection,
+                id,
+                ErrorCode::InternalError,
+                format!("internal error while handling {method}"),
+            )?;
+            Ok(())
+        }
+    }
+}
+
+fn run_guarded_notification<F>(method: &str, logged_panics: &mut HashSet<String>, f: F)
+where
+    F: FnOnce(),
+{
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(f))
+        && logged_panics.insert(method.to_owned())
+    {
+        let msg = panic_payload_message(&*payload);
+        eprintln!("riscv-asm-lsp: panic while handling notification `{method}`: {msg}");
+    }
 }
 
 fn flush_due_dirty_docs(
+    ctx: &mut CompileContext,
     store: &DocumentStore,
     index: &mut WorkspaceIndex,
     dirty_docs: &mut HashMap<String, (Uri, Instant)>,
@@ -325,19 +432,22 @@ fn flush_due_dirty_docs(
     for (key, uri) in due {
         dirty_docs.remove(&key);
         if let Some(doc) = store.get(&uri) {
-            index.upsert_open_document(doc);
+            let pre = ctx.for_uri(&uri).preprocessed;
+            index.upsert_open_document_with_preprocessed(doc, pre);
         }
     }
 }
 
 fn flush_all_dirty_docs(
+    ctx: &mut CompileContext,
     store: &DocumentStore,
     index: &mut WorkspaceIndex,
     dirty_docs: &mut HashMap<String, (Uri, Instant)>,
 ) {
     for (_, (uri, _)) in dirty_docs.drain() {
         if let Some(doc) = store.get(&uri) {
-            index.upsert_open_document(doc);
+            let pre = ctx.for_uri(&uri).preprocessed;
+            index.upsert_open_document_with_preprocessed(doc, pre);
         }
     }
 }
@@ -486,7 +596,15 @@ fn handle_request(
                     return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
                 }
             };
-            let result = provide_code_actions(&params.text_document.uri, params.range, diag_cache);
+            let doc = store.get(&params.text_document.uri);
+            let preprocessed = ctx.for_uri(&params.text_document.uri).preprocessed;
+            let result = provide_code_actions(
+                &params.text_document.uri,
+                params.range,
+                doc,
+                preprocessed,
+                diag_cache,
+            );
             reply_ok(connection, id, result)?;
         }
         "textDocument/semanticTokens/full" => {
@@ -543,10 +661,10 @@ fn handle_notification(
                 let version = p.text_document.version;
                 let text = p.text_document.text;
                 dirty_docs.remove(uri.as_str());
-                let doc = store.open(uri.clone(), version, text.clone());
-                index.upsert_open_document(doc);
-                index.prioritize_open_document(&uri);
                 let file_ctx = ctx.for_uri(&uri);
+                let doc = store.open(uri.clone(), version, text.clone());
+                index.upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
+                index.prioritize_open_document(&uri);
                 diag_worker.schedule(uri, version, text, file_ctx);
             }
         }
@@ -570,10 +688,10 @@ fn handle_notification(
                 let uri = p.text_document.uri;
                 dirty_docs.remove(uri.as_str());
                 if let Some(doc) = store.get(&uri) {
-                    index.upsert_open_document(doc);
+                    let file_ctx = ctx.for_uri(&uri);
+                    index.upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
                     let version = doc.version;
                     let text = doc.text.clone();
-                    let file_ctx = ctx.for_uri(&uri);
                     diag_worker.schedule(uri, version, text, file_ctx);
                 } else {
                     index.reload_path(&uri);
@@ -593,6 +711,11 @@ fn handle_notification(
                 for change in p.changes {
                     if change.uri.as_str().ends_with("compile_commands.json") {
                         ctx.reload_if_needed();
+                        for (open_uri, version, text) in store.all_open_snapshots() {
+                            let file_ctx = ctx.for_uri(&open_uri);
+                            index.sync_preprocessed(&open_uri, file_ctx.preprocessed);
+                            diag_worker.schedule(open_uri, version, text, file_ctx);
+                        }
                         continue;
                     }
                     // Open buffers stay authoritative until saved/closed
@@ -635,4 +758,39 @@ fn reply_err(
         message,
     )))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_guard_replies_internal_error_and_continues() {
+        let (server_conn, client_conn) = Connection::memory();
+        let mut logged = HashSet::new();
+
+        let res = run_guarded_request(
+            &server_conn,
+            RequestId::from(42),
+            "textDocument/hover",
+            &mut logged,
+            || panic!("simulated request panic"),
+        );
+        assert!(res.is_ok());
+        assert!(logged.contains("textDocument/hover"));
+
+        let msg = client_conn.receiver.recv().expect("error response");
+        let Message::Response(resp) = msg else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, RequestId::from(42));
+        let err = resp.response_result.expect_err("expected InternalError");
+        assert_eq!(err.code, ErrorCode::InternalError as i32);
+
+        // Notification panic does not abort either
+        run_guarded_notification("textDocument/didChange", &mut logged, || {
+            panic!("simulated notification panic");
+        });
+        assert!(logged.contains("textDocument/didChange"));
+    }
 }

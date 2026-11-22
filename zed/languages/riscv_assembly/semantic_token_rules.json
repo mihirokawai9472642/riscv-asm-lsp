@@ -22,5 +22,13 @@
   {
     "token_type": "parameter",
     "style": ["variable.parameter"]
+  },
+  {
+    "token_type": "preprocessor",
+    "style": ["preproc", "keyword"]
+  },
+  {
+    "token_type": "comment",
+    "style": ["comment"]
   }
 ]

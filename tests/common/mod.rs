@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,8 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 pub struct IncomingNotification {
+    #[allow(dead_code)]
+    pub id: Option<Value>,
     pub method: String,
     #[allow(dead_code)]
     pub params: Value,
@@ -31,8 +34,10 @@ enum RawMessage {
 
 pub struct LspClient {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     rx: Receiver<RawMessage>,
+    stderr_log: Arc<Mutex<String>>,
+    stderr_handle: Option<thread::JoinHandle<()>>,
     next_id: i64,
     pub notifications: VecDeque<IncomingNotification>,
     pub init_result: InitializeResult,
@@ -120,15 +125,20 @@ impl LspClient {
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
+        let stderr_log = Arc::new(Mutex::new(String::new()));
+        let stderr_log_bg = Arc::clone(&stderr_log);
 
         // Drain stderr so the child never blocks on stderr pipe buffer.
-        thread::spawn(move || {
+        let stderr_handle = Some(thread::spawn(move || {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if let Ok(mut guard) = stderr_log_bg.lock() {
+                    guard.push_str(&line);
+                }
                 line.clear();
             }
-        });
+        }));
 
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
@@ -143,13 +153,14 @@ impl LspClient {
                         error: msg.get("error").cloned(),
                     })
                 } else {
+                    let id = msg.get("id").cloned();
                     let method = msg
                         .get("method")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_owned();
                     let params = msg.get("params").cloned().unwrap_or(Value::Null);
-                    RawMessage::Notification(IncomingNotification { method, params })
+                    RawMessage::Notification(IncomingNotification { id, method, params })
                 };
                 if tx.send(parsed).is_err() {
                     break;
@@ -160,8 +171,10 @@ impl LspClient {
 
         let mut client = Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             rx,
+            stderr_log,
+            stderr_handle,
             next_id: 1,
             notifications: VecDeque::new(),
             init_result: InitializeResult::default(),
@@ -243,7 +256,7 @@ impl LspClient {
             "method": method,
             "params": params
         });
-        write_lsp_message(&mut self.stdin, &payload);
+        write_lsp_message(self.stdin.as_mut().expect("stdin open"), &payload);
 
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -277,7 +290,17 @@ impl LspClient {
             "method": method,
             "params": params
         });
-        write_lsp_message(&mut self.stdin, &payload);
+        write_lsp_message(self.stdin.as_mut().expect("stdin open"), &payload);
+    }
+
+    #[allow(dead_code)]
+    pub fn send_response(&mut self, id: Value, result: Value) {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        });
+        write_lsp_message(self.stdin.as_mut().expect("stdin open"), &payload);
     }
 
     pub fn open_doc(&mut self, uri: &Uri, version: i32, text: &str) {
@@ -342,15 +365,51 @@ impl LspClient {
         }
     }
 
-    pub fn shutdown_and_exit(mut self) {
+    pub fn shutdown_and_exit(self) {
+        let (status, stderr) = self.shutdown_and_exit_with_stderr();
+        assert!(
+            status.success(),
+            "server exited with non-zero status: {status}; stderr:\n{stderr}"
+        );
+    }
+
+    #[allow(dead_code)]
+    pub fn shutdown_and_exit_with_stderr(mut self) -> (ExitStatus, String) {
         let resp = self.send_request("shutdown", Value::Null);
         assert!(resp.error.is_none(), "shutdown failed: {:?}", resp.error);
         self.send_notification("exit", Value::Null);
+        self.stdin.take();
         let status = self.child.wait().expect("wait failed");
-        assert!(
-            status.success(),
-            "server exited with non-zero status: {status}"
-        );
+        if let Some(h) = self.stderr_handle.take() {
+            let _ = h.join();
+        }
+        let stderr = self
+            .stderr_log
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        (status, stderr)
+    }
+
+    #[allow(dead_code)]
+    pub fn exit_and_wait(mut self) -> ExitStatus {
+        self.send_notification("exit", Value::Null);
+        self.stdin.take();
+        let status = self.child.wait().expect("wait failed");
+        if let Some(h) = self.stderr_handle.take() {
+            let _ = h.join();
+        }
+        status
+    }
+
+    #[allow(dead_code)]
+    pub fn close_stdin_and_wait(mut self) -> ExitStatus {
+        self.stdin.take();
+        let status = self.child.wait().expect("wait failed");
+        if let Some(h) = self.stderr_handle.take() {
+            let _ = h.join();
+        }
+        status
     }
 }
 

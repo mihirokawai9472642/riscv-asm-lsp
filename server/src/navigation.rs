@@ -67,6 +67,8 @@ pub fn goto_definition(
         )));
     }
 
+    let pre = ctx.for_uri(uri).preprocessed;
+    index.sync_preprocessed(uri, pre);
     let file = index.file_by_uri(uri)?.clone();
     let offset = file.line_index.position_to_offset(&file.text, pos);
     let target = identify_target(index, &file, offset, ctx)?;
@@ -151,6 +153,8 @@ pub fn find_references(
     include_declaration: bool,
     ctx: &mut CompileContext,
 ) -> Option<Vec<Location>> {
+    let pre = ctx.for_uri(uri).preprocessed;
+    index.sync_preprocessed(uri, pre);
     let file = index.file_by_uri(uri)?.clone();
     let offset = file.line_index.position_to_offset(&file.text, pos);
     let target = identify_target(index, &file, offset, ctx)?;
@@ -164,6 +168,8 @@ pub fn document_highlight(
     pos: Position,
     ctx: &mut CompileContext,
 ) -> Option<Vec<DocumentHighlight>> {
+    let pre = ctx.for_uri(uri).preprocessed;
+    index.sync_preprocessed(uri, pre);
     let file = index.file_by_uri(uri)?.clone();
     let offset = file.line_index.position_to_offset(&file.text, pos);
     let target = identify_target(index, &file, offset, ctx)?;
@@ -188,6 +194,8 @@ pub fn prepare_rename(
     db: &Database,
     ctx: &mut CompileContext,
 ) -> Option<PrepareRenameResponse> {
+    let pre = ctx.for_uri(uri).preprocessed;
+    index.sync_preprocessed(uri, pre);
     let file = index.file_by_uri(uri)?.clone();
     let offset = file.line_index.position_to_offset(&file.text, pos);
     let (tok_start, tok_end) = word_range_at(&file.text, offset);
@@ -233,6 +241,8 @@ pub fn rename_symbol(
     db: &Database,
     ctx: &mut CompileContext,
 ) -> Result<Option<WorkspaceEdit>, String> {
+    let pre = ctx.for_uri(uri).preprocessed;
+    index.sync_preprocessed(uri, pre);
     let Some(file) = index.file_by_uri(uri).cloned() else {
         return Ok(None);
     };

@@ -17,6 +17,16 @@ fn zed_extension_queries_compile_and_match_kernel_entry() {
         std::fs::read_to_string(fixtures_dir().join("kernel_entry.S")).expect("read kernel_entry");
     let tree = parser.parse(&kernel_src, None).expect("parse kernel_entry");
 
+    let extra_preproc_src = "\
+#include \"regs.h\"
+#include_next <regs.h>
+#elifdef FOO
+#embed \"data.bin\"
+";
+    let extra_tree = parser
+        .parse(extra_preproc_src, None)
+        .expect("parse extra preproc");
+
     for file_name in [
         "highlights.scm",
         "injections.scm",
@@ -55,6 +65,29 @@ fn zed_extension_queries_compile_and_match_kernel_entry() {
                 preproc_texts.iter().any(|t| t.contains("#include")),
                 "expected #include matched as @preproc: {preproc_texts:?}"
             );
+
+            let mut extra_cursor = QueryCursor::new();
+            let mut extra_matches =
+                extra_cursor.matches(&query, extra_tree.root_node(), extra_preproc_src.as_bytes());
+            let mut extra_preproc = Vec::new();
+            while let Some(m) = extra_matches.next() {
+                for cap in m.captures() {
+                    if cap.index == preproc_idx {
+                        extra_preproc.push(
+                            cap.node
+                                .utf8_text(extra_preproc_src.as_bytes())
+                                .unwrap_or("")
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+            for pat in ["#include_next", "#elifdef", "#embed"] {
+                assert!(
+                    extra_preproc.iter().any(|t| t.contains(pat)),
+                    "expected {pat} matched as @preproc: {extra_preproc:?}"
+                );
+            }
         }
 
         if file_name == "injections.scm" {
@@ -80,6 +113,29 @@ fn zed_extension_queries_compile_and_match_kernel_entry() {
                 injected.iter().any(|t| t.contains("#include")),
                 "expected #include matched in injections.scm: {injected:?}"
             );
+
+            let mut extra_cursor = QueryCursor::new();
+            let mut extra_matches =
+                extra_cursor.matches(&query, extra_tree.root_node(), extra_preproc_src.as_bytes());
+            let mut extra_inj = Vec::new();
+            while let Some(m) = extra_matches.next() {
+                for cap in m.captures() {
+                    if cap.index == content_idx {
+                        extra_inj.push(
+                            cap.node
+                                .utf8_text(extra_preproc_src.as_bytes())
+                                .unwrap_or("")
+                                .to_owned(),
+                        );
+                    }
+                }
+            }
+            for pat in ["#include_next", "#elifdef", "#embed"] {
+                assert!(
+                    extra_inj.iter().any(|t| t.contains(pat)),
+                    "expected {pat} matched in injections.scm: {extra_inj:?}"
+                );
+            }
         }
 
         if file_name == "overrides.scm" {
@@ -113,6 +169,7 @@ fn zed_extension_queries_compile_and_match_kernel_entry() {
     }
 
     let cfg_toml = std::fs::read_to_string(lang_dir.join("config.toml")).expect("read config.toml");
+    assert!(cfg_toml.contains("\"sx\""));
     assert!(cfg_toml.contains("\"riscv\""));
     assert!(cfg_toml.contains("line_comments = [\"// \", \"# \"]"));
     assert!(cfg_toml.contains("block_comment = {"));
@@ -131,6 +188,9 @@ fn zed_extension_queries_compile_and_match_kernel_entry() {
         ("label", "label"),
         ("constant", "constant"),
         ("parameter", "variable.parameter"),
+        ("preprocessor", "preproc"),
+        ("preprocessor", "keyword"),
+        ("comment", "comment"),
     ] {
         let entry = rules
             .iter()

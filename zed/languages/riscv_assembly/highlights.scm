@@ -50,7 +50,7 @@
 
 ; Preprocessor directives (tree-sitter-riscv parses `#...` lines as comments)
 ((comment) @preproc
-  (#match? @preproc "^#\\s*(include|define|undef|if|ifdef|ifndef|elif|else|endif|error|warning|pragma|line)\\b"))
+  (#match? @preproc "^#\\s*(include|include_next|import|define|undef|if|ifdef|ifndef|elif|elifdef|elifndef|else|endif|error|warning|pragma|line|ident|sccs|assert|unassert|embed)\\b"))
 
 ; Comments
 (comment) @comment

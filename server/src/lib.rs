@@ -9,6 +9,7 @@ pub mod hover;
 pub mod index;
 pub mod navigation;
 pub mod position;
+pub mod preprocessor;
 pub mod semantic_tokens;
 pub mod server;
 pub mod symbols;

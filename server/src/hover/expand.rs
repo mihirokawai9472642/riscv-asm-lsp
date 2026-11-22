@@ -273,19 +273,8 @@ pub(super) fn collect_cpp_preamble(text: &str, up_to_line: usize) -> Vec<String>
         if idx >= up_to_line {
             break;
         }
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix('#') {
-            let kw = rest.trim_start();
-            if kw.starts_with("include")
-                || kw.starts_with("define")
-                || kw.starts_with("undef")
-                || kw.starts_with("if")
-                || kw.starts_with("else")
-                || kw.starts_with("elif")
-                || kw.starts_with("endif")
-            {
-                out.push(trimmed.to_owned());
-            }
+        if crate::preprocessor::is_cpp_preamble_line(line) {
+            out.push(line.trim().to_owned());
         }
     }
     out

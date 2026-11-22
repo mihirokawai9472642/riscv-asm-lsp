@@ -8,7 +8,13 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # `tree-sitter-riscv` must stay pinned to the same commit as `zed/extension.toml`.
+    ignore:
+      - dependency-name: "tree-sitter-riscv"
   - package-ecosystem: "cargo"
     directory: "/zed"
     schedule:
       interval: "weekly"
+    # `zed_extension_api` updates must be checked against the supported Zed version.
+    ignore:
+      - dependency-name: "zed_extension_api"

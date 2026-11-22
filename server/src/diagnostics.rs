@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
@@ -12,14 +13,22 @@ use lsp_types::{
 
 use crate::context::{FileContext, display_path_for_client, path_to_uri, uri_to_path};
 use crate::position::{LineIndex, clamp_to_char_boundary, word_range_at};
+use crate::preprocessor::{classify_hash_line, parse_cpp_define_line, parse_cpp_include_line};
 use crate::tools::ToolRunner;
 
 pub type MessageSink = Arc<dyn Fn(Message) + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroDefHint {
+    pub macro_name: String,
+    pub def_line: u32,
+}
 
 #[derive(Debug, Clone)]
 pub struct StoredDiagnostic {
     pub diagnostic: Diagnostic,
     pub suggestions: Vec<String>,
+    pub macro_def_hints: Vec<MacroDefHint>,
 }
 
 pub type DiagnosticsCache = Arc<Mutex<HashMap<String, Vec<StoredDiagnostic>>>>;
@@ -133,6 +142,7 @@ fn worker_loop(
     cache: DiagnosticsCache,
 ) {
     let mut pending: HashMap<String, PendingJob> = HashMap::new();
+    let mut logged_panic = false;
 
     loop {
         let msg = if let Some(next_due) = pending.values().map(|j| j.due_at).min() {
@@ -220,22 +230,30 @@ fn worker_loop(
             let Some(job) = pending.remove(&key) else {
                 continue;
             };
-            if is_stale(&latest_versions, &key, job.version) {
-                continue;
-            }
-            let Some(diags) = run_clang_diagnostics(&tools, &job.uri, &job.text, &job.file_ctx)
-            else {
-                continue;
-            };
-            if is_stale(&latest_versions, &key, job.version) {
-                continue;
-            }
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+                if is_stale(&latest_versions, &key, job.version) {
+                    return;
+                }
+                let Some(diags) = run_clang_diagnostics(&tools, &job.uri, &job.text, &job.file_ctx)
+                else {
+                    return;
+                };
+                if is_stale(&latest_versions, &key, job.version) {
+                    return;
+                }
 
-            let lsp_diags: Vec<Diagnostic> = diags.iter().map(|d| d.diagnostic.clone()).collect();
-            if let Ok(mut guard) = cache.lock() {
-                guard.insert(key, diags);
+                let lsp_diags: Vec<Diagnostic> =
+                    diags.iter().map(|d| d.diagnostic.clone()).collect();
+                if let Ok(mut guard) = cache.lock() {
+                    guard.insert(key, diags);
+                }
+                publish_diagnostics(&lsp_sender, job.uri, lsp_diags, Some(job.version));
+            })) && !logged_panic
+            {
+                logged_panic = true;
+                let msg = crate::server::panic_payload_message(&*payload);
+                eprintln!("riscv-asm-lsp: panic in diagnostics worker: {msg}");
             }
-            publish_diagnostics(&lsp_sender, job.uri, lsp_diags, Some(job.version));
         }
     }
 }
@@ -273,11 +291,6 @@ fn run_clang_diagnostics(
     file_ctx: &FileContext,
 ) -> Option<Vec<StoredDiagnostic>> {
     let path = uri_to_path(uri);
-    let is_plain_s = path
-        .as_deref()
-        .and_then(|p| p.extension())
-        .and_then(|e| e.to_str())
-        == Some("s");
 
     let mut args = file_ctx.clang_flags.clone();
     if let Some(dir) = path.as_deref().and_then(|p| p.parent()) {
@@ -285,10 +298,10 @@ fn run_clang_diagnostics(
         args.push(dir.to_string_lossy().into_owned());
     }
     args.push("-x".to_owned());
-    args.push(if is_plain_s {
-        "assembler".to_owned()
-    } else {
+    args.push(if file_ctx.preprocessed {
         "assembler-with-cpp".to_owned()
+    } else {
+        "assembler".to_owned()
     });
     args.extend([
         "-c".to_owned(),
@@ -302,6 +315,7 @@ fn run_clang_diagnostics(
         text,
         &output.stderr,
         path.as_deref(),
+        Some(uri),
         Some(file_ctx),
     ))
 }
@@ -323,17 +337,25 @@ struct ClangDiagLine<'a> {
 }
 
 pub fn parse_clang_output(text: &str, stderr: &str) -> Vec<StoredDiagnostic> {
-    parse_clang_output_with_ctx(text, stderr, None, None)
+    parse_clang_output_with_ctx(text, stderr, None, None, None)
 }
 
 pub fn parse_clang_output_with_ctx(
     text: &str,
     stderr: &str,
     doc_path: Option<&Path>,
+    doc_uri: Option<&Uri>,
     file_ctx: Option<&FileContext>,
 ) -> Vec<StoredDiagnostic> {
     let line_index = LineIndex::new(text);
     let lines: Vec<&str> = stderr.lines().collect();
+    let preprocessed = file_ctx.is_none_or(|c| c.preprocessed);
+    let defined_macros = if preprocessed {
+        collect_cpp_define_lines(text)
+    } else {
+        Vec::new()
+    };
+    let self_uri = doc_uri.cloned().or_else(|| doc_path.and_then(path_to_uri));
     let mut out = Vec::new();
     let mut seen: HashSet<(u32, u32, u32, u32, String)> = HashSet::new();
     let mut pending_includes: Vec<(String, u32)> = Vec::new();
@@ -382,22 +404,36 @@ pub fn parse_clang_output_with_ctx(
             j += 1;
         }
 
-        let (range, message, suggestions, related) = if diag.file == "<stdin>" {
+        let (range, message, suggestions, related, macro_def_hints) = if diag.file == "<stdin>" {
             let range = word_range_for_clang(&line_index, text, diag.line, diag.col);
             let msg = diag.message.to_owned();
             let suggestions = extract_suggestions(&msg);
-            (range, msg, suggestions, None)
+            let (related, hints) = if preprocessed && !defined_macros.is_empty() {
+                build_macro_def_hints(
+                    &line_index,
+                    text,
+                    range.start.line,
+                    diag.col,
+                    &msg,
+                    &defined_macros,
+                    self_uri.as_ref(),
+                    doc_path,
+                )
+            } else {
+                (None, Vec::new())
+            };
+            (range, msg, suggestions, related, hints)
         } else if diag.file == "<instantiation>" {
             if let Some(stdin_note) = macro_notes.iter().rfind(|n| n.file == "<stdin>") {
                 let range =
                     word_range_for_clang(&line_index, text, stdin_note.line, stdin_note.col);
                 let msg = format!("{} (in macro instantiation)", diag.message);
-                (range, msg, Vec::new(), None)
+                (range, msg, Vec::new(), None, Vec::new())
             } else if let Some(ext_note) = macro_notes
                 .iter()
                 .rfind(|n| n.file != "<instantiation>" && !is_clang_preprocessed_temp(n.file))
             {
-                build_included_file_diagnostic(
+                let (range, msg, sugg, rel) = build_included_file_diagnostic(
                     &line_index,
                     text,
                     &pending_includes,
@@ -407,14 +443,16 @@ pub fn parse_clang_output_with_ctx(
                     &format!("{} (in macro instantiation)", diag.message),
                     doc_path,
                     file_ctx,
-                )
+                    preprocessed,
+                );
+                (range, msg, sugg, rel, Vec::new())
             } else {
                 let msg = format!("{} (in macro instantiation)", diag.message);
                 let pos = Position::new(0, 0);
-                (Range::new(pos, pos), msg, Vec::new(), None)
+                (Range::new(pos, pos), msg, Vec::new(), None, Vec::new())
             }
         } else {
-            build_included_file_diagnostic(
+            let (range, msg, sugg, rel) = build_included_file_diagnostic(
                 &line_index,
                 text,
                 &pending_includes,
@@ -424,7 +462,9 @@ pub fn parse_clang_output_with_ctx(
                 diag.message,
                 doc_path,
                 file_ctx,
-            )
+                preprocessed,
+            );
+            (range, msg, sugg, rel, Vec::new())
         };
 
         pending_includes.clear();
@@ -451,6 +491,7 @@ pub fn parse_clang_output_with_ctx(
                 ..Diagnostic::default()
             },
             suggestions,
+            macro_def_hints,
         });
     }
 
@@ -468,13 +509,15 @@ fn build_included_file_diagnostic(
     err_msg: &str,
     doc_path: Option<&Path>,
     file_ctx: Option<&FileContext>,
+    preprocessed: bool,
 ) -> (
     Range,
     String,
     Vec<String>,
     Option<Vec<DiagnosticRelatedInformation>>,
 ) {
-    let target_line = resolve_include_line_for_error(text, pending_includes, err_file);
+    let target_line =
+        resolve_include_line_for_error(text, pending_includes, err_file, preprocessed);
     let range = trimmed_line_range(line_index, text, target_line);
     let display_name = Path::new(err_file)
         .file_name()
@@ -608,6 +651,7 @@ fn resolve_include_line_for_error(
     text: &str,
     pending_includes: &[(String, u32)],
     err_file: &str,
+    preprocessed: bool,
 ) -> usize {
     if let Some((_, line_1)) = pending_includes.iter().rev().find(|(f, _)| f == "<stdin>") {
         return line_1.saturating_sub(1) as usize;
@@ -621,10 +665,10 @@ fn resolve_include_line_for_error(
         .map(|(f, _)| f.as_str())
         .unwrap_or(err_file);
 
-    find_include_line_in_source(text, target_file).unwrap_or(0)
+    find_include_line_in_source(text, target_file, preprocessed).unwrap_or(0)
 }
 
-fn find_include_line_in_source(text: &str, target_file: &str) -> Option<usize> {
+fn find_include_line_in_source(text: &str, target_file: &str, preprocessed: bool) -> Option<usize> {
     let target_norm = target_file.replace('\\', "/");
     let target_name = Path::new(&target_norm)
         .file_name()
@@ -633,7 +677,7 @@ fn find_include_line_in_source(text: &str, target_file: &str) -> Option<usize> {
 
     let mut fallback = None;
     for (idx, line) in text.lines().enumerate() {
-        let Some(inc_target) = extract_include_target(line) else {
+        let Some(inc_target) = extract_include_target(line, preprocessed) else {
             continue;
         };
         let inc_norm = inc_target.replace('\\', "/");
@@ -651,28 +695,248 @@ fn find_include_line_in_source(text: &str, target_file: &str) -> Option<usize> {
     fallback
 }
 
-fn extract_include_target(line: &str) -> Option<&str> {
+fn extract_include_target(line: &str, preprocessed: bool) -> Option<String> {
     let trimmed = line.trim();
     if let Some(after) = trimmed.strip_prefix(".include")
         && after.chars().next().is_some_and(char::is_whitespace)
     {
         let inner = after.trim_start().strip_prefix('"')?;
         let end = inner.find('"')?;
-        return Some(&inner[..end]);
+        return Some(inner[..end].to_owned());
     }
-    if let Some(rest) = trimmed.strip_prefix('#')
-        && let Some(after) = rest.trim_start().strip_prefix("include")
-        && after.chars().next().is_some_and(char::is_whitespace)
+    if preprocessed {
+        return parse_cpp_include_line(line).map(|(target, _)| target);
+    }
+    None
+}
+
+struct CppDefineLine {
+    name: String,
+    def_line: u32,
+    value: Option<String>,
+    is_function_like: bool,
+}
+
+fn collect_cpp_define_lines(text: &str) -> Vec<CppDefineLine> {
+    let mut defs = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        if let Some(parsed) = parse_cpp_define_line(line) {
+            defs.push(CppDefineLine {
+                name: parsed.name.to_owned(),
+                def_line: idx as u32,
+                value: parsed.value,
+                is_function_like: parsed.is_function_like,
+            });
+        }
+    }
+    defs
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_macro_def_hints(
+    line_index: &LineIndex,
+    text: &str,
+    diag_line: u32,
+    diag_col_1based: u32,
+    diag_message: &str,
+    defined_macros: &[CppDefineLine],
+    doc_uri: Option<&Uri>,
+    doc_path: Option<&Path>,
+) -> (Option<Vec<DiagnosticRelatedInformation>>, Vec<MacroDefHint>) {
+    let (ls, ce, _) = line_index.line_bounds(text, diag_line as usize);
+    let raw_line = text.get(ls..ce).unwrap_or("");
+    if classify_hash_line(raw_line).is_some() {
+        return (None, Vec::new());
+    }
+    let code = strip_asm_comment_for_ident(raw_line);
+
+    let mut latest_by_name: HashMap<&str, (&CppDefineLine, usize)> = HashMap::new();
+    for def in defined_macros {
+        if def.def_line < diag_line
+            && let Some(ref_col) = find_ident_word_col(code, &def.name)
+        {
+            latest_by_name.insert(def.name.as_str(), (def, ref_col));
+        }
+    }
+    if latest_by_name.is_empty() {
+        return (None, Vec::new());
+    }
+
+    let mut matched: Vec<(&CppDefineLine, usize)> = latest_by_name.into_values().collect();
+    matched.sort_by(|a, b| {
+        a.0.def_line
+            .cmp(&b.0.def_line)
+            .then_with(|| a.0.name.cmp(&b.0.name))
+    });
+
+    let file_kind = if doc_path
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        == Some("S")
     {
-        let arg = after.trim_start();
-        if let Some(inner) = arg.strip_prefix('"') {
-            let end = inner.find('"')?;
-            return Some(&inner[..end]);
+        "`.S` files"
+    } else {
+        "preprocessed files"
+    };
+    let error_matches_expansion = is_macro_expansion_error_message(diag_message);
+
+    let mut hints = Vec::new();
+    let mut related = Vec::with_capacity(matched.len());
+    for (def, ref_col) in matched {
+        let col_in_expansion = diag_col_1based >= (ref_col as u32).saturating_add(1);
+        let suggest_comment_fix = error_matches_expansion
+            && col_in_expansion
+            && looks_like_prose_define(def.value.as_deref(), def.is_function_like);
+
+        if let Some(uri) = doc_uri {
+            let def_range = trimmed_line_range(line_index, text, def.def_line as usize);
+            let line_num = def.def_line + 1;
+            let message = if suggest_comment_fix {
+                match &def.value {
+                    Some(val) => format!(
+                        "`{}` expands to `{val}` (defined by the preprocessor directive on line {line_num}); in {file_kind} a `#` line starting with a directive name is not a comment",
+                        def.name
+                    ),
+                    None => format!(
+                        "`{}` is defined by the preprocessor directive on line {line_num}; in {file_kind} a `#` line starting with a directive name is not a comment",
+                        def.name
+                    ),
+                }
+            } else {
+                match &def.value {
+                    Some(val) => format!(
+                        "`{}` expands to `{val}` (defined on line {line_num})",
+                        def.name
+                    ),
+                    None => format!("`{}` is defined on line {line_num}", def.name),
+                }
+            };
+            related.push(DiagnosticRelatedInformation {
+                location: Location::new(uri.clone(), def_range),
+                message,
+            });
         }
-        if let Some(inner) = arg.strip_prefix('<') {
-            let end = inner.find('>')?;
-            return Some(&inner[..end]);
+
+        if suggest_comment_fix {
+            hints.push(MacroDefHint {
+                macro_name: def.name.clone(),
+                def_line: def.def_line,
+            });
         }
+    }
+
+    let rel_opt = (!related.is_empty()).then_some(related);
+    (rel_opt, hints)
+}
+
+fn is_macro_expansion_error_message(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("unexpected token")
+        || lower.contains("unknown token in expression")
+        || lower.contains("invalid operand")
+        || lower.contains("unrecognized instruction mnemonic")
+}
+
+fn looks_like_prose_define(value: Option<&str>, is_function_like: bool) -> bool {
+    if is_function_like {
+        return false;
+    }
+    let Some(val) = value else {
+        return false;
+    };
+    if val.chars().any(|c| {
+        matches!(
+            c,
+            '(' | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '+'
+                | '-'
+                | '*'
+                | '/'
+                | '%'
+                | '&'
+                | '|'
+                | '^'
+                | '~'
+                | '<'
+                | '>'
+                | '='
+                | '!'
+                | '?'
+                | '\\'
+        )
+    }) {
+        return false;
+    }
+    let mut cur_run = 0usize;
+    let mut max_run = 0usize;
+    for raw_tok in val.split_whitespace() {
+        let tok = raw_tok.trim_end_matches([',', '.']);
+        let is_plain_word = !tok.is_empty()
+            && tok.bytes().all(|b| b.is_ascii_alphabetic())
+            && tok.bytes().any(|b| b.is_ascii_lowercase());
+        if is_plain_word {
+            cur_run += 1;
+            max_run = max_run.max(cur_run);
+        } else {
+            cur_run = 0;
+        }
+    }
+    max_run >= 2
+}
+
+fn strip_asm_comment_for_ident(line: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+        } else if in_double {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+        } else if b == b'\'' {
+            in_single = true;
+        } else if b == b'"' {
+            in_double = true;
+        } else if b == b'#' || (b == b'/' && bytes.get(i + 1) == Some(&b'/')) {
+            return &line[..i];
+        }
+        i += 1;
+    }
+    line
+}
+
+fn find_ident_word_col(haystack: &str, ident: &str) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let mut i = 0;
+    while let Some(pos) = haystack[i..].find(ident) {
+        let start = i + pos;
+        let end = start + ident.len();
+        let before_ok =
+            start == 0 || (!bytes[start - 1].is_ascii_alphanumeric() && bytes[start - 1] != b'_');
+        let after_ok =
+            end >= bytes.len() || (!bytes[end].is_ascii_alphanumeric() && bytes[end] != b'_');
+        if before_ok && after_ok {
+            return Some(start);
+        }
+        i = start + 1;
     }
     None
 }
@@ -857,5 +1121,94 @@ INNER
         assert_eq!(diags[1].diagnostic.range.end, Position::new(1, 20));
         assert_eq!(diags[2].diagnostic.range.start, Position::new(2, 9));
         assert_eq!(diags[2].diagnostic.range.end, Position::new(2, 24));
+    }
+
+    #[test]
+    fn attaches_related_info_and_macro_hint_for_spaced_define_error() {
+        let src = "# define X 5 is the size\n_start:\n    li a0, X\n";
+        let stderr =
+            "<stdin>:3:14: error: unexpected token\n    li a0, 5 is the size\n             ^\n";
+        let uri: Uri = "file:///tmp/spaced.S".parse().expect("uri");
+        let diags = parse_clang_output_with_ctx(
+            src,
+            stderr,
+            Some(Path::new("/tmp/spaced.S")),
+            Some(&uri),
+            None,
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].diagnostic.range.start.line, 2);
+        assert_eq!(diags[0].macro_def_hints.len(), 1);
+        assert_eq!(diags[0].macro_def_hints[0].macro_name, "X");
+        assert_eq!(diags[0].macro_def_hints[0].def_line, 0);
+        let rel = diags[0]
+            .diagnostic
+            .related_information
+            .as_ref()
+            .expect("related_information");
+        assert_eq!(rel.len(), 1);
+        assert_eq!(rel[0].location.uri, uri);
+        assert_eq!(rel[0].location.range.start.line, 0);
+        assert!(rel[0].message.contains("`X` expands to `5 is the size`"));
+        assert!(rel[0].message.contains("line 1"));
+        assert!(rel[0].message.contains("not a comment"));
+    }
+
+    #[test]
+    fn linux_style_macro_error_gets_neutral_related_info_without_quickfix() {
+        let src = "\
+#ifdef BIG
+# define CZ clz
+#else
+# define CZ ctz
+#endif
+    CZ a0, a1
+";
+        let stderr = "<stdin>:6:5: error: instruction requires the following: 'Zbb' (Basic Bit-Manipulation)\n    ctz a0, a1\n    ^\n";
+        let uri: Uri = "file:///tmp/cz.S".parse().expect("uri");
+        let diags = parse_clang_output_with_ctx(
+            src,
+            stderr,
+            Some(Path::new("/tmp/cz.S")),
+            Some(&uri),
+            None,
+        );
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0].macro_def_hints.is_empty(),
+            "unexpected quickfix hint for real macro: {:?}",
+            diags[0].macro_def_hints
+        );
+        let rel = diags[0]
+            .diagnostic
+            .related_information
+            .as_ref()
+            .expect("neutral related_information");
+        assert_eq!(rel.len(), 1);
+        assert_eq!(rel[0].location.range.start.line, 3);
+        assert_eq!(rel[0].message, "`CZ` expands to `ctz` (defined on line 4)");
+
+        // Even with a prose define, an error whose column is before the macro usage stays neutral
+        let src2 = "# define X 5 is the size\n_start:\n    mvi a0, X\n";
+        let stderr2 = "<stdin>:3:5: error: unrecognized instruction mnemonic, did you mean: mv?\n    mvi a0, 5 is the size\n    ^\n";
+        let uri2: Uri = "file:///tmp/col_before.S".parse().expect("uri");
+        let diags2 = parse_clang_output_with_ctx(
+            src2,
+            stderr2,
+            Some(Path::new("/tmp/col_before.S")),
+            Some(&uri2),
+            None,
+        );
+        assert_eq!(diags2.len(), 1);
+        assert!(diags2[0].macro_def_hints.is_empty());
+        let rel2 = diags2[0]
+            .diagnostic
+            .related_information
+            .as_ref()
+            .expect("neutral related_information");
+        assert_eq!(
+            rel2[0].message,
+            "`X` expands to `5 is the size` (defined on line 1)"
+        );
     }
 }

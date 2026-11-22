@@ -359,3 +359,347 @@ fn data_validation_rv64gc_instructions_assemble_with_llvm_mc() {
         }
     }
 }
+
+#[test]
+fn code_actions_offer_use_slash_comment_only_when_preprocessed() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_ca_pp_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let pre_s = tmp.join("pre.S");
+    let raw_s = tmp.join("raw.s");
+    let forced_s = tmp.join("forced.s");
+    let src = "\
+# just a comment
+    # include this later
+# define X 1
+_start:
+    nop
+";
+    std::fs::write(&pre_s, src).unwrap();
+    std::fs::write(&raw_s, src).unwrap();
+    std::fs::write(&forced_s, src).unwrap();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy(),
+            "arguments": ["clang", "-x", "assembler-with-cpp", "-c", forced_s.to_string_lossy()],
+            "file": forced_s.to_string_lossy()
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let pre_uri = path_to_uri(&pre_s);
+    let raw_uri = path_to_uri(&raw_s);
+    let forced_uri = path_to_uri(&forced_s);
+
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": false } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&pre_uri, 1, src);
+    client.open_doc(&raw_uri, 1, src);
+    client.open_doc(&forced_uri, 1, src);
+
+    for uri in [&pre_uri, &forced_uri] {
+        for (line, expected_new_text, expected_col) in
+            [(0u32, "//", 0u32), (1u32, "//", 4u32), (2u32, "//", 0u32)]
+        {
+            let ca = client.send_request(
+                "textDocument/codeAction",
+                json!({
+                    "textDocument": { "uri": uri.as_str() },
+                    "range": {
+                        "start": { "line": line, "character": expected_col },
+                        "end": { "line": line, "character": expected_col }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            );
+            let arr = ca.result.expect("code actions").as_array().unwrap().clone();
+            let action = arr
+                .iter()
+                .find(|a| a["title"] == "Use `//` comment")
+                .expect("Use // comment action");
+            let edits = action["edit"]["changes"][uri.as_str()]
+                .as_array()
+                .expect("edits");
+            assert_eq!(edits[0]["newText"], json!(expected_new_text));
+            assert_eq!(
+                edits[0]["range"],
+                json!({
+                    "start": { "line": line, "character": expected_col },
+                    "end": { "line": line, "character": expected_col + 1 }
+                })
+            );
+        }
+
+        // Line 4 (`nop`) is not a `#` line -> null
+        let ca_nop = client.send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": uri.as_str() },
+                "range": {
+                    "start": { "line": 4, "character": 4 },
+                    "end": { "line": 4, "character": 4 }
+                },
+                "context": { "diagnostics": [] }
+            }),
+        );
+        assert!(ca_nop.result.as_ref().is_none_or(|v| v.is_null()));
+    }
+
+    // `.s` without `-x assembler-with-cpp`: `#` is already a valid comment -> no action
+    for line in [0u32, 1, 2] {
+        let ca = client.send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": raw_uri.as_str() },
+                "range": {
+                    "start": { "line": line, "character": 0 },
+                    "end": { "line": line, "character": 0 }
+                },
+                "context": { "diagnostics": [] }
+            }),
+        );
+        assert!(
+            ca.result.as_ref().is_none_or(|v| v.is_null()),
+            "unexpected action on .s line {line}: {:?}",
+            ca.result
+        );
+    }
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+#[ignore = "requires clang"]
+fn preprocessor_hash_lines_table_and_x_override_with_clang() {
+    assert!(
+        has_tool("clang"),
+        "clang must be on PATH for ignored tool tests"
+    );
+
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_l1_clang_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let safe_s = tmp.join("safe.S");
+    let err_s = tmp.join("err.S");
+    let spaced_s = tmp.join("spaced.S");
+    let plain_s = tmp.join("plain.s");
+    let forced_s = tmp.join("forced.s");
+
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy(),
+            "arguments": ["clang", "--target=riscv64-unknown-elf", "-march=rv64gc", "-x", "assembler-with-cpp", "-c", forced_s.to_string_lossy()],
+            "file": forced_s.to_string_lossy()
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let safe_uri = path_to_uri(&safe_s);
+    let err_uri = path_to_uri(&err_s);
+    let spaced_uri = path_to_uri(&spaced_s);
+    let plain_uri = path_to_uri(&plain_s);
+    let forced_uri = path_to_uri(&forced_s);
+
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+
+    // 1. Safe `#` forms in `.S`: `# just a comment`, `nop # if define error`, `#`, `# pragma: keep`, `# 100 note`
+    let safe_src = "\
+# just a comment
+#
+# pragma: keep
+# 100 note
+_start:
+    nop # if define error
+";
+    client.open_doc(&safe_uri, 1, safe_src);
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("safe.S publishDiagnostics");
+    assert_eq!(notif.params["uri"], json!(safe_uri.as_str()));
+    assert_eq!(notif.params["diagnostics"], json!([]));
+
+    // 2. Failing `#` forms in `.S`: `# if ...`, `    # include ...`, `# error ...` + QuickFix
+    let err_src = "\
+    # include this later
+# error handling starts here
+# if the value is zero, skip
+";
+    client.open_doc(&err_uri, 1, err_src);
+    let notif_err = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("err.S publishDiagnostics");
+    assert_eq!(notif_err.params["uri"], json!(err_uri.as_str()));
+    let diags_err = notif_err.params["diagnostics"].as_array().unwrap();
+    for line in [0u64, 1, 2] {
+        let diag = diags_err
+            .iter()
+            .find(|d| d["range"]["start"]["line"] == line)
+            .unwrap_or_else(|| panic!("missing diagnostic on line {line}: {diags_err:?}"));
+        let ca = client.send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": err_uri.as_str() },
+                "range": diag["range"],
+                "context": { "diagnostics": [diag.clone()] }
+            }),
+        );
+        let arr = ca.result.expect("quickfixes").as_array().unwrap().clone();
+        assert!(
+            arr.iter()
+                .any(|a| a["title"] == "Use `//` comment" && a["kind"] == "quickfix"),
+            "missing Use // comment quickfix on line {line}: {arr:?}"
+        );
+    }
+
+    // 3. `# define X 5 is the size` then `li a0, X` -> no diag on line 0, error on line 2 with relatedInformation + quickfix
+    let spaced_src = "\
+# define X 5 is the size
+_start:
+    li a0, X
+";
+    client.open_doc(&spaced_uri, 1, spaced_src);
+    let notif_spaced = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("spaced.S publishDiagnostics");
+    assert_eq!(notif_spaced.params["uri"], json!(spaced_uri.as_str()));
+    let diags_spaced = notif_spaced.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags_spaced.len(), 1, "diags: {diags_spaced:?}");
+    assert_eq!(diags_spaced[0]["range"]["start"]["line"], 2);
+    let rel = diags_spaced[0]["relatedInformation"]
+        .as_array()
+        .expect("relatedInformation");
+    assert_eq!(rel[0]["location"]["range"]["start"]["line"], 0);
+    assert!(
+        rel[0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not a comment")
+    );
+    let ca_spaced = client.send_request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": spaced_uri.as_str() },
+            "range": diags_spaced[0]["range"],
+            "context": { "diagnostics": [diags_spaced[0].clone()] }
+        }),
+    );
+    let spaced_actions = ca_spaced
+        .result
+        .expect("spaced quickfix")
+        .as_array()
+        .unwrap()
+        .clone();
+    let fix_action = spaced_actions
+        .iter()
+        .find(|a| a["kind"] == "quickfix" && a["title"].as_str().unwrap_or("").contains("line 1"))
+        .expect("quickfix pointing to line 1");
+    let fix_edit = &fix_action["edit"]["changes"][spaced_uri.as_str()][0];
+    assert_eq!(fix_edit["range"]["start"]["line"], 0);
+
+    // 4. `.s` without `-x assembler-with-cpp`: `#define A 1` is a comment, so `li a0, A` errors
+    let def_src = "#define A 1\n_start:\n    li a0, A\n";
+    client.open_doc(&plain_uri, 1, def_src);
+    let notif_plain = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("plain.s publishDiagnostics");
+    assert_eq!(notif_plain.params["uri"], json!(plain_uri.as_str()));
+    let diags_plain = notif_plain.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags_plain.len(), 1, "plain.s diags: {diags_plain:?}");
+    assert_eq!(diags_plain[0]["range"]["start"]["line"], 2);
+    assert!(diags_plain[0].get("relatedInformation").is_none());
+
+    // 5. `.s` with `compile_commands.json` `-x assembler-with-cpp`: `#define A 1` succeeds with 0 diags
+    client.open_doc(&forced_uri, 1, def_src);
+    let notif_forced = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("forced.s publishDiagnostics");
+    assert_eq!(notif_forced.params["uri"], json!(forced_uri.as_str()));
+    assert_eq!(notif_forced.params["diagnostics"], json!([]));
+
+    // 6. Linux-style `# define CZ ctz` with Zbb error: neutral relatedInfo, NO `Use // comment` quickfix
+    let linux_uri = path_to_uri(&tmp.join("linux.S"));
+    let linux_src = "\
+#ifdef BIG
+# define CZ clz
+#else
+# define CZ ctz
+#endif
+    CZ a0, a1
+";
+    client.open_doc(&linux_uri, 1, linux_src);
+    let notif_linux = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("linux.S publishDiagnostics");
+    assert_eq!(notif_linux.params["uri"], json!(linux_uri.as_str()));
+    let diags_linux = notif_linux.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags_linux.len(), 1, "linux.S diags: {diags_linux:?}");
+    assert_eq!(diags_linux[0]["range"]["start"]["line"], 5);
+    let rel_linux = diags_linux[0]["relatedInformation"]
+        .as_array()
+        .expect("neutral relatedInformation");
+    assert_eq!(rel_linux[0]["location"]["range"]["start"]["line"], 3);
+    assert_eq!(
+        rel_linux[0]["message"],
+        json!("`CZ` expands to `ctz` (defined on line 4)")
+    );
+    let ca_linux = client.send_request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": linux_uri.as_str() },
+            "range": diags_linux[0]["range"],
+            "context": { "diagnostics": [diags_linux[0].clone()] }
+        }),
+    );
+    let has_comment_fix = ca_linux
+        .result
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| {
+            arr.iter().any(|a| {
+                a["title"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Use `//` comment")
+            })
+        });
+    assert!(
+        !has_comment_fix,
+        "unexpected `Use // comment` quickfix for Linux-style macro: {:?}",
+        ca_linux.result
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

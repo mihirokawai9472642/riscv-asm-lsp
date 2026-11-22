@@ -58,8 +58,8 @@ machine or container where the editor starts language servers, next to
    compiles it, so the machine running Zed needs `git` and Rust (rustup) on
    its `PATH`; Zed adds the `wasm32-wasip2` target itself.
 2. Uninstall zed-asm, or map the file types in the project settings
-   (`"file_types": { "RISC-V Assembly": ["S", "s"] }`): both extensions claim
-   `.S` and `.s`.
+   (`"file_types": { "RISC-V Assembly": ["S", "s", "sx"] }`): both extensions
+   claim `.S` and `.s`.
 3. Make the server reachable: either on `PATH`, or through
    `lsp.riscv-asm-lsp.binary`. For example, to run it in a project's container
    (the project mounted at the same path inside it):
@@ -122,7 +122,9 @@ machine or container where the editor starts language servers, next to
 ## Configuration
 
 Options go in `initializationOptions` (in Zed:
-`lsp.riscv-asm-lsp.initialization_options`). All are optional.
+`lsp.riscv-asm-lsp.initialization_options`). All are optional. They are read
+when the server starts, so changing them requires restarting the language
+server (`editor: restart language server` in Zed).
 
 | Option | Default | Meaning |
 | --- | --- | --- |

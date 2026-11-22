@@ -509,3 +509,161 @@ fn symlinked_workspace_preserves_client_uris_in_navigation_and_symbols() {
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn preprocessor_navigation_respects_suffix_and_x_override() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_nav_pp_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let defs_h = tmp.join("defs.h");
+    let inc_inc = tmp.join("inc.inc");
+    let pre_s = tmp.join("pre.S");
+    let raw_s = tmp.join("raw.s");
+    let forced_s = tmp.join("forced.s");
+
+    std::fs::write(&defs_h, "#define HDR_CONST 9\n").unwrap();
+    std::fs::write(&inc_inc, ".equ INC_CONST, 7\n").unwrap();
+
+    let pre_src = "\
+#include \"defs.h\"
+#define A 1
+_start:
+    li a0, A
+    li a1, HDR_CONST
+";
+    let raw_src = "\
+#include \"defs.h\"
+    .include \"inc.inc\"
+#define A 1
+_start:
+    li a0, A
+    li a1, HDR_CONST
+    li a2, INC_CONST
+";
+    std::fs::write(&pre_s, pre_src).unwrap();
+    std::fs::write(&raw_s, raw_src).unwrap();
+    std::fs::write(&forced_s, pre_src).unwrap();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy(),
+            "arguments": ["clang", "-x", "assembler-with-cpp", "-c", forced_s.to_string_lossy()],
+            "file": forced_s.to_string_lossy()
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let defs_uri = path_to_uri(&defs_h);
+    let inc_uri = path_to_uri(&inc_inc);
+    let pre_uri = path_to_uri(&pre_s);
+    let raw_uri = path_to_uri(&raw_s);
+    let forced_uri = path_to_uri(&forced_s);
+
+    let mut client = LspClient::start(None, Some(&root_uri));
+    client.open_doc(&pre_uri, 1, pre_src);
+    client.open_doc(&raw_uri, 1, raw_src);
+    client.open_doc(&forced_uri, 1, pre_src);
+
+    // `.S` resolves `#include`, local `#define A`, and header `#define HDR_CONST`
+    let def_pre_inc = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": pre_uri.as_str() },
+            "position": { "line": 0, "character": 12 }
+        }),
+    );
+    assert_eq!(
+        def_pre_inc.result.as_ref().unwrap()["uri"],
+        json!(defs_uri.as_str())
+    );
+    let def_pre_a = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": pre_uri.as_str() },
+            "position": { "line": 3, "character": 11 }
+        }),
+    );
+    assert_eq!(
+        def_pre_a.result.as_ref().unwrap()["range"]["start"]["line"],
+        1
+    );
+    let def_pre_hdr = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": pre_uri.as_str() },
+            "position": { "line": 4, "character": 14 }
+        }),
+    );
+    assert_eq!(
+        def_pre_hdr.result.as_ref().unwrap()["uri"],
+        json!(defs_uri.as_str())
+    );
+
+    // `.s` ignores `#include` and `#define`, but keeps `.include`
+    for (line, ch) in [(0, 12), (4, 11), (5, 14)] {
+        let resp = client.send_request(
+            "textDocument/definition",
+            json!({
+                "textDocument": { "uri": raw_uri.as_str() },
+                "position": { "line": line, "character": ch }
+            }),
+        );
+        assert!(
+            resp.result.as_ref().is_none_or(|v| v.is_null()),
+            "expected null definition on .s line {line}: {:?}",
+            resp.result
+        );
+    }
+    let def_raw_inc = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": raw_uri.as_str() },
+            "position": { "line": 1, "character": 16 }
+        }),
+    );
+    assert_eq!(
+        def_raw_inc.result.as_ref().unwrap()["uri"],
+        json!(inc_uri.as_str())
+    );
+    let def_raw_equ = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": raw_uri.as_str() },
+            "position": { "line": 6, "character": 14 }
+        }),
+    );
+    assert_eq!(
+        def_raw_equ.result.as_ref().unwrap()["uri"],
+        json!(inc_uri.as_str())
+    );
+
+    // `.s` with `-x assembler-with-cpp` resolves `#include` and `#define`
+    let def_forced_a = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": forced_uri.as_str() },
+            "position": { "line": 3, "character": 11 }
+        }),
+    );
+    assert_eq!(
+        def_forced_a.result.as_ref().unwrap()["range"]["start"]["line"],
+        1
+    );
+    let def_forced_hdr = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": forced_uri.as_str() },
+            "position": { "line": 4, "character": 14 }
+        }),
+    );
+    assert_eq!(
+        def_forced_hdr.result.as_ref().unwrap()["uri"],
+        json!(defs_uri.as_str())
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

@@ -20,11 +20,16 @@ impl WorkspaceIndex {
         line: u32,
         ctx: &mut CompileContext,
     ) -> Option<(String, PathBuf)> {
+        let file_ctx = ctx.for_uri(uri);
+        self.sync_preprocessed(uri, file_ctx.preprocessed);
         let file = self.file_by_uri(uri)?.clone();
         let (ls, le, _) = file.line_index.line_bounds(&file.text, line as usize);
         let trimmed = file.text.get(ls..le)?.trim();
-        let inc = parse_cpp_include_line(trimmed).or_else(|| parse_asm_include_line(trimmed))?;
-        let file_ctx = ctx.for_uri(uri);
+        let inc = if file_ctx.preprocessed {
+            parse_cpp_include_line(trimmed).or_else(|| parse_asm_include_line(trimmed))
+        } else {
+            parse_asm_include_line(trimmed)
+        }?;
         let cur_dir = file.path.parent();
         let resolved = resolve_include_path(
             &inc,
@@ -44,6 +49,8 @@ impl WorkspaceIndex {
         at_offset: Option<usize>,
         ctx: &mut CompileContext,
     ) -> HashMap<String, String> {
+        let pre = ctx.for_uri(uri).preprocessed;
+        self.sync_preprocessed(uri, pre);
         let mut consts = HashMap::new();
         let Some(file) = self.file_by_uri(uri).cloned() else {
             return consts;
@@ -105,6 +112,8 @@ impl WorkspaceIndex {
         queue.push_back(start_norm);
 
         while let Some(cur) = queue.pop_front() {
+            let pre = ctx.is_preprocessed_path(&cur);
+            self.sync_preprocessed_path(&cur, pre);
             ordered.push(cur.clone());
             let includes = self
                 .files
@@ -176,6 +185,8 @@ impl WorkspaceIndex {
         offset: usize,
         ctx: &mut CompileContext,
     ) -> Option<SymbolHoverInfo> {
+        let pre = ctx.for_uri(uri).preprocessed;
+        self.sync_preprocessed(uri, pre);
         let file = self.file_by_uri(uri)?.clone();
         let (tok_start, tok_end) = word_range_at(&file.text, offset);
         if tok_start == tok_end {
@@ -320,6 +331,8 @@ impl WorkspaceIndex {
         offset: usize,
         ctx: &mut CompileContext,
     ) -> VisibleCompletions {
+        let pre = ctx.for_uri(uri).preprocessed;
+        self.sync_preprocessed(uri, pre);
         let mut symbols = Vec::new();
         let mut macros = Vec::new();
         let mut seen_syms = HashSet::new();
@@ -394,6 +407,8 @@ impl WorkspaceIndex {
         uri: &Uri,
         ctx: &mut CompileContext,
     ) -> HashMap<String, SymKind> {
+        let pre = ctx.for_uri(uri).preprocessed;
+        self.sync_preprocessed(uri, pre);
         let mut out = HashMap::new();
         let Some(cur_file) = self.file_by_uri(uri).cloned() else {
             return out;

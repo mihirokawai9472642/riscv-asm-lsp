@@ -352,3 +352,58 @@ fn large_file_rapid_incremental_edits_and_hover() {
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn watched_files_registration_shutdown_exits_cleanly() {
+    // 1. Answer registration before shutdown
+    let mut client = LspClient::start_with_watched_files(None, None);
+    let reg = client
+        .wait_for_notification(
+            "client/registerCapability",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("expected client/registerCapability");
+    let reg_id = reg.id.expect("registerCapability request id");
+    client.send_response(reg_id, json!(null));
+    let (status, stderr) = client.shutdown_and_exit_with_stderr();
+    assert!(
+        status.success(),
+        "expected exit 0 after watched files registration, got {status}; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("fatal error"),
+        "unexpected fatal error in stderr:\n{stderr}"
+    );
+
+    // 2. Race case: client sends registration response after `shutdown` and before `exit`
+    let mut client_race = LspClient::start_with_watched_files(None, None);
+    let reg2 = client_race
+        .wait_for_notification(
+            "client/registerCapability",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("expected client/registerCapability");
+    let reg2_id = reg2.id.expect("registerCapability request id");
+    let shut_resp = client_race.send_request("shutdown", json!(null));
+    assert!(shut_resp.error.is_none());
+    client_race.send_response(reg2_id, json!(null));
+    let status2 = client_race.exit_and_wait();
+    assert!(
+        status2.success(),
+        "expected exit 0 when response arrives between shutdown and exit, got {status2}"
+    );
+}
+
+#[test]
+fn exit_without_shutdown_exits_with_code_1() {
+    let client = LspClient::start(None, None);
+    let status = client.exit_and_wait();
+    assert_eq!(status.code(), Some(1), "expected exit code 1, got {status}");
+}
+
+#[test]
+fn closing_stdin_exits_cleanly() {
+    let client = LspClient::start(None, None);
+    let status = client.close_stdin_and_wait();
+    assert!(status.success(), "expected exit 0 on EOF, got {status}");
+}
