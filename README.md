@@ -4,41 +4,44 @@ riscv-asm-lsp is a language server for RISC-V assembly in the GNU assembler
 syntax, with an extension for the Zed editor.
 
 **Status: early development.** There are no releases yet; build the server
-from source. It is developed and tested with LLVM 19.
+from source. It targets LLVM 19 (`llvmorg-19.1.7`).
 
 The LLVM integrated assembler is the reference: instruction data is generated
-from LLVM's own definitions, with descriptions from the RISC-V specifications,
+from LLVM's own definitions with descriptions from the RISC-V specifications,
 and diagnostics and expansions come from running `clang` and `llvm-mc`.
 
 ## Features
 
 - **Hover** for instructions, aliases and pseudo-instructions (`mv`, `li`,
   `la`, `csrw`, ...), CSRs with their fields, registers by number and ABI
-  name, directives, and the project's own labels, `.equ` constants, macros and
-  `#define`s. For instructions it also shows what the current line expands to
-  and its encoding.
+  name, directives, preprocessor directives (`#define`, `#include`, ...), and
+  project symbols (`_start`, `.equ`/`.set`/`=`, macros, `#define`, `1f`/`1b`,
+  `\@`). Instruction hovers show decoded operand constraints and the current
+  line's `llvm-mc` expansion and encoding.
 - **Completion** filtered by `-march` and `.option arch`: instructions with
-  operand placeholders (Tab moves to the next operand), directive blocks such
-  as `.macro` ... `.endm`, registers, CSRs, symbols, relocation functions and
-  macro parameters.
-- **Navigation**: go to definition, references, highlight and rename for
-  labels, numeric labels (`1f`, `1b`), `.equ`/`.set`, macros and `#define`s,
-  across files and included headers; outline and workspace symbols.
-- **Diagnostics** from `clang` on unsaved text, with quick fixes for its
-  suggestions.
-- **Semantic tokens** that tell registers, CSRs, labels, constants, macros and
-  macro parameters apart.
+  variant-specific operand placeholders (Tab moves between operands), directive
+  snippets (`.macro` ... `.endm`, `.if`, `.irp`, ...), registers, CSRs,
+  symbols, `%` relocation functions and macro parameters.
+- **Navigation and symbols**: go to definition, references, highlight and
+  rename for labels, numeric labels (`1f`, `1b`), `.equ`/`.set`/`=`, macros
+  and `#define`s across files and included headers; document outline and
+  workspace symbols.
+- **Diagnostics and code actions** from `clang` on unsaved text, with quick
+  fixes for compiler suggestions and `#` preprocessor-directive comment hints.
+- **Semantic tokens** classifying registers, CSRs, labels, constants, macros,
+  parameters, preprocessor lines and `#` comments.
 - **Zed extension** (`zed/`): the `RISC-V Assembly` language with a
-  tree-sitter grammar, highlighting (including preprocessor lines in `.S`
-  files), outline, brackets, indentation and comment continuation.
+  tree-sitter grammar, highlighting, outline, brackets, indentation and
+  block/line comment support.
 
 `clang` and `llvm-mc` are optional. Without them, diagnostics and expansions
 are off and everything else works.
 
+See [docs/features.md](docs/features.md) for detailed feature behaviour.
+
 ## Building
 
-The Rust toolchain and LLVM 19 run in a development container. With Docker,
-from the repository root:
+With Docker (recommended when using the repository's Rust + LLVM 19 container):
 
 ```bash
 docker compose up -d --build
@@ -48,83 +51,33 @@ docker compose up -d --build
 docker compose exec dev cargo build --release
 ```
 
-The server is `target/release/riscv-asm-lsp`. Put it on the `PATH` of the
-machine or container where the editor starts language servers, next to
+The server binary is `target/release/riscv-asm-lsp`. Place it on the `PATH`
+of the machine or container where the editor runs language servers, alongside
 `clang` and `llvm-mc` if you want diagnostics and expansions.
+
+Building natively requires Rust 1.90 or newer (`edition = "2024"`).
 
 ## Using it with Zed
 
 1. Install `zed/` as a dev extension (`zed: install dev extension`). Zed
-   compiles it, so the machine running Zed needs `git` and Rust (rustup) on
-   its `PATH`; Zed adds the `wasm32-wasip2` target itself.
-2. Uninstall zed-asm, or map the file types in the project settings
-   (`"file_types": { "RISC-V Assembly": ["S", "s", "sx"] }`): both extensions
-   claim `.S` and `.s`.
-3. Make the server reachable: either on `PATH`, or through
-   `lsp.riscv-asm-lsp.binary`. For example, to run it in a project's container
-   (the project mounted at the same path inside it):
+   compiles the WebAssembly extension, so the machine running Zed needs `git`
+   and Rust (`rustup`) on its `PATH`; Zed adds `wasm32-wasip2` itself.
+2. If another installed extension also claims `.S`, `.s`, or `.sx`, uninstall
+   the conflicting extension (recommended) or map those suffixes in
+   `file_types`. To keep linker script templates out of assembly highlighting,
+   map `"*.lds.S"` and `"*.ld.S"` to `Plain Text` (or a linker-script language)
+   via `file_types`; this only takes effect when `.S` is not also mapped in
+   `file_types` (see [docs/zed.md](docs/zed.md#avoiding-file-type-conflicts)).
+3. Make `riscv-asm-lsp` available on `PATH` or via `lsp.riscv-asm-lsp.binary`.
 
-   ```json
-   {
-     "lsp": {
-       "riscv-asm-lsp": {
-         "binary": {
-           "path": "/usr/bin/docker",
-           "arguments": ["compose", "exec", "-T", "dev", "riscv-asm-lsp"]
-         }
-       }
-     },
-     "languages": {
-       "RISC-V Assembly": {
-         "document_symbols": "on",
-         "semantic_tokens": "combined"
-       }
-     }
-   }
-   ```
-
-   `document_symbols` builds the outline and breadcrumbs from the server's
-   label ranges; `semantic_tokens` adds its highlighting on top of the
-   grammar's.
-
-   `lsp.riscv-asm-lsp.binary` in a project's `.zed/settings.json` applies only
-   when that directory is the opened project root. If you open a parent
-   directory (for example your home directory `~`), either put `riscv-asm-lsp`
-   on `PATH` or configure `lsp.riscv-asm-lsp.binary` in your user settings.
-
-   Themes that omit `variable.special` (such as Ayu) can still give registers
-   their own colour via `theme_overrides`:
-
-   ```json
-   "theme_overrides": {
-     "Ayu Dark": {
-       "syntax": {
-         "variable.special": { "color": "#95e6cb" }
-       }
-     }
-   }
-   ```
-
-### Zed on Windows with projects in WSL
-
-- Zed links a dev extension with a directory junction, which cannot point
-  into `\\wsl.localhost\...`. Copy the extension's sources (`extension.toml`,
-  `LICENSE`, `Cargo.toml`, `Cargo.lock`, `src/`, `languages/`) to a local
-  Windows directory outside OneDrive and install that copy. After changing
-  them, copy again and press **Rebuild** on the extension.
-- Install Git for Windows and rustup on Windows. With rustup's default MSVC
-  toolchain, building needs Visual Studio; the GNU toolchain
-  (`stable-x86_64-pc-windows-gnu`) brings its own linker.
-- The extension must declare Rust code even when `lsp.riscv-asm-lsp.binary`
-  is set: in a remote project, Zed loads the extension's WebAssembly on the
-  remote side to start its language server.
+See [docs/zed.md](docs/zed.md) for settings, container execution, Windows with
+WSL, and theme overrides.
 
 ## Configuration
 
 Options go in `initializationOptions` (in Zed:
-`lsp.riscv-asm-lsp.initialization_options`). All are optional. They are read
-when the server starts, so changing them requires restarting the language
-server (`editor: restart language server` in Zed).
+`lsp.riscv-asm-lsp.initialization_options`). All are optional and are read once
+at startup, so changing them requires restarting the language server.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
@@ -136,15 +89,22 @@ server (`editor: restart language server` in Zed).
 | `diagnostics.enable` | `true` | Run clang for diagnostics |
 | `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
 
-## Development
+## Documentation
 
-See [AGENTS.md](AGENTS.md) for the commands, conventions and tests, and
-[docs/design.md](docs/design.md) for the design.
+| Document | Contents |
+| --- | --- |
+| [docs/features.md](docs/features.md) | Detailed behaviour of hover, completion, navigation, diagnostics, semantic tokens and preprocessing |
+| [docs/design.md](docs/design.md) | Architecture, server internals, robustness rules, testing and roadmap |
+| [docs/data.md](docs/data.md) | Instruction/CSR/directive data sources, pinned versions, generation and licenses |
+| [docs/zed.md](docs/zed.md) | Installing and configuring the Zed extension |
+| [AGENTS.md](AGENTS.md) | Development commands, code conventions, module layout and test workflow |
 
 ## License
 
 The code is licensed under the [MIT License](LICENSE.md); the Zed extension
 carries its own copy in [zed/LICENSE](zed/LICENSE). The instruction data in
-`data/riscv.json` is derived from LLVM (Apache-2.0 WITH LLVM-exception),
-riscv-unified-db (BSD-3-Clause-Clear) and riscv-asm-manual (CC-BY-4.0) and
-stays under their licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+`data/riscv.json` is derived from LLVM (`Apache-2.0 WITH LLVM-exception`),
+riscv-unified-db (`BSD-3-Clause-Clear`) and riscv-asm-manual (`CC-BY-4.0`) and
+stays under their licenses; hand-written files in `data/` (`directives_gnu.json`,
+`supplements.json`, `texts.json`) are MIT. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

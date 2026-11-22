@@ -407,3 +407,91 @@ fn closing_stdin_exits_cleanly() {
     let status = client.close_stdin_and_wait();
     assert!(status.success(), "expected exit 0 on EOF, got {status}");
 }
+
+#[test]
+fn linker_script_templates_are_skipped_in_scan_and_features() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_lds_skip_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    let lds_path = tmp.join("vmlinux.lds.S");
+    let lds_src = "\
+SECTIONS {
+    . = ALIGN(8);
+    lds_leaked_sym:
+    addi a0, zero, 1
+}
+";
+    std::fs::write(&lds_path, lds_src).expect("write vmlinux.lds.S");
+    let asm_path = tmp.join("entry.S");
+    std::fs::write(&asm_path, "asm_visible_sym:\n    nop\n").expect("write entry.S");
+
+    let root_uri = path_to_uri(&tmp);
+    let lds_uri = path_to_uri(&lds_path);
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+
+    // Workspace scan must skip `vmlinux.lds.S` while still indexing `entry.S`
+    let syms = workspace_symbol_names(&mut client, "");
+    assert!(
+        syms.iter().any(|s| s == "asm_visible_sym"),
+        "syms: {syms:?}"
+    );
+    assert!(
+        !syms.iter().any(|s| s == "lds_leaked_sym"),
+        "linker script symbol leaked: {syms:?}"
+    );
+
+    // Opening a linker script template produces no symbols, completion, hover, semantic tokens, or diagnostics
+    client.open_doc(&lds_uri, 1, lds_src);
+    assert!(
+        client
+            .send_request(
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": lds_uri.as_str() } })
+            )
+            .result
+            .is_none_or(|v| v.is_null())
+    );
+    assert!(
+        client
+            .send_request(
+                "textDocument/hover",
+                json!({
+                    "textDocument": { "uri": lds_uri.as_str() },
+                    "position": { "line": 3, "character": 5 }
+                })
+            )
+            .result
+            .is_none_or(|v| v.is_null())
+    );
+    assert!(
+        client
+            .send_request(
+                "textDocument/completion",
+                json!({
+                    "textDocument": { "uri": lds_uri.as_str() },
+                    "position": { "line": 3, "character": 8 }
+                })
+            )
+            .result
+            .is_none_or(|v| v.is_null())
+    );
+    assert!(
+        client
+            .send_request(
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": lds_uri.as_str() } })
+            )
+            .result
+            .is_none_or(|v| v.is_null())
+    );
+
+    let syms_after = workspace_symbol_names(&mut client, "lds_leaked");
+    assert!(syms_after.is_empty(), "leaked after open: {syms_after:?}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

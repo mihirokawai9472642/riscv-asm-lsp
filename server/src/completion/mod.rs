@@ -6,13 +6,13 @@ use lsp_types::{
     CompletionTextEdit, InsertTextFormat, Position, Range, TextEdit,
 };
 
-use crate::context::{CompileContext, effective_options_at_line};
+use crate::context::{CompileContext, MarchSpec, effective_options_at_line};
 use crate::data::Database;
 use crate::document::Document;
 use crate::index::{WorkspaceIndex, visible_params_at};
 
 use candidates::{
-    OPTION_SUBCOMMANDS, ResolvePayload, collect_directive_completions,
+    OPTION_SUBCOMMANDS, OperandQuery, ResolvePayload, collect_directive_completions,
     collect_instruction_completions, collect_operand_completions, push_macro_param_completions,
     push_relocation_completions, resolve_documentation, serialize_payload,
 };
@@ -28,7 +28,6 @@ pub struct CompletionClientCaps {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompletionContext {
-    Comment,
     OptionSubcommand,
     StatementStart {
         prefix: String,
@@ -50,13 +49,12 @@ pub fn provide_completion(
 ) -> Option<CompletionResponse> {
     let file_ctx = ctx.for_uri(&doc.uri);
     let offset = doc.line_index.position_to_offset(&doc.text, pos);
-    let (line_start, _, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
-    let line_prefix = doc.text.get(line_start..offset)?;
-
-    let comp_ctx = classify_completion_context(line_prefix);
-    if comp_ctx == CompletionContext::Comment {
+    if crate::line::is_offset_in_comment(&doc.text, doc.tree.as_ref(), offset, false) {
         return None;
     }
+    let (line_start, _, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
+    let line_prefix = doc.text.get(line_start..offset)?;
+    let comp_ctx = classify_completion_context(line_prefix);
 
     let (replace_start, typed_prefix) = completion_token_prefix(&doc.text, line_start, offset);
     let replace_range = doc
@@ -78,28 +76,8 @@ pub fn provide_completion(
     let mut is_incomplete = false;
 
     match comp_ctx {
-        CompletionContext::Comment => return None,
         CompletionContext::OptionSubcommand => {
-            for &(name, _) in OPTION_SUBCOMMANDS {
-                let rank = match_rank(name, &typed_lower);
-                let new_text = if name == "arch" && !next_is_comma {
-                    "arch, ".to_owned()
-                } else {
-                    name.to_owned()
-                };
-                items.push(make_rich_item(
-                    name.to_owned(),
-                    name.to_owned(),
-                    new_text,
-                    CompletionItemKind::KEYWORD,
-                    Some(".option".to_owned()),
-                    None,
-                    serialize_payload(&ResolvePayload::Opt { n: name.to_owned() }),
-                    None,
-                    format!("{rank}_0_{name}"),
-                    replace_range,
-                ));
-            }
+            push_option_subcommands(&typed_lower, next_is_comma, replace_range, &mut items);
         }
         CompletionContext::StatementStart { prefix } => {
             if prefix.starts_with('\\') && in_macro_body {
@@ -111,46 +89,19 @@ pub fn provide_completion(
                     &mut items,
                 );
             } else {
-                let wants_directive = prefix.starts_with('.');
-                if !wants_directive {
-                    collect_instruction_completions(
+                collect_statement_start_completions(
+                    StmtStartQuery {
                         db,
-                        &march,
-                        &typed_lower,
+                        march: &march,
+                        macros: visible.macros,
+                        prefix: &prefix,
+                        typed_lower: &typed_lower,
                         replace_range,
                         next_is_ws,
                         caps,
-                        &mut items,
-                    );
-                    let mut macros = visible.macros;
-                    if macros.len() > MAX_SYMBOL_CANDIDATES {
-                        is_incomplete = true;
-                        if !typed_lower.is_empty() {
-                            macros.retain(|m| m.to_ascii_lowercase().contains(&typed_lower));
-                        }
-                        macros
-                            .sort_by_key(|m| (match_rank(m, &typed_lower), m.to_ascii_lowercase()));
-                        macros.truncate(MAX_SYMBOL_CANDIDATES);
-                    }
-                    for macro_name in macros {
-                        let rank = match_rank(&macro_name, &typed_lower);
-                        let sort = format!("{rank}_1_{}", macro_name.to_ascii_lowercase());
-                        items.push(make_item(
-                            macro_name,
-                            CompletionItemKind::FUNCTION,
-                            Some("macro".to_owned()),
-                            sort,
-                            replace_range,
-                        ));
-                    }
-                }
-                collect_directive_completions(
-                    db,
-                    &typed_lower,
-                    replace_range,
-                    next_is_ws,
-                    caps,
+                    },
                     &mut items,
+                    &mut is_incomplete,
                 );
             }
         }
@@ -160,7 +111,7 @@ pub fn provide_completion(
             inside_parens,
         } => {
             if typed_prefix.starts_with('%') {
-                push_relocation_completions(&typed_lower, replace_range, &mut items);
+                push_relocation_completions(db, &typed_lower, replace_range, &mut items);
             } else if typed_prefix.starts_with('\\') && in_macro_body {
                 push_macro_param_completions(
                     &visible.symbols,
@@ -171,16 +122,18 @@ pub fn provide_completion(
                 );
             } else {
                 collect_operand_completions(
-                    db,
-                    &march,
-                    &mnemonic,
-                    operand_index,
-                    inside_parens,
-                    next_is_comma,
-                    &visible.symbols,
-                    in_macro_body,
-                    &typed_lower,
-                    replace_range,
+                    OperandQuery {
+                        db,
+                        march: &march,
+                        mnemonic: &mnemonic,
+                        operand_index,
+                        inside_parens,
+                        next_is_comma,
+                        visible_syms: &visible.symbols,
+                        in_macro_body,
+                        typed_lower: &typed_lower,
+                        replace_range,
+                    },
                     &mut items,
                     &mut is_incomplete,
                 );
@@ -201,6 +154,93 @@ pub fn provide_completion(
         is_incomplete,
         items,
     }))
+}
+
+fn push_option_subcommands(
+    typed_lower: &str,
+    next_is_comma: bool,
+    replace_range: Range,
+    items: &mut Vec<CompletionItem>,
+) {
+    for &(name, _) in OPTION_SUBCOMMANDS {
+        let rank = match_rank(name, typed_lower);
+        let new_text = if name == "arch" && !next_is_comma {
+            "arch, ".to_owned()
+        } else {
+            name.to_owned()
+        };
+        items.push(make_rich_item(RichItemSpec {
+            label: name.to_owned(),
+            filter_text: name.to_owned(),
+            new_text,
+            kind: CompletionItemKind::KEYWORD,
+            detail: Some(".option".to_owned()),
+            tags: None,
+            data: serialize_payload(&ResolvePayload::Opt { n: name.to_owned() }),
+            insert_text_format: None,
+            sort_text: format!("{rank}_0_{name}"),
+            replace_range,
+        }));
+    }
+}
+
+struct StmtStartQuery<'a> {
+    db: &'a Database,
+    march: &'a MarchSpec,
+    macros: Vec<String>,
+    prefix: &'a str,
+    typed_lower: &'a str,
+    replace_range: Range,
+    next_is_ws: bool,
+    caps: CompletionClientCaps,
+}
+
+fn collect_statement_start_completions(
+    mut q: StmtStartQuery<'_>,
+    items: &mut Vec<CompletionItem>,
+    is_incomplete: &mut bool,
+) {
+    let wants_directive = q.prefix.starts_with('.');
+    if !wants_directive {
+        collect_instruction_completions(
+            q.db,
+            q.march,
+            q.typed_lower,
+            q.replace_range,
+            q.next_is_ws,
+            q.caps,
+            items,
+        );
+        if q.macros.len() > MAX_SYMBOL_CANDIDATES {
+            *is_incomplete = true;
+            if !q.typed_lower.is_empty() {
+                q.macros
+                    .retain(|m| m.to_ascii_lowercase().contains(q.typed_lower));
+            }
+            q.macros
+                .sort_by_key(|m| (match_rank(m, q.typed_lower), m.to_ascii_lowercase()));
+            q.macros.truncate(MAX_SYMBOL_CANDIDATES);
+        }
+        for macro_name in q.macros {
+            let rank = match_rank(&macro_name, q.typed_lower);
+            let sort = format!("{rank}_1_{}", macro_name.to_ascii_lowercase());
+            items.push(make_item(
+                macro_name,
+                CompletionItemKind::FUNCTION,
+                Some("macro".to_owned()),
+                sort,
+                q.replace_range,
+            ));
+        }
+    }
+    collect_directive_completions(
+        q.db,
+        q.typed_lower,
+        q.replace_range,
+        q.next_is_ws,
+        q.caps,
+        items,
+    );
 }
 
 pub fn resolve_completion_item(mut item: CompletionItem, db: &Database) -> CompletionItem {
@@ -254,6 +294,19 @@ pub(super) fn make_item(
     make_item_with_data(label, kind, detail, None, sort_text, replace_range)
 }
 
+pub(super) struct RichItemSpec {
+    pub label: String,
+    pub filter_text: String,
+    pub new_text: String,
+    pub kind: CompletionItemKind,
+    pub detail: Option<String>,
+    pub tags: Option<Vec<CompletionItemTag>>,
+    pub data: Option<serde_json::Value>,
+    pub insert_text_format: Option<InsertTextFormat>,
+    pub sort_text: String,
+    pub replace_range: Range,
+}
+
 pub(super) fn make_item_with_data(
     label: String,
     kind: CompletionItemKind,
@@ -264,57 +317,41 @@ pub(super) fn make_item_with_data(
 ) -> CompletionItem {
     let filter_text = label.clone();
     let new_text = label.clone();
-    make_rich_item(
+    make_rich_item(RichItemSpec {
         label,
         filter_text,
         new_text,
         kind,
         detail,
-        None,
+        tags: None,
         data,
-        None,
+        insert_text_format: None,
         sort_text,
         replace_range,
-    )
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn make_rich_item(
-    label: String,
-    filter_text: String,
-    new_text: String,
-    kind: CompletionItemKind,
-    detail: Option<String>,
-    tags: Option<Vec<CompletionItemTag>>,
-    data: Option<serde_json::Value>,
-    insert_text_format: Option<InsertTextFormat>,
-    sort_text: String,
-    replace_range: Range,
-) -> CompletionItem {
+pub(super) fn make_rich_item(s: RichItemSpec) -> CompletionItem {
     CompletionItem {
-        filter_text: Some(filter_text),
-        insert_text_format,
+        filter_text: Some(s.filter_text),
+        insert_text_format: s.insert_text_format,
         text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-            range: replace_range,
-            new_text,
+            range: s.replace_range,
+            new_text: s.new_text,
         })),
-        label,
-        kind: Some(kind),
-        detail,
-        tags,
-        data,
-        sort_text: Some(sort_text),
+        label: s.label,
+        kind: Some(s.kind),
+        detail: s.detail,
+        tags: s.tags,
+        data: s.data,
+        sort_text: Some(s.sort_text),
         ..CompletionItem::default()
     }
 }
 
 fn classify_completion_context(line_prefix: &str) -> CompletionContext {
-    if has_unquoted_comment(line_prefix) {
-        return CompletionContext::Comment;
-    }
-
-    let stmt = last_unquoted_statement(line_prefix);
-    let after_label = strip_leading_label(stmt).trim_start();
+    let active = crate::line::active_statement_prefix(line_prefix);
+    let after_label = active.as_str();
 
     if after_label.is_empty() {
         return CompletionContext::StatementStart {
@@ -335,132 +372,12 @@ fn classify_completion_context(line_prefix: &str) -> CompletionContext {
         return CompletionContext::OptionSubcommand;
     }
 
-    let (operand_index, inside_parens) = count_operand_position(args);
+    let (operand_index, inside_parens) = crate::line::count_operand_position(args);
     CompletionContext::Operand {
         mnemonic: head,
         operand_index,
         inside_parens,
     }
-}
-
-fn has_unquoted_comment(s: &str) -> bool {
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut chars = s.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if in_single {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '\'' {
-                in_single = false;
-            }
-        } else if in_double {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '"' {
-                in_double = false;
-            }
-        } else {
-            match ch {
-                '\'' => in_single = true,
-                '"' => in_double = true,
-                '#' => return true,
-                '/' if chars.peek() == Some(&'/') => return true,
-                _ => {}
-            }
-        }
-    }
-    false
-}
-
-fn last_unquoted_statement(s: &str) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut last_semi = 0;
-    let mut chars = s.char_indices().peekable();
-    while let Some((idx, ch)) = chars.next() {
-        if in_single {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '\'' {
-                in_single = false;
-            }
-        } else if in_double {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '"' {
-                in_double = false;
-            }
-        } else {
-            match ch {
-                '\'' => in_single = true,
-                '"' => in_double = true,
-                ';' => last_semi = idx + 1,
-                _ => {}
-            }
-        }
-    }
-    &s[last_semi..]
-}
-
-fn strip_leading_label(stmt: &str) -> &str {
-    let mut rest = stmt.trim_start();
-    loop {
-        let mut colon_pos = None;
-        for (idx, ch) in rest.char_indices() {
-            if ch == ':' {
-                colon_pos = Some(idx);
-                break;
-            }
-            if !ch.is_ascii_alphanumeric() && !matches!(ch, '_' | '.' | '$') && !ch.is_whitespace()
-            {
-                break;
-            }
-        }
-        let Some(pos) = colon_pos else {
-            break;
-        };
-        let label_part = rest[..pos].trim();
-        if label_part.is_empty() || label_part.contains(char::is_whitespace) {
-            break;
-        }
-        rest = rest[pos + 1..].trim_start();
-    }
-    rest
-}
-
-fn count_operand_position(args: &str) -> (usize, bool) {
-    let mut depth = 0usize;
-    let mut commas = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut chars = args.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if in_single {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '\'' {
-                in_single = false;
-            }
-        } else if in_double {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '"' {
-                in_double = false;
-            }
-        } else {
-            match ch {
-                '\'' => in_single = true,
-                '"' => in_double = true,
-                '(' => depth += 1,
-                ')' => depth = depth.saturating_sub(1),
-                ',' if depth == 0 => commas += 1,
-                _ => {}
-            }
-        }
-    }
-    (commas, depth > 0)
 }
 
 #[cfg(test)]
@@ -682,11 +599,9 @@ mod tests {
         let Some(Documentation::MarkupContent(ld_doc0)) = &ld_resolved.documentation else {
             panic!("expected markup doc on resolve");
         };
-        assert!(
-            ld_doc0
-                .value
-                .starts_with("```riscv\nld rd, imm12(rs1)\n```")
-        );
+        assert!(ld_doc0.value.starts_with(
+            "Instruction · Load doubleword · `RV64I` · RV64\n\n```riscv\nld rd, imm12(rs1)\n```"
+        ));
 
         // Deprecated alias carries DEPRECATED tag and sorts after preferred instruction
         let deprecated_vpopc = arr
@@ -855,5 +770,67 @@ mod tests {
             panic!("expected CompletionList");
         };
         assert!(filtered.items.iter().any(|i| i.label == "sym_259"));
+    }
+
+    #[test]
+    fn no_completion_inside_block_and_line_comments_but_completes_after_closed_block() {
+        let db = Database::load().expect("db");
+        let mut store = DocumentStore::new().expect("store");
+        let uri = lsp_types::Uri::from_str("file:///comments.S").expect("uri");
+        let src = "\
+/* single line ad */
+    /* indented ad */
+/* x */ nop
+/* a */ /* b ad */
+/*
+ ad
+*/
+addi a0, a1, 1 /* ad */
+// ad
+# ad
+/* x */ ad
+";
+        let doc = store.open(uri, 1, src.to_owned());
+        let (mut ctx, mut index) = ctx_and_index("rv64gc");
+        index.upsert_open_document(doc);
+        let plain = CompletionClientCaps::default();
+
+        // Suppressed inside every comment form
+        for (line, col, desc) in [
+            (0, 17, "single-line block col 0"),
+            (1, 18, "indented single-line block"),
+            (3, 15, "second block after closed block"),
+            (5, 3, "multi-line block body"),
+            (7, 20, "trailing block comment"),
+            (8, 5, "double-slash line comment"),
+            (9, 4, "hash line comment"),
+        ] {
+            let res = provide_completion(
+                doc,
+                Position::new(line, col),
+                &db,
+                &mut ctx,
+                &mut index,
+                plain,
+            );
+            assert!(res.is_none(), "expected no completion in {desc}");
+        }
+
+        // After a closed block comment on the same line, completion works normally
+        let after_closed =
+            provide_completion(doc, Position::new(2, 11), &db, &mut ctx, &mut index, plain)
+                .expect("completion after /* x */ nop");
+        let CompletionResponse::List(list) = after_closed else {
+            panic!("expected CompletionList");
+        };
+        assert!(list.items.iter().any(|i| i.label == "nop"));
+
+        let prefix_after_closed =
+            provide_completion(doc, Position::new(10, 10), &db, &mut ctx, &mut index, plain)
+                .expect("completion after /* x */ ad");
+        let CompletionResponse::List(list2) = prefix_after_closed else {
+            panic!("expected CompletionList");
+        };
+        assert!(list2.items.iter().any(|i| i.label == "addi"));
     }
 }

@@ -1,0 +1,460 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": "x0",
+      "documentation": "Register · Integer\n\n```riscv\nzero (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
+      "insertText": "zero, ",
+      "kind": 6,
+      "label": "zero"
+    },
+    {
+      "detail": "zero",
+      "documentation": "Register · Integer\n\n```riscv\nzero (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
+      "insertText": "x0, ",
+      "kind": 6,
+      "label": "x0"
+    },
+    {
+      "detail": "x1",
+      "documentation": "Register · Integer · caller-saved\n\n```riscv\nra (x1)\n```\n\n---\n\nReturn address register used by CALL/JAL instructions.",
+      "insertText": "ra, ",
+      "kind": 6,
+      "label": "ra"
+    },
+    {
+      "detail": "ra",
+      "documentation": "Register · Integer · caller-saved\n\n```riscv\nra (x1)\n```\n\n---\n\nReturn address register used by CALL/JAL instructions.",
+      "insertText": "x1, ",
+      "kind": 6,
+      "label": "x1"
+    },
+    {
+      "detail": "x2",
+      "documentation": "Register · Integer · callee-saved\n\n```riscv\nsp (x2)\n```\n\n---\n\nStack pointer.",
+      "insertText": "sp, ",
+      "kind": 6,
+      "label": "sp"
+    },
+    {
+      "detail": "sp",
+      "documentation": null,
+      "insertText": "x2, ",
+      "kind": 6,
+      "label": "x2"
+    },
+    {
+      "detail": "x3",
+      "documentation": null,
+      "insertText": "gp, ",
+      "kind": 6,
+      "label": "gp"
+    },
+    {
+      "detail": "gp",
+      "documentation": null,
+      "insertText": "x3, ",
+      "kind": 6,
+      "label": "x3"
+    },
+    {
+      "detail": "x4",
+      "documentation": null,
+      "insertText": "tp, ",
+      "kind": 6,
+      "label": "tp"
+    },
+    {
+      "detail": "tp",
+      "documentation": null,
+      "insertText": "x4, ",
+      "kind": 6,
+      "label": "x4"
+    },
+    {
+      "detail": "x5",
+      "documentation": null,
+      "insertText": "t0, ",
+      "kind": 6,
+      "label": "t0"
+    },
+    {
+      "detail": "t0",
+      "documentation": null,
+      "insertText": "x5, ",
+      "kind": 6,
+      "label": "x5"
+    },
+    {
+      "detail": "x6",
+      "documentation": null,
+      "insertText": "t1, ",
+      "kind": 6,
+      "label": "t1"
+    },
+    {
+      "detail": "t1",
+      "documentation": null,
+      "insertText": "x6, ",
+      "kind": 6,
+      "label": "x6"
+    },
+    {
+      "detail": "x7",
+      "documentation": null,
+      "insertText": "t2, ",
+      "kind": 6,
+      "label": "t2"
+    },
+    {
+      "detail": "t2",
+      "documentation": null,
+      "insertText": "x7, ",
+      "kind": 6,
+      "label": "x7"
+    },
+    {
+      "detail": "x8",
+      "documentation": null,
+      "insertText": "s0, ",
+      "kind": 6,
+      "label": "s0"
+    },
+    {
+      "detail": "x8",
+      "documentation": null,
+      "insertText": "fp, ",
+      "kind": 6,
+      "label": "fp"
+    },
+    {
+      "detail": "s0, fp",
+      "documentation": null,
+      "insertText": "x8, ",
+      "kind": 6,
+      "label": "x8"
+    },
+    {
+      "detail": "x9",
+      "documentation": null,
+      "insertText": "s1, ",
+      "kind": 6,
+      "label": "s1"
+    },
+    {
+      "detail": "s1",
+      "documentation": null,
+      "insertText": "x9, ",
+      "kind": 6,
+      "label": "x9"
+    },
+    {
+      "detail": "x10",
+      "documentation": null,
+      "insertText": "a0, ",
+      "kind": 6,
+      "label": "a0"
+    },
+    {
+      "detail": "a0",
+      "documentation": null,
+      "insertText": "x10, ",
+      "kind": 6,
+      "label": "x10"
+    },
+    {
+      "detail": "x11",
+      "documentation": null,
+      "insertText": "a1, ",
+      "kind": 6,
+      "label": "a1"
+    },
+    {
+      "detail": "a1",
+      "documentation": null,
+      "insertText": "x11, ",
+      "kind": 6,
+      "label": "x11"
+    },
+    {
+      "detail": "x12",
+      "documentation": null,
+      "insertText": "a2, ",
+      "kind": 6,
+      "label": "a2"
+    },
+    {
+      "detail": "a2",
+      "documentation": null,
+      "insertText": "x12, ",
+      "kind": 6,
+      "label": "x12"
+    },
+    {
+      "detail": "x13",
+      "documentation": null,
+      "insertText": "a3, ",
+      "kind": 6,
+      "label": "a3"
+    },
+    {
+      "detail": "a3",
+      "documentation": null,
+      "insertText": "x13, ",
+      "kind": 6,
+      "label": "x13"
+    },
+    {
+      "detail": "x14",
+      "documentation": null,
+      "insertText": "a4, ",
+      "kind": 6,
+      "label": "a4"
+    },
+    {
+      "detail": "a4",
+      "documentation": null,
+      "insertText": "x14, ",
+      "kind": 6,
+      "label": "x14"
+    },
+    {
+      "detail": "x15",
+      "documentation": null,
+      "insertText": "a5, ",
+      "kind": 6,
+      "label": "a5"
+    },
+    {
+      "detail": "a5",
+      "documentation": null,
+      "insertText": "x15, ",
+      "kind": 6,
+      "label": "x15"
+    },
+    {
+      "detail": "x16",
+      "documentation": null,
+      "insertText": "a6, ",
+      "kind": 6,
+      "label": "a6"
+    },
+    {
+      "detail": "a6",
+      "documentation": null,
+      "insertText": "x16, ",
+      "kind": 6,
+      "label": "x16"
+    },
+    {
+      "detail": "x17",
+      "documentation": null,
+      "insertText": "a7, ",
+      "kind": 6,
+      "label": "a7"
+    },
+    {
+      "detail": "a7",
+      "documentation": null,
+      "insertText": "x17, ",
+      "kind": 6,
+      "label": "x17"
+    },
+    {
+      "detail": "x18",
+      "documentation": null,
+      "insertText": "s2, ",
+      "kind": 6,
+      "label": "s2"
+    },
+    {
+      "detail": "s2",
+      "documentation": null,
+      "insertText": "x18, ",
+      "kind": 6,
+      "label": "x18"
+    },
+    {
+      "detail": "x19",
+      "documentation": null,
+      "insertText": "s3, ",
+      "kind": 6,
+      "label": "s3"
+    },
+    {
+      "detail": "s3",
+      "documentation": null,
+      "insertText": "x19, ",
+      "kind": 6,
+      "label": "x19"
+    },
+    {
+      "detail": "x20",
+      "documentation": null,
+      "insertText": "s4, ",
+      "kind": 6,
+      "label": "s4"
+    },
+    {
+      "detail": "s4",
+      "documentation": null,
+      "insertText": "x20, ",
+      "kind": 6,
+      "label": "x20"
+    },
+    {
+      "detail": "x21",
+      "documentation": null,
+      "insertText": "s5, ",
+      "kind": 6,
+      "label": "s5"
+    },
+    {
+      "detail": "s5",
+      "documentation": null,
+      "insertText": "x21, ",
+      "kind": 6,
+      "label": "x21"
+    },
+    {
+      "detail": "x22",
+      "documentation": null,
+      "insertText": "s6, ",
+      "kind": 6,
+      "label": "s6"
+    },
+    {
+      "detail": "s6",
+      "documentation": null,
+      "insertText": "x22, ",
+      "kind": 6,
+      "label": "x22"
+    },
+    {
+      "detail": "x23",
+      "documentation": null,
+      "insertText": "s7, ",
+      "kind": 6,
+      "label": "s7"
+    },
+    {
+      "detail": "s7",
+      "documentation": null,
+      "insertText": "x23, ",
+      "kind": 6,
+      "label": "x23"
+    },
+    {
+      "detail": "x24",
+      "documentation": null,
+      "insertText": "s8, ",
+      "kind": 6,
+      "label": "s8"
+    },
+    {
+      "detail": "s8",
+      "documentation": null,
+      "insertText": "x24, ",
+      "kind": 6,
+      "label": "x24"
+    },
+    {
+      "detail": "x25",
+      "documentation": null,
+      "insertText": "s9, ",
+      "kind": 6,
+      "label": "s9"
+    },
+    {
+      "detail": "s9",
+      "documentation": null,
+      "insertText": "x25, ",
+      "kind": 6,
+      "label": "x25"
+    },
+    {
+      "detail": "x26",
+      "documentation": null,
+      "insertText": "s10, ",
+      "kind": 6,
+      "label": "s10"
+    },
+    {
+      "detail": "s10",
+      "documentation": null,
+      "insertText": "x26, ",
+      "kind": 6,
+      "label": "x26"
+    },
+    {
+      "detail": "x27",
+      "documentation": null,
+      "insertText": "s11, ",
+      "kind": 6,
+      "label": "s11"
+    },
+    {
+      "detail": "s11",
+      "documentation": null,
+      "insertText": "x27, ",
+      "kind": 6,
+      "label": "x27"
+    },
+    {
+      "detail": "x28",
+      "documentation": null,
+      "insertText": "t3, ",
+      "kind": 6,
+      "label": "t3"
+    },
+    {
+      "detail": "t3",
+      "documentation": null,
+      "insertText": "x28, ",
+      "kind": 6,
+      "label": "x28"
+    },
+    {
+      "detail": "x29",
+      "documentation": null,
+      "insertText": "t4, ",
+      "kind": 6,
+      "label": "t4"
+    },
+    {
+      "detail": "t4",
+      "documentation": null,
+      "insertText": "x29, ",
+      "kind": 6,
+      "label": "x29"
+    },
+    {
+      "detail": "x30",
+      "documentation": null,
+      "insertText": "t5, ",
+      "kind": 6,
+      "label": "t5"
+    },
+    {
+      "detail": "t5",
+      "documentation": null,
+      "insertText": "x30, ",
+      "kind": 6,
+      "label": "x30"
+    },
+    {
+      "detail": "x31",
+      "documentation": null,
+      "insertText": "t6, ",
+      "kind": 6,
+      "label": "t6"
+    },
+    {
+      "detail": "t6",
+      "documentation": null,
+      "insertText": "x31, ",
+      "kind": 6,
+      "label": "x31"
+    }
+  ]
+}

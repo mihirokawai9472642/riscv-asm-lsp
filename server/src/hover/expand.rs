@@ -37,38 +37,30 @@ pub struct PendingExpansion {
     pub(super) known_consts: HashMap<String, String>,
 }
 
-pub(super) fn append_cached_expansion(mut md: String, cached: &CachedExpansion) -> String {
+pub(super) fn format_this_line_fact(cached: &CachedExpansion) -> String {
     match cached {
         CachedExpansion::Expanded(items) if items.len() == 1 => {
             let item = &items[0];
             match item.encoding.as_deref() {
-                Some("(relocated)") => {
-                    let _ = write!(md, "\n\n**This line:** `{}` · (relocated)", item.asm);
-                }
-                Some(hex) => {
-                    let _ = write!(md, "\n\n**This line:** `{}` · `{hex}`", item.asm);
-                }
-                None => {
-                    let _ = write!(md, "\n\n**This line:** `{}`", item.asm);
-                }
+                Some("(relocated)") => format!("This line: `{}` (relocated)", item.asm),
+                Some(hex) => format!("This line: `{}` → `{hex}`", item.asm),
+                None => format!("This line: `{}`", item.asm),
             }
         }
         CachedExpansion::Expanded(items) => {
-            let _ = writeln!(md, "\n\n**This line:**\n```riscv");
+            let mut out = String::from("This line:\n```riscv\n");
             for item in items {
                 if let Some(enc) = &item.encoding {
-                    let _ = writeln!(md, "{}  # {enc}", item.asm);
+                    let _ = writeln!(out, "{}  # {enc}", item.asm);
                 } else {
-                    let _ = writeln!(md, "{}", item.asm);
+                    let _ = writeln!(out, "{}", item.asm);
                 }
             }
-            md.push_str("```");
+            out.push_str("```");
+            out
         }
-        CachedExpansion::Unavailable => {
-            md.push_str("\n\n**This line:** *expansion unavailable*");
-        }
+        CachedExpansion::Unavailable => "This line: *expansion unavailable*".to_owned(),
     }
-    md
 }
 
 pub(super) fn resolve_expansion(pending: &PendingExpansion, tools: &ToolRunner) -> CachedExpansion {

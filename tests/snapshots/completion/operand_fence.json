@@ -1,0 +1,47 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": "fence ordering",
+      "documentation": "Input, Output, Read, Write",
+      "insertText": "iorw, ",
+      "kind": 20,
+      "label": "iorw"
+    },
+    {
+      "detail": "fence ordering",
+      "documentation": "Read and Write",
+      "insertText": "rw, ",
+      "kind": 20,
+      "label": "rw"
+    },
+    {
+      "detail": "fence ordering",
+      "documentation": "Read",
+      "insertText": "r, ",
+      "kind": 20,
+      "label": "r"
+    },
+    {
+      "detail": "fence ordering",
+      "documentation": "Write",
+      "insertText": "w, ",
+      "kind": 20,
+      "label": "w"
+    },
+    {
+      "detail": "fence ordering",
+      "documentation": "Input",
+      "insertText": "i, ",
+      "kind": 20,
+      "label": "i"
+    },
+    {
+      "detail": "fence ordering",
+      "documentation": "Output",
+      "insertText": "o, ",
+      "kind": 20,
+      "label": "o"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [31:12] of absolute symbol address",
+      "insertText": "%hi(",
+      "kind": 3,
+      "label": "%hi("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [11:0] of absolute symbol address",
+      "insertText": "%lo(",
+      "kind": 3,
+      "label": "%lo("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [31:12] of PC-relative symbol address",
+      "insertText": "%pcrel_hi(",
+      "kind": 3,
+      "label": "%pcrel_hi("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [11:0] offset referencing the matching %pcrel_hi label",
+      "insertText": "%pcrel_lo(",
+      "kind": 3,
+      "label": "%pcrel_lo("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [31:12] of TLS local-exec offset",
+      "insertText": "%tprel_hi(",
+      "kind": 3,
+      "label": "%tprel_hi("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [11:0] of TLS local-exec offset",
+      "insertText": "%tprel_lo(",
+      "kind": 3,
+      "label": "%tprel_lo("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "TLS tp-relative add relocation annotation",
+      "insertText": "%tprel_add(",
+      "kind": 3,
+      "label": "%tprel_add("
+    },
+    {
+      "detail": "relocation modifier",
+      "documentation": "Bits [31:12] of PC-relative GOT entry address",
+      "insertText": "%got_pcrel_hi(",
+      "kind": 3,
+      "label": "%got_pcrel_hi("
+    }
+  ]
+}

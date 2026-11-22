@@ -22,7 +22,8 @@ use lsp_types::{
 use tree_sitter::Parser;
 
 use crate::context::{
-    display_path_for_client, is_preprocessed_by_suffix, normalize_path, path_to_uri, uri_to_path,
+    display_path_for_client, is_linker_script_template, is_preprocessed_by_suffix, normalize_path,
+    path_to_uri, uri_to_path,
 };
 use crate::diagnostics::MessageSink;
 use crate::document::Document;
@@ -33,7 +34,7 @@ pub use scope::{
     resolve_param_scope, visible_params_at,
 };
 
-use parse::{build_file_index, is_eager_asm_path, is_header_path};
+use parse::{BuildFileInput, build_file_index, is_eager_asm_path, is_header_path};
 
 const MAX_INDEX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_WORKSPACE_FILES: usize = 2_000;
@@ -262,16 +263,16 @@ impl WorkspaceIndex {
         let handle = thread::spawn(move || {
             let mut logged_panic = false;
             let scanned = run_guarded_index_step("background scan", &mut logged_panic, || {
-                scan_directory_in_background(
-                    &root,
-                    Some(&root),
-                    canon_root.as_deref(),
+                scan_directory_in_background(ScanTask {
+                    root: &root,
+                    client_root: Some(&root),
+                    canon_root: canon_root.as_deref(),
                     cap,
-                    &cancel,
-                    &seen,
-                    &tx,
-                    progress_sink.as_ref(),
-                )
+                    cancel: &cancel,
+                    seen: &seen,
+                    tx: &tx,
+                    progress_sink: progress_sink.as_ref(),
+                })
             })
             .unwrap_or(0);
             if let Some(sink) = &progress_sink {
@@ -293,6 +294,9 @@ impl WorkspaceIndex {
         let Some(file_path) = uri_to_path(uri) else {
             return;
         };
+        if is_linker_script_template(&file_path) {
+            return;
+        }
         let Some(scan_root) = find_priority_root(
             &file_path,
             self.workspace_root.as_deref(),
@@ -315,16 +319,16 @@ impl WorkspaceIndex {
         let handle = thread::spawn(move || {
             let mut logged_panic = false;
             let _ = run_guarded_index_step("priority scan", &mut logged_panic, || {
-                scan_directory_in_background(
-                    &display_root,
-                    client_root.as_deref(),
-                    canon_root.as_deref(),
-                    MAX_WORKSPACE_FILES,
-                    &cancel,
-                    &seen,
-                    &tx,
-                    None,
-                );
+                scan_directory_in_background(ScanTask {
+                    root: &display_root,
+                    client_root: client_root.as_deref(),
+                    canon_root: canon_root.as_deref(),
+                    cap: MAX_WORKSPACE_FILES,
+                    cancel: &cancel,
+                    seen: &seen,
+                    tx: &tx,
+                    progress_sink: None,
+                });
             });
         });
         self.priority_handles.push(handle);
@@ -422,16 +426,21 @@ impl WorkspaceIndex {
             return;
         };
         let norm = normalize_path(&path);
+        if is_linker_script_template(&norm) {
+            return;
+        }
         let is_header = is_header_path(&norm);
         let effective_pre = if is_header { true } else { preprocessed };
         let entry = build_file_index(
-            norm.clone(),
-            doc.uri.clone(),
-            is_header,
-            effective_pre,
-            doc.text.clone(),
-            doc.line_index.clone(),
-            doc.tree.as_ref(),
+            BuildFileInput {
+                path: norm.clone(),
+                uri: doc.uri.clone(),
+                is_header,
+                preprocessed: effective_pre,
+                text: doc.text.clone(),
+                line_index: doc.line_index.clone(),
+                existing_tree: doc.tree.as_ref(),
+            },
             &mut self.parser,
         );
         self.files.insert(norm, entry);
@@ -457,13 +466,15 @@ impl WorkspaceIndex {
         let text = existing.text.clone();
         let line_index = existing.line_index.clone();
         let rebuilt = build_file_index(
-            norm.clone(),
-            uri,
-            false,
-            preprocessed,
-            text,
-            line_index,
-            None,
+            BuildFileInput {
+                path: norm.clone(),
+                uri,
+                is_header: false,
+                preprocessed,
+                text,
+                line_index,
+                existing_tree: None,
+            },
             &mut self.parser,
         );
         self.files.insert(norm, rebuilt);
@@ -474,6 +485,10 @@ impl WorkspaceIndex {
             return;
         };
         let norm = normalize_path(&path);
+        if is_linker_script_template(&norm) {
+            self.files.remove(&norm);
+            return;
+        }
         if norm.exists() {
             let display = self.display_path(&path);
             self.index_path_from_disk_with_display(&display, &norm);
@@ -608,6 +623,9 @@ fn parse_file_from_disk(
     seen: Option<&Mutex<HashSet<PathBuf>>>,
     parser: &mut Parser,
 ) -> Option<FileIndex> {
+    if is_linker_script_template(path) {
+        return None;
+    }
     let mut file = fs::File::open(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_INDEX_FILE_BYTES {
@@ -646,13 +664,15 @@ fn parse_file_from_disk(
     let is_header = is_header_path(&norm);
     let preprocessed = is_preprocessed_by_suffix(&norm);
     Some(build_file_index(
-        norm,
-        uri,
-        is_header,
-        preprocessed,
-        text,
-        line_index,
-        None,
+        BuildFileInput {
+            path: norm,
+            uri,
+            is_header,
+            preprocessed,
+            text,
+            line_index,
+            existing_tree: None,
+        },
         parser,
     ))
 }
@@ -683,24 +703,25 @@ fn is_foreign_assembly(head: &[u8]) -> bool {
     false
 }
 
-#[allow(clippy::too_many_arguments)]
-fn scan_directory_in_background(
-    root: &Path,
-    client_root: Option<&Path>,
-    canon_root: Option<&Path>,
+struct ScanTask<'a> {
+    root: &'a Path,
+    client_root: Option<&'a Path>,
+    canon_root: Option<&'a Path>,
     cap: usize,
-    cancel: &AtomicBool,
-    seen: &Mutex<HashSet<PathBuf>>,
-    tx: &mpsc::Sender<FileIndex>,
-    progress_sink: Option<&MessageSink>,
-) -> usize {
+    cancel: &'a AtomicBool,
+    seen: &'a Mutex<HashSet<PathBuf>>,
+    tx: &'a mpsc::Sender<FileIndex>,
+    progress_sink: Option<&'a MessageSink>,
+}
+
+fn scan_directory_in_background(task: ScanTask<'_>) -> usize {
     let mut parser = Parser::new();
     let language = tree_sitter_riscv::LANGUAGE.into();
     if parser.set_language(&language).is_err() {
         return 0;
     }
 
-    let mut builder = WalkBuilder::new(root);
+    let mut builder = WalkBuilder::new(task.root);
     builder
         .hidden(true)
         .git_ignore(true)
@@ -723,7 +744,7 @@ fn scan_directory_in_background(
     let mut scanned = 0usize;
     let mut logged_panic = false;
     for entry in builder.build().flatten() {
-        if cancel.load(Ordering::Relaxed) {
+        if task.cancel.load(Ordering::Relaxed) {
             break;
         }
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -733,20 +754,27 @@ fn scan_directory_in_background(
         if !is_eager_asm_path(path) {
             continue;
         }
-        if scanned >= cap {
-            eprintln!("riscv-asm-lsp: workspace scan capped at {cap} files");
+        if scanned >= task.cap {
+            eprintln!("riscv-asm-lsp: workspace scan capped at {} files", task.cap);
             break;
         }
         let parsed = run_guarded_index_step("parse file", &mut logged_panic, || {
-            parse_file_from_disk(path, None, client_root, canon_root, Some(seen), &mut parser)
+            parse_file_from_disk(
+                path,
+                None,
+                task.client_root,
+                task.canon_root,
+                Some(task.seen),
+                &mut parser,
+            )
         })
         .flatten();
         if let Some(file_idx) = parsed {
-            if tx.send(file_idx).is_err() {
+            if task.tx.send(file_idx).is_err() {
                 break;
             }
             scanned += 1;
-            if let Some(sink) = progress_sink
+            if let Some(sink) = task.progress_sink
                 && scanned.is_multiple_of(50)
             {
                 send_progress(

@@ -1,0 +1,32 @@
+{
+  "changes": {
+    "<FIXTURES_URI>/kernel_entry.S": [
+      {
+        "newText": "PUSH_REG",
+        "range": {
+          "end": {
+            "character": 15,
+            "line": 5
+          },
+          "start": {
+            "character": 7,
+            "line": 5
+          }
+        }
+      },
+      {
+        "newText": "PUSH_REG",
+        "range": {
+          "end": {
+            "character": 12,
+            "line": 18
+          },
+          "start": {
+            "character": 4,
+            "line": 18
+          }
+        }
+      }
+    ]
+  }
+}

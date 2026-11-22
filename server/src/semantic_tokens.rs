@@ -6,6 +6,7 @@ use lsp_types::{
 };
 use tree_sitter::Node;
 
+use crate::ast::{AstVisitor, walk_node};
 use crate::context::CompileContext;
 use crate::data::Database;
 use crate::document::Document;
@@ -81,44 +82,65 @@ fn collect_semantic_tokens(
     index.sync_preprocessed(&doc.uri, file_ctx.preprocessed);
     let symbol_kinds = index.symbol_kinds_in_scope(&doc.uri, ctx);
     let mut raw = Vec::new();
-    let mut decl_spans: HashSet<(usize, usize)> = HashSet::new();
-    let mut local_non_csr_defs: HashSet<String> = HashSet::new();
+    let mut decl_spans = HashSet::new();
+    let mut local_non_csr_defs = HashSet::new();
 
+    collect_hash_line_tokens(doc, file_ctx.preprocessed, &mut raw);
+    collect_declaration_tokens(
+        doc,
+        index,
+        &mut decl_spans,
+        &mut local_non_csr_defs,
+        &mut raw,
+    );
+
+    if let Some(tree) = &doc.tree {
+        let mut visitor = TokenVisitor {
+            db,
+            symbol_kinds: &symbol_kinds,
+            local_non_csr_defs: &local_non_csr_defs,
+            decl_spans: &decl_spans,
+            in_csr_stmt: false,
+            out: &mut raw,
+        };
+        walk_node(tree.root_node(), &doc.text, &mut visitor);
+    }
+
+    Some(SemanticTokens {
+        result_id: None,
+        data: encode_delta_tokens(doc, raw, range_filter),
+    })
+}
+
+fn collect_hash_line_tokens(doc: &Document, preprocessed: bool, raw: &mut Vec<RawToken>) {
     for line_idx in 0..doc.line_index.line_count() {
         let (ls, ce, _) = doc.line_index.line_bounds(&doc.text, line_idx);
         let line = doc.text.get(ls..ce).unwrap_or("");
         let Some(kind) = classify_hash_line(line) else {
             continue;
         };
-        if file_ctx.preprocessed {
-            match kind {
+        if preprocessed {
+            let (start, end) = match kind {
                 HashLineKind::Directive {
                     hash_offset,
                     name_span,
                     ..
-                } => raw.push(RawToken {
-                    start_byte: ls + hash_offset,
-                    end_byte: ls + name_span.1,
-                    token_type: IDX_PREPROCESSOR,
-                    modifiers: 0,
-                }),
+                } => (ls + hash_offset, ls + name_span.1),
                 HashLineKind::LineMarker {
                     hash_offset,
                     num_span,
-                } => raw.push(RawToken {
-                    start_byte: ls + hash_offset,
-                    end_byte: ls + num_span.1,
-                    token_type: IDX_PREPROCESSOR,
-                    modifiers: 0,
-                }),
-                HashLineKind::NullDirective { hash_offset } => raw.push(RawToken {
-                    start_byte: ls + hash_offset,
-                    end_byte: ls + hash_offset + 1,
-                    token_type: IDX_PREPROCESSOR,
-                    modifiers: 0,
-                }),
-                HashLineKind::Comment { .. } => {}
-            }
+                } => (ls + hash_offset, ls + num_span.1),
+                HashLineKind::NullDirective { hash_offset } => {
+                    (ls + hash_offset, ls + hash_offset + 1)
+                }
+                HashLineKind::Comment { .. } => continue,
+            };
+            raw.push(RawToken {
+                start_byte: start,
+                end_byte: end,
+                token_type: IDX_PREPROCESSOR,
+                modifiers: 0,
+            });
         } else {
             raw.push(RawToken {
                 start_byte: ls + kind.hash_offset(),
@@ -128,66 +150,69 @@ fn collect_semantic_tokens(
             });
         }
     }
+}
 
-    if let Some(file_idx) = index.file_by_uri(&doc.uri) {
-        for def in &file_idx.definitions {
-            if !matches!(def.kind, SymKind::Macro | SymKind::MacroParam) {
-                local_non_csr_defs.insert(def.name.clone());
-            }
-            let (tok_type, is_macro) = match def.kind {
-                SymKind::Label | SymKind::LocalLabel | SymKind::NumericLabel => (IDX_LABEL, false),
-                SymKind::Equ | SymKind::Define => (IDX_CONSTANT, false),
-                SymKind::Macro => (IDX_MACRO, true),
-                SymKind::MacroParam => (IDX_PARAMETER, false),
-            };
-            if def.name_span.0 < def.name_span.1 {
-                decl_spans.insert(def.name_span);
-                raw.push(RawToken {
-                    start_byte: def.name_span.0,
-                    end_byte: def.name_span.1,
-                    token_type: tok_type,
-                    modifiers: MOD_DECLARATION,
-                });
-            }
-            if is_macro {
-                for p in &def.params {
-                    if p.span.0 < p.span.1 {
-                        decl_spans.insert(p.span);
-                        raw.push(RawToken {
-                            start_byte: p.span.0,
-                            end_byte: p.span.1,
-                            token_type: IDX_PARAMETER,
-                            modifiers: MOD_DECLARATION,
-                        });
-                    }
+fn collect_declaration_tokens(
+    doc: &Document,
+    index: &WorkspaceIndex,
+    decl_spans: &mut HashSet<(usize, usize)>,
+    local_non_csr_defs: &mut HashSet<String>,
+    raw: &mut Vec<RawToken>,
+) {
+    let Some(file_idx) = index.file_by_uri(&doc.uri) else {
+        return;
+    };
+    for def in &file_idx.definitions {
+        if !matches!(def.kind, SymKind::Macro | SymKind::MacroParam) {
+            local_non_csr_defs.insert(def.name.clone());
+        }
+        let (tok_type, is_macro) = match def.kind {
+            SymKind::Label | SymKind::LocalLabel | SymKind::NumericLabel => (IDX_LABEL, false),
+            SymKind::Equ | SymKind::Define => (IDX_CONSTANT, false),
+            SymKind::Macro => (IDX_MACRO, true),
+            SymKind::MacroParam => (IDX_PARAMETER, false),
+        };
+        if def.name_span.0 < def.name_span.1 {
+            decl_spans.insert(def.name_span);
+            raw.push(RawToken {
+                start_byte: def.name_span.0,
+                end_byte: def.name_span.1,
+                token_type: tok_type,
+                modifiers: MOD_DECLARATION,
+            });
+        }
+        if is_macro {
+            for p in &def.params {
+                if p.span.0 < p.span.1 {
+                    decl_spans.insert(p.span);
+                    raw.push(RawToken {
+                        start_byte: p.span.0,
+                        end_byte: p.span.1,
+                        token_type: IDX_PARAMETER,
+                        modifiers: MOD_DECLARATION,
+                    });
                 }
             }
         }
-        for scope in &file_idx.repeat_scopes {
-            if scope.param.span.0 < scope.param.span.1 {
-                decl_spans.insert(scope.param.span);
-                raw.push(RawToken {
-                    start_byte: scope.param.span.0,
-                    end_byte: scope.param.span.1,
-                    token_type: IDX_PARAMETER,
-                    modifiers: MOD_DECLARATION,
-                });
-            }
+    }
+    for scope in &file_idx.repeat_scopes {
+        if scope.param.span.0 < scope.param.span.1 {
+            decl_spans.insert(scope.param.span);
+            raw.push(RawToken {
+                start_byte: scope.param.span.0,
+                end_byte: scope.param.span.1,
+                token_type: IDX_PARAMETER,
+                modifiers: MOD_DECLARATION,
+            });
         }
     }
+}
 
-    if let Some(tree) = &doc.tree {
-        let mut walk_ctx = WalkCtx {
-            text: &doc.text,
-            db,
-            symbol_kinds: &symbol_kinds,
-            local_non_csr_defs: &local_non_csr_defs,
-            decl_spans: &decl_spans,
-            out: &mut raw,
-        };
-        walk_ast(tree.root_node(), false, &mut walk_ctx);
-    }
-
+fn encode_delta_tokens(
+    doc: &Document,
+    mut raw: Vec<RawToken>,
+    range_filter: Option<Range>,
+) -> Vec<SemanticToken> {
     raw.sort_by_key(|t| (t.start_byte, t.end_byte, std::cmp::Reverse(t.modifiers)));
 
     let mut data = Vec::with_capacity(raw.len());
@@ -202,7 +227,6 @@ fn collect_semantic_tokens(
         let span_range = doc
             .line_index
             .byte_span_to_range(&doc.text, tok.start_byte, tok.end_byte);
-        // LSP semantic tokens must not span multiple lines
         if span_range.start.line != span_range.end.line {
             continue;
         }
@@ -210,23 +234,8 @@ fn collect_semantic_tokens(
             .end
             .character
             .saturating_sub(span_range.start.character);
-        if length == 0 {
+        if length == 0 || !range_includes(range_filter, span_range) {
             continue;
-        }
-        if let Some(filter) = range_filter {
-            if span_range.end.line < filter.start.line || span_range.start.line > filter.end.line {
-                continue;
-            }
-            if span_range.end.line == filter.start.line
-                && span_range.end.character <= filter.start.character
-            {
-                continue;
-            }
-            if span_range.start.line == filter.end.line
-                && span_range.start.character >= filter.end.character
-            {
-                continue;
-            }
         }
 
         let line = span_range.start.line;
@@ -251,211 +260,153 @@ fn collect_semantic_tokens(
         last_end_byte = tok.end_byte;
     }
 
-    Some(SemanticTokens {
-        result_id: None,
-        data,
-    })
+    data
 }
 
-struct WalkCtx<'a> {
-    text: &'a str,
+fn range_includes(filter: Option<Range>, span: Range) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    if span.end.line < filter.start.line || span.start.line > filter.end.line {
+        return false;
+    }
+    if span.end.line == filter.start.line && span.end.character <= filter.start.character {
+        return false;
+    }
+    if span.start.line == filter.end.line && span.start.character >= filter.end.character {
+        return false;
+    }
+    true
+}
+
+struct TokenVisitor<'a> {
     db: &'a Database,
     symbol_kinds: &'a HashMap<String, SymKind>,
     local_non_csr_defs: &'a HashSet<String>,
     decl_spans: &'a HashSet<(usize, usize)>,
+    in_csr_stmt: bool,
     out: &'a mut Vec<RawToken>,
 }
 
-fn walk_ast(node: Node<'_>, in_csr_stmt: bool, ctx: &mut WalkCtx<'_>) {
-    let kind = node.kind();
-    let span = (node.start_byte(), node.end_byte());
-
-    match kind {
-        "comment" | "char" => return,
-        "string" => {
-            walk_string_macro_vars(node, ctx);
-            return;
+impl TokenVisitor<'_> {
+    fn push_if_undeclared(&mut self, span: (usize, usize), token_type: u32, modifiers: u32) {
+        if !self.decl_spans.contains(&span) {
+            self.out.push(RawToken {
+                start_byte: span.0,
+                end_byte: span.1,
+                token_type,
+                modifiers,
+            });
         }
-        "register" => {
-            if !ctx.decl_spans.contains(&span) {
-                ctx.out.push(RawToken {
-                    start_byte: span.0,
-                    end_byte: span.1,
-                    token_type: IDX_REGISTER,
-                    modifiers: 0,
-                });
-            }
-            return;
-        }
-        "numeric_label_reference" => {
-            if !ctx.decl_spans.contains(&span) {
-                ctx.out.push(RawToken {
-                    start_byte: span.0,
-                    end_byte: span.1,
-                    token_type: IDX_LABEL,
-                    modifiers: 0,
-                });
-            }
-            return;
-        }
-        "macro_variable" | "string_macro_variable" => {
-            if let Some(raw) = ctx.text.get(span.0..span.1)
-                && let Some(param) = parse_macro_var_token(raw)
-            {
-                let end = (span.0 + 1 + param.len()).min(span.1);
-                if !ctx.decl_spans.contains(&(span.0, end)) {
-                    ctx.out.push(RawToken {
-                        start_byte: span.0,
-                        end_byte: end,
-                        token_type: IDX_PARAMETER,
-                        modifiers: 0,
-                    });
-                }
-            }
-            return;
-        }
-        "macro_parameter_name" => {
-            if !ctx.decl_spans.contains(&span) {
-                ctx.out.push(RawToken {
-                    start_byte: span.0,
-                    end_byte: span.1,
-                    token_type: IDX_PARAMETER,
-                    modifiers: MOD_DECLARATION,
-                });
-            }
-            return;
-        }
-        "macro_name" => {
-            if !ctx.decl_spans.contains(&span) {
-                ctx.out.push(RawToken {
-                    start_byte: span.0,
-                    end_byte: span.1,
-                    token_type: IDX_MACRO,
-                    modifiers: 0,
-                });
-            }
-            return;
-        }
-        "instruction" => {
-            let mut next_csr_stmt = false;
-            if let Some(mnem) = node.child_by_field_name("mnemonic")
-                && let Some(name) = ctx.text.get(mnem.start_byte()..mnem.end_byte())
-            {
-                if let Some(inst) = ctx.db.instruction(name) {
-                    next_csr_stmt = inst
-                        .variants
-                        .iter()
-                        .any(|v| v.operands.iter().any(|o| o.class == "csr_sysreg"));
-                } else if ctx.symbol_kinds.get(name) == Some(&SymKind::Macro) {
-                    let mspan = (mnem.start_byte(), mnem.end_byte());
-                    if !ctx.decl_spans.contains(&mspan) {
-                        ctx.out.push(RawToken {
-                            start_byte: mspan.0,
-                            end_byte: mspan.1,
-                            token_type: IDX_MACRO,
-                            modifiers: 0,
-                        });
-                    }
-                } else if let Some(param) = parse_macro_var_token(name) {
-                    let start = mnem.start_byte();
-                    let end = (start + 1 + param.len()).min(mnem.end_byte());
-                    if !ctx.decl_spans.contains(&(start, end)) {
-                        ctx.out.push(RawToken {
-                            start_byte: start,
-                            end_byte: end,
-                            token_type: IDX_PARAMETER,
-                            modifiers: 0,
-                        });
-                    }
-                }
-            }
-            if let Some(ops) = node.child_by_field_name("operands") {
-                walk_ast(ops, next_csr_stmt, ctx);
-            }
-            return;
-        }
-        "call_statement" => {
-            if let Some(name_node) = node.child_by_field_name("name")
-                && let Some(name) = ctx.text.get(name_node.start_byte()..name_node.end_byte())
-                && !ctx
-                    .decl_spans
-                    .contains(&(name_node.start_byte(), name_node.end_byte()))
-                && let Some(tok_type) = classify_symbol_name(name, false, ctx)
-            {
-                ctx.out.push(RawToken {
-                    start_byte: name_node.start_byte(),
-                    end_byte: name_node.end_byte(),
-                    token_type: tok_type,
-                    modifiers: 0,
-                });
-            }
-            if let Some(ops) = node.child_by_field_name("operands") {
-                walk_ast(ops, false, ctx);
-            }
-            return;
-        }
-        "symbol" => {
-            if !ctx.decl_spans.contains(&span)
-                && let Some(name) = ctx.text.get(span.0..span.1)
-                && let Some(tok_type) = classify_symbol_name(name, in_csr_stmt, ctx)
-            {
-                ctx.out.push(RawToken {
-                    start_byte: span.0,
-                    end_byte: span.1,
-                    token_type: tok_type,
-                    modifiers: 0,
-                });
-            }
-            return;
-        }
-        _ => {}
     }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_ast(child, in_csr_stmt, ctx);
-    }
-}
-
-fn walk_string_macro_vars(node: Node<'_>, ctx: &mut WalkCtx<'_>) {
-    if node.kind() == "string_macro_variable" {
-        let span = (node.start_byte(), node.end_byte());
-        if let Some(raw) = ctx.text.get(span.0..span.1)
-            && let Some(param) = parse_macro_var_token(raw)
+    fn classify_symbol_name(&self, name: &str) -> Option<u32> {
+        if name == "." {
+            return None;
+        }
+        if parse_numeric_ref_token(name).is_some() {
+            return Some(IDX_LABEL);
+        }
+        if self.db.register(name).is_some() {
+            return Some(IDX_REGISTER);
+        }
+        if self.db.csr(name).is_some()
+            && (self.in_csr_stmt || !self.local_non_csr_defs.contains(name))
         {
-            let end = (span.0 + 1 + param.len()).min(span.1);
-            if !ctx.decl_spans.contains(&(span.0, end)) {
-                ctx.out.push(RawToken {
-                    start_byte: span.0,
-                    end_byte: end,
-                    token_type: IDX_PARAMETER,
-                    modifiers: 0,
-                });
-            }
+            return Some(IDX_CSR);
         }
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_string_macro_vars(child, ctx);
+        match self.symbol_kinds.get(name)? {
+            SymKind::Equ | SymKind::Define => Some(IDX_CONSTANT),
+            SymKind::Macro => Some(IDX_MACRO),
+            SymKind::Label | SymKind::LocalLabel | SymKind::NumericLabel => Some(IDX_LABEL),
+            SymKind::MacroParam => Some(IDX_PARAMETER),
+        }
     }
 }
 
-fn classify_symbol_name(name: &str, in_csr_stmt: bool, ctx: &WalkCtx<'_>) -> Option<u32> {
-    if parse_numeric_ref_token(name).is_some() {
-        return Some(IDX_LABEL);
+impl AstVisitor for TokenVisitor<'_> {
+    fn enter_instruction(&mut self, mnem: Node<'_>, name: &str) -> bool {
+        let prev = self.in_csr_stmt;
+        let mspan = (mnem.start_byte(), mnem.end_byte());
+        if let Some(inst) = self.db.instruction(name) {
+            self.in_csr_stmt = inst
+                .variants
+                .iter()
+                .any(|v| v.operands.iter().any(|o| o.class == "csr_sysreg"));
+        } else if self.symbol_kinds.get(name) == Some(&SymKind::Macro) {
+            self.in_csr_stmt = false;
+            self.push_if_undeclared(mspan, IDX_MACRO, 0);
+        } else if let Some(param) = parse_macro_var_token(name) {
+            self.in_csr_stmt = false;
+            let end = (mspan.0 + 1 + param.len()).min(mspan.1);
+            self.push_if_undeclared((mspan.0, end), IDX_PARAMETER, 0);
+        } else {
+            self.in_csr_stmt = false;
+        }
+        prev
     }
-    if ctx.db.register(name).is_some() {
-        return Some(IDX_REGISTER);
+
+    fn leave_instruction(&mut self, prev_state: bool) {
+        self.in_csr_stmt = prev_state;
     }
-    if ctx.db.csr(name).is_some() && (in_csr_stmt || !ctx.local_non_csr_defs.contains(name)) {
-        return Some(IDX_CSR);
+
+    fn enter_call_statement(&mut self, name_node: Node<'_>, name: &str) -> bool {
+        let prev = self.in_csr_stmt;
+        self.in_csr_stmt = false;
+        let span = (name_node.start_byte(), name_node.end_byte());
+        if !self.decl_spans.contains(&span)
+            && let Some(tok_type) = self.classify_symbol_name(name)
+        {
+            self.out.push(RawToken {
+                start_byte: span.0,
+                end_byte: span.1,
+                token_type: tok_type,
+                modifiers: 0,
+            });
+        }
+        prev
     }
-    match ctx.symbol_kinds.get(name)? {
-        SymKind::Equ | SymKind::Define => Some(IDX_CONSTANT),
-        SymKind::Macro => Some(IDX_MACRO),
-        SymKind::Label | SymKind::LocalLabel | SymKind::NumericLabel => Some(IDX_LABEL),
-        SymKind::MacroParam => Some(IDX_PARAMETER),
+
+    fn leave_call_statement(&mut self, prev_state: bool) {
+        self.in_csr_stmt = prev_state;
+    }
+
+    fn on_register(&mut self, node: Node<'_>) {
+        self.push_if_undeclared((node.start_byte(), node.end_byte()), IDX_REGISTER, 0);
+    }
+
+    fn on_numeric_label_ref(&mut self, node: Node<'_>, _raw: &str) {
+        self.push_if_undeclared((node.start_byte(), node.end_byte()), IDX_LABEL, 0);
+    }
+
+    fn on_macro_var(&mut self, _param: &str, span: (usize, usize)) {
+        self.push_if_undeclared(span, IDX_PARAMETER, 0);
+    }
+
+    fn on_macro_param_name(&mut self, node: Node<'_>) {
+        self.push_if_undeclared(
+            (node.start_byte(), node.end_byte()),
+            IDX_PARAMETER,
+            MOD_DECLARATION,
+        );
+    }
+
+    fn on_macro_name(&mut self, node: Node<'_>) {
+        self.push_if_undeclared((node.start_byte(), node.end_byte()), IDX_MACRO, 0);
+    }
+
+    fn on_symbol(&mut self, node: Node<'_>, name: &str) {
+        let span = (node.start_byte(), node.end_byte());
+        if !self.decl_spans.contains(&span)
+            && let Some(tok_type) = self.classify_symbol_name(name)
+        {
+            self.out.push(RawToken {
+                start_byte: span.0,
+                end_byte: span.1,
+                token_type: tok_type,
+                modifiers: 0,
+            });
+        }
     }
 }
 

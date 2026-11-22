@@ -289,6 +289,128 @@
       "description": "Machine Top Interrupt — identity and priority of highest-priority pending M-mode interrupt (Smaia)."
     }
   ],
+  "directives": [
+    {
+      "name": ".align",
+      "description": "Align the location counter to a power-of-two boundary (2^n bytes on RISC-V). Prefer `.p2align` for portability across architectures."
+    },
+    {
+      "name": ".asciz",
+      "description": "Emit a NUL-terminated ASCII string literal into the current section (alias for `.string`)."
+    },
+    {
+      "name": ".attribute",
+      "description": "Emit a RISC-V ELF object attribute tag and value (for example `arch` or `stack_align`)."
+    },
+    {
+      "name": ".balign",
+      "description": "Advance the location counter to the next multiple of `b` bytes, optionally padding with `pad_val`."
+    },
+    {
+      "name": ".bss",
+      "description": "Switch to the `.bss` zero-initialized data section, creating it if it does not yet exist."
+    },
+    {
+      "name": ".comm",
+      "description": "Allocate a common symbol of `size` bytes with optional alignment in the `.bss` section."
+    },
+    {
+      "name": ".common",
+      "description": "Allocate a common symbol of `size` bytes with optional alignment in the `.bss` section (alias for `.comm`)."
+    },
+    {
+      "name": ".data",
+      "description": "Switch to the `.data` initialized writable data section, creating it if it does not yet exist."
+    },
+    {
+      "name": ".double",
+      "description": "Emit one or more 64-bit IEEE 754 double-precision floating-point values."
+    },
+    {
+      "name": ".endm",
+      "description": "End the current `.macro` definition block."
+    },
+    {
+      "name": ".equ",
+      "description": "Define a symbol as an assembler constant expression."
+    },
+    {
+      "name": ".file",
+      "description": "Emit an ELF `STT_FILE` local symbol naming the source file, or associate a DWARF file number and path."
+    },
+    {
+      "name": ".float",
+      "description": "Emit one or more 32-bit IEEE 754 single-precision floating-point values."
+    },
+    {
+      "name": ".globl",
+      "description": "Mark a symbol with global (`STB_GLOBAL`) ELF binding so the linker can resolve references from other object files."
+    },
+    {
+      "name": ".ident",
+      "description": "Emit an identification string into the `.comment` ELF section."
+    },
+    {
+      "name": ".insn",
+      "description": "Assemble a custom instruction encoding directly from a format template, opcode, and operand fields."
+    },
+    {
+      "name": ".local",
+      "description": "Mark a symbol with local (`STB_LOCAL`) ELF binding, confining it to the current object file."
+    },
+    {
+      "name": ".macro",
+      "description": "Begin a macro definition whose optional parameters are substituted as `\\argname` in the body until `.endm`."
+    },
+    {
+      "name": ".option",
+      "description": "Change RISC-V assembler options: `arch` (extensions), `push`/`pop` (save/restore), `rvc`/`norvc` (compressed), `relax`/`norelax` (linker relaxation), and `pic`/`nopic` (PIC)."
+    },
+    {
+      "name": ".p2align",
+      "description": "Advance the location counter to a `2^p2`-byte boundary, optionally specifying a fill byte and maximum padding bytes."
+    },
+    {
+      "name": ".rodata",
+      "description": "Switch to the `.rodata` read-only data section, creating it if it does not yet exist."
+    },
+    {
+      "name": ".section",
+      "description": "Switch to the named ELF section (default `.text`), creating it with the given flags and type if it does not yet exist."
+    },
+    {
+      "name": ".size",
+      "description": "Set the ELF symbol table size (`st_size`) of a symbol, typically used for functions and data objects."
+    },
+    {
+      "name": ".sleb128",
+      "description": "Emit a signed LEB128 variable-length integer (commonly used in DWARF debug and unwind tables)."
+    },
+    {
+      "name": ".string",
+      "description": "Emit one or more NUL-terminated string literals into the current section."
+    },
+    {
+      "name": ".text",
+      "description": "Switch to the `.text` executable code section, creating it if it does not yet exist."
+    },
+    {
+      "name": ".type",
+      "description": "Set the ELF symbol type (`st_info`, such as `@function` or `@object`) of a symbol."
+    },
+    {
+      "name": ".uleb128",
+      "description": "Emit an unsigned LEB128 variable-length integer (commonly used in DWARF debug and unwind tables)."
+    },
+    {
+      "name": ".variant_cc",
+      "description": "Annotate a symbol with the `STO_RISCV_VARIANT_CC` ELF flag indicating a non-standard calling convention."
+    },
+    {
+      "name": ".zero",
+      "description": "Emit the specified number of zero-initialized bytes."
+    }
+  ],
   "description_corrections": [
     {
       "owner": "wfi",

@@ -1,78 +1,4 @@
-const CPP_DIRECTIVE_DOCS: &[(&str, &str)] = &[
-    (
-        "define",
-        "Define an object-like or function-like preprocessor macro.",
-    ),
-    ("undef", "Undefine a previously defined preprocessor macro."),
-    ("include", "Include another source or header file."),
-    (
-        "include_next",
-        "Include the next matching header file along the include search path.",
-    ),
-    (
-        "import",
-        "Include another header file once (Objective-C/C extension accepted by clang).",
-    ),
-    (
-        "if",
-        "Begin a conditional preprocessing block based on a constant expression.",
-    ),
-    (
-        "ifdef",
-        "Begin a conditional preprocessing block if a macro is defined.",
-    ),
-    (
-        "ifndef",
-        "Begin a conditional preprocessing block if a macro is not defined.",
-    ),
-    (
-        "elif",
-        "Alternative conditional branch inside a `#if`/`#ifdef`/`#ifndef` block.",
-    ),
-    (
-        "elifdef",
-        "Alternative conditional branch checked when a macro is defined (C23).",
-    ),
-    (
-        "elifndef",
-        "Alternative conditional branch checked when a macro is not defined (C23).",
-    ),
-    (
-        "else",
-        "Fallback branch for a `#if`/`#ifdef`/`#ifndef` block.",
-    ),
-    ("endif", "End a conditional preprocessing block."),
-    (
-        "line",
-        "Override the logical line number and optional file name for diagnostics.",
-    ),
-    (
-        "error",
-        "Emit a preprocessor error diagnostic with the given message.",
-    ),
-    (
-        "warning",
-        "Emit a preprocessor warning diagnostic with the given message.",
-    ),
-    (
-        "pragma",
-        "Supply implementation-specific directives to the preprocessor/compiler.",
-    ),
-    (
-        "ident",
-        "Record an identification string directive (ignored by assembler).",
-    ),
-    ("sccs", "Legacy SCCS identification directive."),
-    ("assert", "Legacy preprocessor predicate assertion."),
-    (
-        "unassert",
-        "Remove a legacy preprocessor predicate assertion.",
-    ),
-    (
-        "embed",
-        "Embed binary resource data from a file as comma-separated byte values (C23).",
-    ),
-];
+use crate::data::texts_data;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashLineKind<'a> {
@@ -113,14 +39,18 @@ impl HashLineKind<'_> {
 }
 
 pub fn is_cpp_directive(name: &str) -> bool {
-    CPP_DIRECTIVE_DOCS.iter().any(|(d, _)| *d == name)
+    texts_data()
+        .preprocessor_directives
+        .iter()
+        .any(|d| d.name == name)
 }
 
 pub fn directive_description(name: &str) -> Option<&'static str> {
-    CPP_DIRECTIVE_DOCS
+    texts_data()
+        .preprocessor_directives
         .iter()
-        .find(|(d, _)| *d == name)
-        .map(|(_, desc)| *desc)
+        .find(|d| d.name == name)
+        .map(|d| d.description.as_str())
 }
 
 /// Classify a single line whose first non-blank character is `#`.

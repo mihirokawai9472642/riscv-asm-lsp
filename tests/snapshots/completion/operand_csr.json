@@ -1,0 +1,1699 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": "0x001 · U-mode",
+      "documentation": "CSR · Floating-Point Accrued Exceptions · 0x001 · U-mode\n\n```riscv\nfflags\n```\n\n---\n\nFields:\n- `NV` [4] — Set by hardware when a floating point operation is invalid and stays set until explicitly cleared…\n- `DZ` [3] — Set by hardware when a floating point divide attempts to divide by zero and stays set until…\n- `OF` [2] — Set by hardware when a floating point operation overflows and stays set until explicitly cleared…\n- `UF` [1] — Set by hardware when a floating point operation underflows and stays set until explicitly cleared…\n- `NX` [0] — Set by hardware when a floating point operation is inexact and stays set until explicitly cleared…\n\n---\n\nThe accrued exception flags indicate the exception conditions that have arisen on any floating-point arithmetic instruction since the field was last reset by software.",
+      "insertText": "fflags",
+      "kind": 21,
+      "label": "fflags"
+    },
+    {
+      "detail": "0x002 · U-mode",
+      "documentation": "CSR · Floating-Point Dynamic Rounding Mode · 0x002 · U-mode\n\n```riscv\nfrm\n```\n\n---\n\nFields:\n- `ROUNDINGMODE` [2:0] — Rounding mode data.\n\n---\n\nThe behavior of floating-point instructions that depend on rounding mode when executed with a reserved rounding mode is _reserved_, including both static reserved rounding modes (101-110) and dynamic reserved rounding…",
+      "insertText": "frm",
+      "kind": 21,
+      "label": "frm"
+    },
+    {
+      "detail": "0x003 · U-mode",
+      "documentation": "CSR · Floating-point control and status register (`frm` + `fflags`) · 0x003 · U-mode\n\n```riscv\nfcsr\n```\n\n---\n\nFields:\n- `FRM` [7:5] — A value of 111 in the instruction's _rm_ field selects the dynamic rounding mode held in `frm`.\n- `NV` [4] — *Invalid Operation*\n- `DZ` [3] — *Divide by zero*\n- `OF` [2] — *Overflow*\n- `UF` [1] — *Underflow*\n- `NX` [0] — *Inexact*\n\n---\n\nThe floating-point control and status register, `fcsr`, is a RISC-V control and status register (CSR).",
+      "insertText": "fcsr",
+      "kind": 21,
+      "label": "fcsr"
+    },
+    {
+      "detail": "0x008 · U-mode",
+      "documentation": "CSR · Vector Start Index · 0x008 · U-mode\n\n```riscv\nvstart\n```\n\n---\n\nFields:\n- `VALUE` [63:0] — Normally, vstart is only written by hardware on a trap on a vector instruction, with the vstart…\n\n---\n\nSpecifies the index of the first element to be executed by a vector instruction.",
+      "insertText": "vstart",
+      "kind": 21,
+      "label": "vstart"
+    },
+    {
+      "detail": "0x009 · U-mode",
+      "documentation": "CSR · Vector Fixed-Point Saturate Flag · 0x009 · U-mode\n\n```riscv\nvxsat\n```\n\n---\n\nFields:\n- `VALUE` [63:0] — The vxsat CSR has a single read-write least-significant bit (vxsat[0]) that indicates if a…\n\n---\n\nIndicates if a fixed-point instruction has had to saturate an output value to fit into a destination format",
+      "insertText": "vxsat",
+      "kind": 21,
+      "label": "vxsat"
+    },
+    {
+      "detail": "0x00a · U-mode",
+      "documentation": null,
+      "insertText": "vxrm",
+      "kind": 21,
+      "label": "vxrm"
+    },
+    {
+      "detail": "0x00f · U-mode",
+      "documentation": null,
+      "insertText": "vcsr",
+      "kind": 21,
+      "label": "vcsr"
+    },
+    {
+      "detail": "0x100 · S-mode",
+      "documentation": null,
+      "insertText": "sstatus",
+      "kind": 21,
+      "label": "sstatus"
+    },
+    {
+      "detail": "0x104 · S-mode",
+      "documentation": null,
+      "insertText": "sie",
+      "kind": 21,
+      "label": "sie"
+    },
+    {
+      "detail": "0x105 · S-mode",
+      "documentation": null,
+      "insertText": "stvec",
+      "kind": 21,
+      "label": "stvec"
+    },
+    {
+      "detail": "0x106 · S-mode",
+      "documentation": null,
+      "insertText": "scounteren",
+      "kind": 21,
+      "label": "scounteren"
+    },
+    {
+      "detail": "0x10a · S-mode",
+      "documentation": null,
+      "insertText": "senvcfg",
+      "kind": 21,
+      "label": "senvcfg"
+    },
+    {
+      "detail": "0x10c · S-mode",
+      "documentation": null,
+      "insertText": "sstateen0",
+      "kind": 21,
+      "label": "sstateen0"
+    },
+    {
+      "detail": "0x10d · S-mode",
+      "documentation": null,
+      "insertText": "sstateen1",
+      "kind": 21,
+      "label": "sstateen1"
+    },
+    {
+      "detail": "0x10e · S-mode",
+      "documentation": null,
+      "insertText": "sstateen2",
+      "kind": 21,
+      "label": "sstateen2"
+    },
+    {
+      "detail": "0x10f · S-mode",
+      "documentation": null,
+      "insertText": "sstateen3",
+      "kind": 21,
+      "label": "sstateen3"
+    },
+    {
+      "detail": "0x140 · S-mode",
+      "documentation": null,
+      "insertText": "sscratch",
+      "kind": 21,
+      "label": "sscratch"
+    },
+    {
+      "detail": "0x141 · S-mode",
+      "documentation": null,
+      "insertText": "sepc",
+      "kind": 21,
+      "label": "sepc"
+    },
+    {
+      "detail": "0x142 · S-mode",
+      "documentation": null,
+      "insertText": "scause",
+      "kind": 21,
+      "label": "scause"
+    },
+    {
+      "detail": "0x143 · S-mode",
+      "documentation": null,
+      "insertText": "stval",
+      "kind": 21,
+      "label": "stval"
+    },
+    {
+      "detail": "0x144 · S-mode",
+      "documentation": null,
+      "insertText": "sip",
+      "kind": 21,
+      "label": "sip"
+    },
+    {
+      "detail": "0x150 · S-mode",
+      "documentation": null,
+      "insertText": "siselect",
+      "kind": 21,
+      "label": "siselect"
+    },
+    {
+      "detail": "0x151 · S-mode",
+      "documentation": null,
+      "insertText": "sireg",
+      "kind": 21,
+      "label": "sireg"
+    },
+    {
+      "detail": "0x152 · S-mode",
+      "documentation": null,
+      "insertText": "sireg2",
+      "kind": 21,
+      "label": "sireg2"
+    },
+    {
+      "detail": "0x153 · S-mode",
+      "documentation": null,
+      "insertText": "sireg3",
+      "kind": 21,
+      "label": "sireg3"
+    },
+    {
+      "detail": "0x155 · S-mode",
+      "documentation": null,
+      "insertText": "sireg4",
+      "kind": 21,
+      "label": "sireg4"
+    },
+    {
+      "detail": "0x156 · S-mode",
+      "documentation": null,
+      "insertText": "sireg5",
+      "kind": 21,
+      "label": "sireg5"
+    },
+    {
+      "detail": "0x157 · S-mode",
+      "documentation": null,
+      "insertText": "sireg6",
+      "kind": 21,
+      "label": "sireg6"
+    },
+    {
+      "detail": "0x15c · S-mode",
+      "documentation": null,
+      "insertText": "stopei",
+      "kind": 21,
+      "label": "stopei"
+    },
+    {
+      "detail": "0x180 · S-mode",
+      "documentation": null,
+      "insertText": "satp",
+      "kind": 21,
+      "label": "satp"
+    },
+    {
+      "detail": "0x24d · VS-mode",
+      "documentation": null,
+      "insertText": "vstimecmp",
+      "kind": 21,
+      "label": "vstimecmp"
+    },
+    {
+      "detail": "0x250 · VS-mode",
+      "documentation": null,
+      "insertText": "vsiselect",
+      "kind": 21,
+      "label": "vsiselect"
+    },
+    {
+      "detail": "0x251 · VS-mode",
+      "documentation": null,
+      "insertText": "vsireg",
+      "kind": 21,
+      "label": "vsireg"
+    },
+    {
+      "detail": "0x252 · VS-mode",
+      "documentation": null,
+      "insertText": "vsireg2",
+      "kind": 21,
+      "label": "vsireg2"
+    },
+    {
+      "detail": "0x253 · VS-mode",
+      "documentation": null,
+      "insertText": "vsireg3",
+      "kind": 21,
+      "label": "vsireg3"
+    },
+    {
+      "detail": "0x255 · VS-mode",
+      "documentation": null,
+      "insertText": "vsireg4",
+      "kind": 21,
+      "label": "vsireg4"
+    },
+    {
+      "detail": "0x256 · VS-mode",
+      "documentation": null,
+      "insertText": "vsireg5",
+      "kind": 21,
+      "label": "vsireg5"
+    },
+    {
+      "detail": "0x257 · VS-mode",
+      "documentation": null,
+      "insertText": "vsireg6",
+      "kind": 21,
+      "label": "vsireg6"
+    },
+    {
+      "detail": "0x25c · VS-mode",
+      "documentation": null,
+      "insertText": "vstopei",
+      "kind": 21,
+      "label": "vstopei"
+    },
+    {
+      "detail": "0x300 · M-mode",
+      "documentation": null,
+      "insertText": "mstatus",
+      "kind": 21,
+      "label": "mstatus"
+    },
+    {
+      "detail": "0x301 · M-mode",
+      "documentation": null,
+      "insertText": "misa",
+      "kind": 21,
+      "label": "misa"
+    },
+    {
+      "detail": "0x302 · M-mode",
+      "documentation": null,
+      "insertText": "medeleg",
+      "kind": 21,
+      "label": "medeleg"
+    },
+    {
+      "detail": "0x303 · M-mode",
+      "documentation": null,
+      "insertText": "mideleg",
+      "kind": 21,
+      "label": "mideleg"
+    },
+    {
+      "detail": "0x304 · M-mode",
+      "documentation": null,
+      "insertText": "mie",
+      "kind": 21,
+      "label": "mie"
+    },
+    {
+      "detail": "0x305 · M-mode",
+      "documentation": null,
+      "insertText": "mtvec",
+      "kind": 21,
+      "label": "mtvec"
+    },
+    {
+      "detail": "0x306 · M-mode",
+      "documentation": null,
+      "insertText": "mcounteren",
+      "kind": 21,
+      "label": "mcounteren"
+    },
+    {
+      "detail": "0x308 · M-mode",
+      "documentation": null,
+      "insertText": "mvien",
+      "kind": 21,
+      "label": "mvien"
+    },
+    {
+      "detail": "0x309 · M-mode",
+      "documentation": null,
+      "insertText": "mvip",
+      "kind": 21,
+      "label": "mvip"
+    },
+    {
+      "detail": "0x30a · M-mode",
+      "documentation": null,
+      "insertText": "menvcfg",
+      "kind": 21,
+      "label": "menvcfg"
+    },
+    {
+      "detail": "0x320 · M-mode",
+      "documentation": null,
+      "insertText": "mcountinhibit",
+      "kind": 21,
+      "label": "mcountinhibit"
+    },
+    {
+      "detail": "0x323 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent3",
+      "kind": 21,
+      "label": "mhpmevent3"
+    },
+    {
+      "detail": "0x324 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent4",
+      "kind": 21,
+      "label": "mhpmevent4"
+    },
+    {
+      "detail": "0x325 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent5",
+      "kind": 21,
+      "label": "mhpmevent5"
+    },
+    {
+      "detail": "0x326 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent6",
+      "kind": 21,
+      "label": "mhpmevent6"
+    },
+    {
+      "detail": "0x327 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent7",
+      "kind": 21,
+      "label": "mhpmevent7"
+    },
+    {
+      "detail": "0x328 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent8",
+      "kind": 21,
+      "label": "mhpmevent8"
+    },
+    {
+      "detail": "0x329 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent9",
+      "kind": 21,
+      "label": "mhpmevent9"
+    },
+    {
+      "detail": "0x32a · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent10",
+      "kind": 21,
+      "label": "mhpmevent10"
+    },
+    {
+      "detail": "0x32b · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent11",
+      "kind": 21,
+      "label": "mhpmevent11"
+    },
+    {
+      "detail": "0x32c · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent12",
+      "kind": 21,
+      "label": "mhpmevent12"
+    },
+    {
+      "detail": "0x32d · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent13",
+      "kind": 21,
+      "label": "mhpmevent13"
+    },
+    {
+      "detail": "0x32e · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent14",
+      "kind": 21,
+      "label": "mhpmevent14"
+    },
+    {
+      "detail": "0x32f · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent15",
+      "kind": 21,
+      "label": "mhpmevent15"
+    },
+    {
+      "detail": "0x330 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent16",
+      "kind": 21,
+      "label": "mhpmevent16"
+    },
+    {
+      "detail": "0x331 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent17",
+      "kind": 21,
+      "label": "mhpmevent17"
+    },
+    {
+      "detail": "0x332 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent18",
+      "kind": 21,
+      "label": "mhpmevent18"
+    },
+    {
+      "detail": "0x333 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent19",
+      "kind": 21,
+      "label": "mhpmevent19"
+    },
+    {
+      "detail": "0x334 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent20",
+      "kind": 21,
+      "label": "mhpmevent20"
+    },
+    {
+      "detail": "0x335 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent21",
+      "kind": 21,
+      "label": "mhpmevent21"
+    },
+    {
+      "detail": "0x336 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent22",
+      "kind": 21,
+      "label": "mhpmevent22"
+    },
+    {
+      "detail": "0x337 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent23",
+      "kind": 21,
+      "label": "mhpmevent23"
+    },
+    {
+      "detail": "0x338 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent24",
+      "kind": 21,
+      "label": "mhpmevent24"
+    },
+    {
+      "detail": "0x339 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent25",
+      "kind": 21,
+      "label": "mhpmevent25"
+    },
+    {
+      "detail": "0x33a · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent26",
+      "kind": 21,
+      "label": "mhpmevent26"
+    },
+    {
+      "detail": "0x33b · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent27",
+      "kind": 21,
+      "label": "mhpmevent27"
+    },
+    {
+      "detail": "0x33c · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent28",
+      "kind": 21,
+      "label": "mhpmevent28"
+    },
+    {
+      "detail": "0x33d · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent29",
+      "kind": 21,
+      "label": "mhpmevent29"
+    },
+    {
+      "detail": "0x33e · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent30",
+      "kind": 21,
+      "label": "mhpmevent30"
+    },
+    {
+      "detail": "0x33f · M-mode",
+      "documentation": null,
+      "insertText": "mhpmevent31",
+      "kind": 21,
+      "label": "mhpmevent31"
+    },
+    {
+      "detail": "0x340 · M-mode",
+      "documentation": null,
+      "insertText": "mscratch",
+      "kind": 21,
+      "label": "mscratch"
+    },
+    {
+      "detail": "0x341 · M-mode",
+      "documentation": null,
+      "insertText": "mepc",
+      "kind": 21,
+      "label": "mepc"
+    },
+    {
+      "detail": "0x342 · M-mode",
+      "documentation": null,
+      "insertText": "mcause",
+      "kind": 21,
+      "label": "mcause"
+    },
+    {
+      "detail": "0x343 · M-mode",
+      "documentation": null,
+      "insertText": "mtval",
+      "kind": 21,
+      "label": "mtval"
+    },
+    {
+      "detail": "0x344 · M-mode",
+      "documentation": null,
+      "insertText": "mip",
+      "kind": 21,
+      "label": "mip"
+    },
+    {
+      "detail": "0x35c · M-mode",
+      "documentation": null,
+      "insertText": "mtopei",
+      "kind": 21,
+      "label": "mtopei"
+    },
+    {
+      "detail": "0x3a0 · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg0",
+      "kind": 21,
+      "label": "pmpcfg0"
+    },
+    {
+      "detail": "0x3a2 · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg2",
+      "kind": 21,
+      "label": "pmpcfg2"
+    },
+    {
+      "detail": "0x3a4 · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg4",
+      "kind": 21,
+      "label": "pmpcfg4"
+    },
+    {
+      "detail": "0x3a6 · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg6",
+      "kind": 21,
+      "label": "pmpcfg6"
+    },
+    {
+      "detail": "0x3a8 · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg8",
+      "kind": 21,
+      "label": "pmpcfg8"
+    },
+    {
+      "detail": "0x3aa · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg10",
+      "kind": 21,
+      "label": "pmpcfg10"
+    },
+    {
+      "detail": "0x3ac · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg12",
+      "kind": 21,
+      "label": "pmpcfg12"
+    },
+    {
+      "detail": "0x3ae · M-mode",
+      "documentation": null,
+      "insertText": "pmpcfg14",
+      "kind": 21,
+      "label": "pmpcfg14"
+    },
+    {
+      "detail": "0x3b0 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr0",
+      "kind": 21,
+      "label": "pmpaddr0"
+    },
+    {
+      "detail": "0x3b1 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr1",
+      "kind": 21,
+      "label": "pmpaddr1"
+    },
+    {
+      "detail": "0x3b2 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr2",
+      "kind": 21,
+      "label": "pmpaddr2"
+    },
+    {
+      "detail": "0x3b3 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr3",
+      "kind": 21,
+      "label": "pmpaddr3"
+    },
+    {
+      "detail": "0x3b4 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr4",
+      "kind": 21,
+      "label": "pmpaddr4"
+    },
+    {
+      "detail": "0x3b5 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr5",
+      "kind": 21,
+      "label": "pmpaddr5"
+    },
+    {
+      "detail": "0x3b6 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr6",
+      "kind": 21,
+      "label": "pmpaddr6"
+    },
+    {
+      "detail": "0x3b7 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr7",
+      "kind": 21,
+      "label": "pmpaddr7"
+    },
+    {
+      "detail": "0x3b8 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr8",
+      "kind": 21,
+      "label": "pmpaddr8"
+    },
+    {
+      "detail": "0x3b9 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr9",
+      "kind": 21,
+      "label": "pmpaddr9"
+    },
+    {
+      "detail": "0x3ba · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr10",
+      "kind": 21,
+      "label": "pmpaddr10"
+    },
+    {
+      "detail": "0x3bb · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr11",
+      "kind": 21,
+      "label": "pmpaddr11"
+    },
+    {
+      "detail": "0x3bc · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr12",
+      "kind": 21,
+      "label": "pmpaddr12"
+    },
+    {
+      "detail": "0x3bd · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr13",
+      "kind": 21,
+      "label": "pmpaddr13"
+    },
+    {
+      "detail": "0x3be · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr14",
+      "kind": 21,
+      "label": "pmpaddr14"
+    },
+    {
+      "detail": "0x3bf · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr15",
+      "kind": 21,
+      "label": "pmpaddr15"
+    },
+    {
+      "detail": "0x3c0 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr16",
+      "kind": 21,
+      "label": "pmpaddr16"
+    },
+    {
+      "detail": "0x3c1 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr17",
+      "kind": 21,
+      "label": "pmpaddr17"
+    },
+    {
+      "detail": "0x3c2 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr18",
+      "kind": 21,
+      "label": "pmpaddr18"
+    },
+    {
+      "detail": "0x3c3 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr19",
+      "kind": 21,
+      "label": "pmpaddr19"
+    },
+    {
+      "detail": "0x3c4 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr20",
+      "kind": 21,
+      "label": "pmpaddr20"
+    },
+    {
+      "detail": "0x3c5 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr21",
+      "kind": 21,
+      "label": "pmpaddr21"
+    },
+    {
+      "detail": "0x3c6 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr22",
+      "kind": 21,
+      "label": "pmpaddr22"
+    },
+    {
+      "detail": "0x3c7 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr23",
+      "kind": 21,
+      "label": "pmpaddr23"
+    },
+    {
+      "detail": "0x3c8 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr24",
+      "kind": 21,
+      "label": "pmpaddr24"
+    },
+    {
+      "detail": "0x3c9 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr25",
+      "kind": 21,
+      "label": "pmpaddr25"
+    },
+    {
+      "detail": "0x3ca · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr26",
+      "kind": 21,
+      "label": "pmpaddr26"
+    },
+    {
+      "detail": "0x3cb · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr27",
+      "kind": 21,
+      "label": "pmpaddr27"
+    },
+    {
+      "detail": "0x3cc · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr28",
+      "kind": 21,
+      "label": "pmpaddr28"
+    },
+    {
+      "detail": "0x3cd · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr29",
+      "kind": 21,
+      "label": "pmpaddr29"
+    },
+    {
+      "detail": "0x3ce · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr30",
+      "kind": 21,
+      "label": "pmpaddr30"
+    },
+    {
+      "detail": "0x3cf · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr31",
+      "kind": 21,
+      "label": "pmpaddr31"
+    },
+    {
+      "detail": "0x3d0 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr32",
+      "kind": 21,
+      "label": "pmpaddr32"
+    },
+    {
+      "detail": "0x3d1 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr33",
+      "kind": 21,
+      "label": "pmpaddr33"
+    },
+    {
+      "detail": "0x3d2 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr34",
+      "kind": 21,
+      "label": "pmpaddr34"
+    },
+    {
+      "detail": "0x3d3 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr35",
+      "kind": 21,
+      "label": "pmpaddr35"
+    },
+    {
+      "detail": "0x3d4 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr36",
+      "kind": 21,
+      "label": "pmpaddr36"
+    },
+    {
+      "detail": "0x3d5 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr37",
+      "kind": 21,
+      "label": "pmpaddr37"
+    },
+    {
+      "detail": "0x3d6 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr38",
+      "kind": 21,
+      "label": "pmpaddr38"
+    },
+    {
+      "detail": "0x3d7 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr39",
+      "kind": 21,
+      "label": "pmpaddr39"
+    },
+    {
+      "detail": "0x3d8 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr40",
+      "kind": 21,
+      "label": "pmpaddr40"
+    },
+    {
+      "detail": "0x3d9 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr41",
+      "kind": 21,
+      "label": "pmpaddr41"
+    },
+    {
+      "detail": "0x3da · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr42",
+      "kind": 21,
+      "label": "pmpaddr42"
+    },
+    {
+      "detail": "0x3db · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr43",
+      "kind": 21,
+      "label": "pmpaddr43"
+    },
+    {
+      "detail": "0x3dc · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr44",
+      "kind": 21,
+      "label": "pmpaddr44"
+    },
+    {
+      "detail": "0x3dd · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr45",
+      "kind": 21,
+      "label": "pmpaddr45"
+    },
+    {
+      "detail": "0x3de · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr46",
+      "kind": 21,
+      "label": "pmpaddr46"
+    },
+    {
+      "detail": "0x3df · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr47",
+      "kind": 21,
+      "label": "pmpaddr47"
+    },
+    {
+      "detail": "0x3e0 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr48",
+      "kind": 21,
+      "label": "pmpaddr48"
+    },
+    {
+      "detail": "0x3e1 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr49",
+      "kind": 21,
+      "label": "pmpaddr49"
+    },
+    {
+      "detail": "0x3e2 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr50",
+      "kind": 21,
+      "label": "pmpaddr50"
+    },
+    {
+      "detail": "0x3e3 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr51",
+      "kind": 21,
+      "label": "pmpaddr51"
+    },
+    {
+      "detail": "0x3e4 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr52",
+      "kind": 21,
+      "label": "pmpaddr52"
+    },
+    {
+      "detail": "0x3e5 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr53",
+      "kind": 21,
+      "label": "pmpaddr53"
+    },
+    {
+      "detail": "0x3e6 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr54",
+      "kind": 21,
+      "label": "pmpaddr54"
+    },
+    {
+      "detail": "0x3e7 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr55",
+      "kind": 21,
+      "label": "pmpaddr55"
+    },
+    {
+      "detail": "0x3e8 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr56",
+      "kind": 21,
+      "label": "pmpaddr56"
+    },
+    {
+      "detail": "0x3e9 · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr57",
+      "kind": 21,
+      "label": "pmpaddr57"
+    },
+    {
+      "detail": "0x3ea · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr58",
+      "kind": 21,
+      "label": "pmpaddr58"
+    },
+    {
+      "detail": "0x3eb · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr59",
+      "kind": 21,
+      "label": "pmpaddr59"
+    },
+    {
+      "detail": "0x3ec · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr60",
+      "kind": 21,
+      "label": "pmpaddr60"
+    },
+    {
+      "detail": "0x3ed · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr61",
+      "kind": 21,
+      "label": "pmpaddr61"
+    },
+    {
+      "detail": "0x3ee · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr62",
+      "kind": 21,
+      "label": "pmpaddr62"
+    },
+    {
+      "detail": "0x3ef · M-mode",
+      "documentation": null,
+      "insertText": "pmpaddr63",
+      "kind": 21,
+      "label": "pmpaddr63"
+    },
+    {
+      "detail": "0x608 · HS-mode",
+      "documentation": null,
+      "insertText": "hvien",
+      "kind": 21,
+      "label": "hvien"
+    },
+    {
+      "detail": "0x609 · HS-mode",
+      "documentation": null,
+      "insertText": "hvictl",
+      "kind": 21,
+      "label": "hvictl"
+    },
+    {
+      "detail": "0x60a · S-mode",
+      "documentation": null,
+      "insertText": "henvcfg",
+      "kind": 21,
+      "label": "henvcfg"
+    },
+    {
+      "detail": "0x60c · S-mode",
+      "documentation": null,
+      "insertText": "hstateen0",
+      "kind": 21,
+      "label": "hstateen0"
+    },
+    {
+      "detail": "0x60d · S-mode",
+      "documentation": null,
+      "insertText": "hstateen1",
+      "kind": 21,
+      "label": "hstateen1"
+    },
+    {
+      "detail": "0x60e · S-mode",
+      "documentation": null,
+      "insertText": "hstateen2",
+      "kind": 21,
+      "label": "hstateen2"
+    },
+    {
+      "detail": "0x60f · S-mode",
+      "documentation": null,
+      "insertText": "hstateen3",
+      "kind": 21,
+      "label": "hstateen3"
+    },
+    {
+      "detail": "0x646 · HS-mode",
+      "documentation": null,
+      "insertText": "hviprio1",
+      "kind": 21,
+      "label": "hviprio1"
+    },
+    {
+      "detail": "0x647 · HS-mode",
+      "documentation": null,
+      "insertText": "hviprio2",
+      "kind": 21,
+      "label": "hviprio2"
+    },
+    {
+      "detail": "0x6a8 · S-mode",
+      "documentation": null,
+      "insertText": "hcontext",
+      "kind": 21,
+      "label": "hcontext"
+    },
+    {
+      "detail": "0x747 · M-mode",
+      "documentation": null,
+      "insertText": "mseccfg",
+      "kind": 21,
+      "label": "mseccfg"
+    },
+    {
+      "detail": "0xb00 · M-mode",
+      "documentation": null,
+      "insertText": "mcycle",
+      "kind": 21,
+      "label": "mcycle"
+    },
+    {
+      "detail": "0xb02 · M-mode",
+      "documentation": null,
+      "insertText": "minstret",
+      "kind": 21,
+      "label": "minstret"
+    },
+    {
+      "detail": "0xb03 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter3",
+      "kind": 21,
+      "label": "mhpmcounter3"
+    },
+    {
+      "detail": "0xb04 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter4",
+      "kind": 21,
+      "label": "mhpmcounter4"
+    },
+    {
+      "detail": "0xb05 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter5",
+      "kind": 21,
+      "label": "mhpmcounter5"
+    },
+    {
+      "detail": "0xb06 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter6",
+      "kind": 21,
+      "label": "mhpmcounter6"
+    },
+    {
+      "detail": "0xb07 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter7",
+      "kind": 21,
+      "label": "mhpmcounter7"
+    },
+    {
+      "detail": "0xb08 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter8",
+      "kind": 21,
+      "label": "mhpmcounter8"
+    },
+    {
+      "detail": "0xb09 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter9",
+      "kind": 21,
+      "label": "mhpmcounter9"
+    },
+    {
+      "detail": "0xb0a · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter10",
+      "kind": 21,
+      "label": "mhpmcounter10"
+    },
+    {
+      "detail": "0xb0b · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter11",
+      "kind": 21,
+      "label": "mhpmcounter11"
+    },
+    {
+      "detail": "0xb0c · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter12",
+      "kind": 21,
+      "label": "mhpmcounter12"
+    },
+    {
+      "detail": "0xb0d · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter13",
+      "kind": 21,
+      "label": "mhpmcounter13"
+    },
+    {
+      "detail": "0xb0e · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter14",
+      "kind": 21,
+      "label": "mhpmcounter14"
+    },
+    {
+      "detail": "0xb0f · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter15",
+      "kind": 21,
+      "label": "mhpmcounter15"
+    },
+    {
+      "detail": "0xb10 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter16",
+      "kind": 21,
+      "label": "mhpmcounter16"
+    },
+    {
+      "detail": "0xb11 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter17",
+      "kind": 21,
+      "label": "mhpmcounter17"
+    },
+    {
+      "detail": "0xb12 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter18",
+      "kind": 21,
+      "label": "mhpmcounter18"
+    },
+    {
+      "detail": "0xb13 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter19",
+      "kind": 21,
+      "label": "mhpmcounter19"
+    },
+    {
+      "detail": "0xb14 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter20",
+      "kind": 21,
+      "label": "mhpmcounter20"
+    },
+    {
+      "detail": "0xb15 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter21",
+      "kind": 21,
+      "label": "mhpmcounter21"
+    },
+    {
+      "detail": "0xb16 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter22",
+      "kind": 21,
+      "label": "mhpmcounter22"
+    },
+    {
+      "detail": "0xb17 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter23",
+      "kind": 21,
+      "label": "mhpmcounter23"
+    },
+    {
+      "detail": "0xb18 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter24",
+      "kind": 21,
+      "label": "mhpmcounter24"
+    },
+    {
+      "detail": "0xb19 · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter25",
+      "kind": 21,
+      "label": "mhpmcounter25"
+    },
+    {
+      "detail": "0xb1a · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter26",
+      "kind": 21,
+      "label": "mhpmcounter26"
+    },
+    {
+      "detail": "0xb1b · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter27",
+      "kind": 21,
+      "label": "mhpmcounter27"
+    },
+    {
+      "detail": "0xb1c · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter28",
+      "kind": 21,
+      "label": "mhpmcounter28"
+    },
+    {
+      "detail": "0xb1d · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter29",
+      "kind": 21,
+      "label": "mhpmcounter29"
+    },
+    {
+      "detail": "0xb1e · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter30",
+      "kind": 21,
+      "label": "mhpmcounter30"
+    },
+    {
+      "detail": "0xb1f · M-mode",
+      "documentation": null,
+      "insertText": "mhpmcounter31",
+      "kind": 21,
+      "label": "mhpmcounter31"
+    },
+    {
+      "detail": "0xc00 · U-mode",
+      "documentation": null,
+      "insertText": "cycle",
+      "kind": 21,
+      "label": "cycle"
+    },
+    {
+      "detail": "0xc01 · U-mode",
+      "documentation": null,
+      "insertText": "time",
+      "kind": 21,
+      "label": "time"
+    },
+    {
+      "detail": "0xc02 · U-mode",
+      "documentation": null,
+      "insertText": "instret",
+      "kind": 21,
+      "label": "instret"
+    },
+    {
+      "detail": "0xc03 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter3",
+      "kind": 21,
+      "label": "hpmcounter3"
+    },
+    {
+      "detail": "0xc04 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter4",
+      "kind": 21,
+      "label": "hpmcounter4"
+    },
+    {
+      "detail": "0xc05 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter5",
+      "kind": 21,
+      "label": "hpmcounter5"
+    },
+    {
+      "detail": "0xc06 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter6",
+      "kind": 21,
+      "label": "hpmcounter6"
+    },
+    {
+      "detail": "0xc07 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter7",
+      "kind": 21,
+      "label": "hpmcounter7"
+    },
+    {
+      "detail": "0xc08 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter8",
+      "kind": 21,
+      "label": "hpmcounter8"
+    },
+    {
+      "detail": "0xc09 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter9",
+      "kind": 21,
+      "label": "hpmcounter9"
+    },
+    {
+      "detail": "0xc0a · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter10",
+      "kind": 21,
+      "label": "hpmcounter10"
+    },
+    {
+      "detail": "0xc0b · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter11",
+      "kind": 21,
+      "label": "hpmcounter11"
+    },
+    {
+      "detail": "0xc0c · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter12",
+      "kind": 21,
+      "label": "hpmcounter12"
+    },
+    {
+      "detail": "0xc0d · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter13",
+      "kind": 21,
+      "label": "hpmcounter13"
+    },
+    {
+      "detail": "0xc0e · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter14",
+      "kind": 21,
+      "label": "hpmcounter14"
+    },
+    {
+      "detail": "0xc0f · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter15",
+      "kind": 21,
+      "label": "hpmcounter15"
+    },
+    {
+      "detail": "0xc10 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter16",
+      "kind": 21,
+      "label": "hpmcounter16"
+    },
+    {
+      "detail": "0xc11 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter17",
+      "kind": 21,
+      "label": "hpmcounter17"
+    },
+    {
+      "detail": "0xc12 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter18",
+      "kind": 21,
+      "label": "hpmcounter18"
+    },
+    {
+      "detail": "0xc13 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter19",
+      "kind": 21,
+      "label": "hpmcounter19"
+    },
+    {
+      "detail": "0xc14 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter20",
+      "kind": 21,
+      "label": "hpmcounter20"
+    },
+    {
+      "detail": "0xc15 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter21",
+      "kind": 21,
+      "label": "hpmcounter21"
+    },
+    {
+      "detail": "0xc16 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter22",
+      "kind": 21,
+      "label": "hpmcounter22"
+    },
+    {
+      "detail": "0xc17 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter23",
+      "kind": 21,
+      "label": "hpmcounter23"
+    },
+    {
+      "detail": "0xc18 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter24",
+      "kind": 21,
+      "label": "hpmcounter24"
+    },
+    {
+      "detail": "0xc19 · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter25",
+      "kind": 21,
+      "label": "hpmcounter25"
+    },
+    {
+      "detail": "0xc1a · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter26",
+      "kind": 21,
+      "label": "hpmcounter26"
+    },
+    {
+      "detail": "0xc1b · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter27",
+      "kind": 21,
+      "label": "hpmcounter27"
+    },
+    {
+      "detail": "0xc1c · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter28",
+      "kind": 21,
+      "label": "hpmcounter28"
+    },
+    {
+      "detail": "0xc1d · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter29",
+      "kind": 21,
+      "label": "hpmcounter29"
+    },
+    {
+      "detail": "0xc1e · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter30",
+      "kind": 21,
+      "label": "hpmcounter30"
+    },
+    {
+      "detail": "0xc1f · U-mode",
+      "documentation": null,
+      "insertText": "hpmcounter31",
+      "kind": 21,
+      "label": "hpmcounter31"
+    },
+    {
+      "detail": "0xc20 · U-mode",
+      "documentation": null,
+      "insertText": "vl",
+      "kind": 21,
+      "label": "vl"
+    },
+    {
+      "detail": "0xc21 · U-mode",
+      "documentation": null,
+      "insertText": "vtype",
+      "kind": 21,
+      "label": "vtype"
+    },
+    {
+      "detail": "0xc22 · U-mode",
+      "documentation": null,
+      "insertText": "vlenb",
+      "kind": 21,
+      "label": "vlenb"
+    },
+    {
+      "detail": "0xdb0 · S-mode",
+      "documentation": null,
+      "insertText": "stopi",
+      "kind": 21,
+      "label": "stopi"
+    },
+    {
+      "detail": "0xeb0 · VS-mode",
+      "documentation": null,
+      "insertText": "vstopi",
+      "kind": 21,
+      "label": "vstopi"
+    },
+    {
+      "detail": "0xf11 · M-mode",
+      "documentation": null,
+      "insertText": "mvendorid",
+      "kind": 21,
+      "label": "mvendorid"
+    },
+    {
+      "detail": "0xf12 · M-mode",
+      "documentation": null,
+      "insertText": "marchid",
+      "kind": 21,
+      "label": "marchid"
+    },
+    {
+      "detail": "0xf13 · M-mode",
+      "documentation": null,
+      "insertText": "mimpid",
+      "kind": 21,
+      "label": "mimpid"
+    },
+    {
+      "detail": "0xf14 · M-mode",
+      "documentation": null,
+      "insertText": "mhartid",
+      "kind": 21,
+      "label": "mhartid"
+    },
+    {
+      "detail": "0xf15 · M-mode",
+      "documentation": null,
+      "insertText": "mconfigptr",
+      "kind": 21,
+      "label": "mconfigptr"
+    },
+    {
+      "detail": "0xfb0 · M-mode",
+      "documentation": null,
+      "insertText": "mtopi",
+      "kind": 21,
+      "label": "mtopi"
+    }
+  ]
+}

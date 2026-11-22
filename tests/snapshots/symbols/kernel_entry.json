@@ -1,0 +1,226 @@
+[
+  {
+    "detail": "0x80200000",
+    "kind": 14,
+    "name": "KERNEL_BASE",
+    "range": {
+      "end": {
+        "character": 28,
+        "line": 2
+      },
+      "start": {
+        "character": 0,
+        "line": 2
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 16,
+        "line": 2
+      },
+      "start": {
+        "character": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "detail": "1",
+    "kind": 14,
+    "name": "TRAP_FLAG",
+    "range": {
+      "end": {
+        "character": 19,
+        "line": 3
+      },
+      "start": {
+        "character": 0,
+        "line": 3
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 14,
+        "line": 3
+      },
+      "start": {
+        "character": 5,
+        "line": 3
+      }
+    }
+  },
+  {
+    "detail": "reg, offset",
+    "kind": 6,
+    "name": "SAVE_REG",
+    "range": {
+      "end": {
+        "character": 5,
+        "line": 7
+      },
+      "start": {
+        "character": 0,
+        "line": 5
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 15,
+        "line": 5
+      },
+      "start": {
+        "character": 7,
+        "line": 5
+      }
+    }
+  },
+  {
+    "children": [
+      {
+        "kind": 16,
+        "name": "1:",
+        "range": {
+          "end": {
+            "character": 2,
+            "line": 20
+          },
+          "start": {
+            "character": 0,
+            "line": 20
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 1,
+            "line": 20
+          },
+          "start": {
+            "character": 0,
+            "line": 20
+          }
+        }
+      }
+    ],
+    "detail": "global",
+    "kind": 12,
+    "name": "_start",
+    "range": {
+      "end": {
+        "character": 13,
+        "line": 25
+      },
+      "start": {
+        "character": 0,
+        "line": 11
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 6,
+        "line": 11
+      },
+      "start": {
+        "character": 0,
+        "line": 11
+      }
+    }
+  },
+  {
+    "detail": "global",
+    "kind": 12,
+    "name": "trap_vector",
+    "range": {
+      "end": {
+        "character": 14,
+        "line": 38
+      },
+      "start": {
+        "character": 0,
+        "line": 26
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 11,
+        "line": 26
+      },
+      "start": {
+        "character": 0,
+        "line": 26
+      }
+    }
+  },
+  {
+    "detail": "local",
+    "kind": 20,
+    "name": ".Llocal_helper",
+    "range": {
+      "end": {
+        "character": 15,
+        "line": 34
+      },
+      "start": {
+        "character": 0,
+        "line": 34
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 14,
+        "line": 34
+      },
+      "start": {
+        "character": 0,
+        "line": 34
+      }
+    }
+  },
+  {
+    "kind": 12,
+    "name": "_stack_bottom",
+    "range": {
+      "end": {
+        "character": 21,
+        "line": 40
+      },
+      "start": {
+        "character": 0,
+        "line": 39
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 13,
+        "line": 39
+      },
+      "start": {
+        "character": 0,
+        "line": 39
+      }
+    }
+  },
+  {
+    "kind": 12,
+    "name": "_stack_top",
+    "range": {
+      "end": {
+        "character": 11,
+        "line": 41
+      },
+      "start": {
+        "character": 0,
+        "line": 41
+      }
+    },
+    "selectionRange": {
+      "end": {
+        "character": 10,
+        "line": 41
+      },
+      "start": {
+        "character": 0,
+        "line": 41
+      }
+    }
+  }
+]

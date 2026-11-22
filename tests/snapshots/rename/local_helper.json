@@ -1,0 +1,19 @@
+{
+  "changes": {
+    "<FIXTURES_URI>/kernel_entry.S": [
+      {
+        "newText": ".Llocal_renamed",
+        "range": {
+          "end": {
+            "character": 14,
+            "line": 34
+          },
+          "start": {
+            "character": 0,
+            "line": 34
+          }
+        }
+      }
+    ]
+  }
+}

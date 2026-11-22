@@ -1,0 +1,75 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": ".option",
+      "documentation": "Modify or set active ISA architecture extensions",
+      "insertText": "arch, ",
+      "kind": 14,
+      "label": "arch"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Enable compressed (C) instruction generation",
+      "insertText": "rvc",
+      "kind": 14,
+      "label": "rvc"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Disable compressed (C) instruction generation",
+      "insertText": "norvc",
+      "kind": 14,
+      "label": "norvc"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Push current .option state onto the option stack",
+      "insertText": "push",
+      "kind": 14,
+      "label": "push"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Restore previous .option state from the stack",
+      "insertText": "pop",
+      "kind": 14,
+      "label": "pop"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Enable linker relaxation",
+      "insertText": "relax",
+      "kind": 14,
+      "label": "relax"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Disable linker relaxation",
+      "insertText": "norelax",
+      "kind": 14,
+      "label": "norelax"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Generate position-independent code",
+      "insertText": "pic",
+      "kind": 14,
+      "label": "pic"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Generate position-dependent code",
+      "insertText": "nopic",
+      "kind": 14,
+      "label": "nopic"
+    },
+    {
+      "detail": ".option",
+      "documentation": "Assemble instructions exactly as written without relaxation",
+      "insertText": "exact",
+      "kind": 14,
+      "label": "exact"
+    }
+  ]
+}

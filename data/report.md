@@ -29,7 +29,8 @@
 | CSRs only in LLVM (no description) | 0 |
 | CSRs only in riscv-unified-db (not accepted by LLVM 19) | 16 |
 | Registers | 96 |
-| Directives | 114 |
+| Directives | 137 |
+| Cleaned TODOs from riscv-unified-db | 6 |
 
 ## In LLVM, Described by riscv-asm-manual (21)
 
@@ -247,4 +248,13 @@
 ## Description Corrections (1)
 
 - `wfi`: `Can causes the processor` -> `Can cause the processor`
+
+## Cleaned TODOs from riscv-unified-db (6)
+
+- `htinst`
+- `hvip.VSEIP`
+- `hvip.VSSIP`
+- `hvip.VSTIP`
+- `mncause.CODE`
+- `mtinst`
 

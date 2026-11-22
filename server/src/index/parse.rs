@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use lsp_types::Uri;
 use tree_sitter::{Node, Parser};
 
+use crate::ast::{AstVisitor, walk_node, walk_node_after_offset};
 use crate::position::{LineIndex, clamp_to_char_boundary};
 use crate::preprocessor::{
     parse_cpp_define_line as parse_cpp_define_raw, parse_cpp_include_line as parse_cpp_include_raw,
@@ -22,6 +23,9 @@ pub(super) fn is_header_path(path: &Path) -> bool {
 }
 
 pub(super) fn is_eager_asm_path(path: &Path) -> bool {
+    if crate::context::is_linker_script_template(path) {
+        return false;
+    }
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("S" | "s" | "sx" | "inc")
@@ -70,27 +74,27 @@ pub(super) fn resolve_include_path(
     None
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_file_index(
-    path: PathBuf,
-    uri: Uri,
-    is_header: bool,
-    preprocessed: bool,
-    text: String,
-    line_index: LineIndex,
-    existing_tree: Option<&tree_sitter::Tree>,
-    parser: &mut Parser,
-) -> FileIndex {
-    if is_header {
-        return parse_header_file(path, uri, text, line_index);
+pub(super) struct BuildFileInput<'a> {
+    pub path: PathBuf,
+    pub uri: Uri,
+    pub is_header: bool,
+    pub preprocessed: bool,
+    pub text: String,
+    pub line_index: LineIndex,
+    pub existing_tree: Option<&'a tree_sitter::Tree>,
+}
+
+pub(super) fn build_file_index(input: BuildFileInput<'_>, parser: &mut Parser) -> FileIndex {
+    if input.is_header {
+        return parse_header_file(input.path, input.uri, input.text, input.line_index);
     }
 
-    let owned_tree = if existing_tree.is_none() {
-        parser.parse(&text, None)
+    let owned_tree = if input.existing_tree.is_none() {
+        parser.parse(&input.text, None)
     } else {
         None
     };
-    let tree = existing_tree.or(owned_tree.as_ref());
+    let tree = input.existing_tree.or(owned_tree.as_ref());
 
     let mut definitions = Vec::new();
     let mut repeat_scopes = Vec::new();
@@ -98,16 +102,16 @@ pub(super) fn build_file_index(
     let mut includes = Vec::new();
     let mut globals = HashSet::new();
 
-    if preprocessed {
+    if input.preprocessed {
         // Scan preprocessor `#include` and `#define` lines (tree-sitter treats `#...` as comment).
-        scan_cpp_includes(&text, &mut includes);
-        scan_cpp_defines(&text, &mut definitions);
+        scan_cpp_includes(&input.text, &mut includes);
+        scan_cpp_defines(&input.text, &mut definitions);
     }
 
     if let Some(tree) = tree {
-        let mut ctx = ExtractCtx {
-            text: &text,
-            line_index: &line_index,
+        let mut ctx = ExtractVisitor {
+            text: &input.text,
+            line_index: &input.line_index,
             definitions: &mut definitions,
             repeat_scopes: &mut repeat_scopes,
             references: &mut references,
@@ -116,32 +120,29 @@ pub(super) fn build_file_index(
             macro_stack: Vec::new(),
             repeat_stack: Vec::new(),
         };
-        walk_ast(tree.root_node(), &mut ctx);
-        // Close any unclosed macros cleanly at EOF
+        walk_node(tree.root_node(), &input.text, &mut ctx);
         for open_idx in ctx.macro_stack {
             if let Some(def) = ctx.definitions.get_mut(open_idx) {
-                def.full_span.1 = text.len();
+                def.full_span.1 = input.text.len();
             }
         }
         for open_rep in ctx.repeat_stack.into_iter().flatten() {
             if let Some(scope) = ctx.repeat_scopes.get_mut(open_rep) {
-                scope.full_span.1 = text.len();
+                scope.full_span.1 = input.text.len();
             }
         }
     }
 
-    // Fallback scan for top-level `SYM = expr` assignments if tree-sitter flagged ERROR
-    scan_fallback_assignments(&text, &line_index, &mut definitions);
-
-    finalize_label_hierarchy_and_ranges(&text, &mut definitions, &mut references);
+    scan_fallback_assignments(&input.text, &input.line_index, &mut definitions);
+    finalize_label_hierarchy_and_ranges(&input.text, &mut definitions, &mut references);
 
     FileIndex {
-        path,
-        uri,
+        path: input.path,
+        uri: input.uri,
         is_header: false,
-        preprocessed,
-        text,
-        line_index,
+        preprocessed: input.preprocessed,
+        text: input.text,
+        line_index: input.line_index,
         definitions,
         repeat_scopes,
         references,
@@ -218,7 +219,7 @@ pub(super) fn parse_cpp_include_line(line: &str) -> Option<IncludeDirective> {
     parse_cpp_include_raw(line).map(|(target, is_system)| IncludeDirective { target, is_system })
 }
 
-struct ExtractCtx<'a> {
+struct ExtractVisitor<'a> {
     text: &'a str,
     line_index: &'a LineIndex,
     definitions: &'a mut Vec<SymbolDef>,
@@ -230,264 +231,61 @@ struct ExtractCtx<'a> {
     repeat_stack: Vec<Option<usize>>,
 }
 
-fn walk_ast_after_offset(node: Node<'_>, min_start: usize, ctx: &mut ExtractCtx<'_>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.end_byte() <= min_start {
-            continue;
-        }
-        if child.start_byte() >= min_start {
-            walk_ast(child, ctx);
-        } else {
-            walk_ast_after_offset(child, min_start, ctx);
-        }
+impl ExtractVisitor<'_> {
+    fn cur_macro(&self) -> Option<usize> {
+        self.macro_stack.last().copied()
     }
-}
 
-fn walk_ast(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
-    let kind = node.kind();
-    let cur_macro = ctx.macro_stack.last().copied();
-
-    match kind {
-        "label" => {
-            if let Some(raw) = ctx.text.get(node.start_byte()..node.end_byte()) {
-                let name = raw.trim_end_matches(':').trim();
-                if !name.is_empty() {
-                    let name_start = node.start_byte();
-                    let name_end = name_start + name.len();
-                    let sym_kind = if name.bytes().all(|b| b.is_ascii_digit()) {
-                        SymKind::NumericLabel
-                    } else if name.starts_with(".L") {
-                        SymKind::LocalLabel
-                    } else {
-                        SymKind::Label
-                    };
-                    ctx.definitions.push(SymbolDef {
-                        name: name.to_owned(),
-                        kind: sym_kind,
-                        assign_kind: None,
-                        name_span: (name_start, name_end),
-                        full_span: (node.start_byte(), node.end_byte()),
-                        line_text: line_text_at(ctx.text, ctx.line_index, name_start),
-                        value_text: None,
-                        params: Vec::new(),
-                        enclosing_label_idx: None,
-                        enclosing_macro_idx: None,
-                    });
-                }
-            }
-            return;
-        }
-        "numeric_label" => {
-            if let Some(raw) = ctx.text.get(node.start_byte()..node.end_byte()) {
-                let name = raw.trim_end_matches(':').trim();
-                if !name.is_empty() {
-                    let name_start = node.start_byte();
-                    let name_end = name_start + name.len();
-                    ctx.definitions.push(SymbolDef {
-                        name: name.to_owned(),
-                        kind: SymKind::NumericLabel,
-                        assign_kind: None,
-                        name_span: (name_start, name_end),
-                        full_span: (node.start_byte(), node.end_byte()),
-                        line_text: line_text_at(ctx.text, ctx.line_index, name_start),
-                        value_text: None,
-                        params: Vec::new(),
-                        enclosing_label_idx: None,
-                        enclosing_macro_idx: None,
-                    });
-                }
-            }
-            return;
-        }
-        "directive" => {
-            handle_directive(node, ctx);
-            return;
-        }
-        "instruction" => {
-            if let Some(mnem) = node.child_by_field_name("mnemonic")
-                && let Some(name) = ctx.text.get(mnem.start_byte()..mnem.end_byte())
-                && !name.is_empty()
-            {
-                if let Some(param_name) = super::parse_macro_var_token(name) {
-                    ctx.references.push(SymbolRef {
-                        name: param_name.to_owned(),
-                        kind: RefKind::MacroParam,
-                        span: (mnem.start_byte(), mnem.end_byte()),
-                        enclosing_macro_idx: cur_macro,
-                    });
+    fn push_ref(&mut self, name: &str, span: (usize, usize)) {
+        if let Some((digits, forward)) = super::parse_numeric_ref_token(name) {
+            self.references.push(SymbolRef {
+                name: digits.to_owned(),
+                kind: if forward {
+                    RefKind::NumericForward
                 } else {
-                    ctx.references.push(SymbolRef {
-                        name: name.to_owned(),
-                        kind: RefKind::Identifier,
-                        span: (mnem.start_byte(), mnem.end_byte()),
-                        enclosing_macro_idx: cur_macro,
-                    });
-                }
-            }
-            if let Some(ops) = node.child_by_field_name("operands") {
-                walk_ast(ops, ctx);
-            }
-            return;
+                    RefKind::NumericBackward
+                },
+                span,
+                enclosing_macro_idx: self.cur_macro(),
+            });
+        } else if name != "." {
+            self.references.push(SymbolRef {
+                name: name.to_owned(),
+                kind: RefKind::Identifier,
+                span,
+                enclosing_macro_idx: self.cur_macro(),
+            });
         }
-        "call_statement" => {
-            if let Some(name_node) = node.child_by_field_name("name")
-                && let Some(name) = ctx.text.get(name_node.start_byte()..name_node.end_byte())
-            {
-                ctx.references.push(SymbolRef {
-                    name: name.to_owned(),
-                    kind: RefKind::Identifier,
-                    span: (name_node.start_byte(), name_node.end_byte()),
-                    enclosing_macro_idx: cur_macro,
-                });
-            }
-            if let Some(ops) = node.child_by_field_name("operands") {
-                walk_ast(ops, ctx);
-            }
-            return;
-        }
-        "binary_expression" => {
-            if let Some(op) = node.child_by_field_name("operator")
-                && op.kind() == "assignment_operator"
-                && let Some(left) = node.child_by_field_name("left")
-                && left.kind() == "symbol"
-                && let Some(name) = ctx.text.get(left.start_byte()..left.end_byte())
-            {
-                let value_text = node
-                    .child_by_field_name("right")
-                    .and_then(|r| ctx.text.get(r.start_byte()..r.end_byte()))
-                    .map(|s| s.trim().to_owned());
-                ctx.definitions.push(SymbolDef {
-                    name: name.to_owned(),
-                    kind: SymKind::Equ,
-                    assign_kind: Some(AssignKind::Equals),
-                    name_span: (left.start_byte(), left.end_byte()),
-                    full_span: (node.start_byte(), node.end_byte()),
-                    line_text: line_text_at(ctx.text, ctx.line_index, left.start_byte()),
-                    value_text,
-                    params: Vec::new(),
-                    enclosing_label_idx: None,
-                    enclosing_macro_idx: None,
-                });
-                if let Some(right) = node.child_by_field_name("right") {
-                    walk_ast(right, ctx);
-                }
-                return;
-            }
-        }
-        "symbol" => {
-            if let Some(name) = ctx.text.get(node.start_byte()..node.end_byte()) {
-                if let Some((digits, forward)) = super::parse_numeric_ref_token(name) {
-                    ctx.references.push(SymbolRef {
-                        name: digits.to_owned(),
-                        kind: if forward {
-                            RefKind::NumericForward
-                        } else {
-                            RefKind::NumericBackward
-                        },
-                        span: (node.start_byte(), node.end_byte()),
-                        enclosing_macro_idx: cur_macro,
-                    });
-                } else {
-                    ctx.references.push(SymbolRef {
-                        name: name.to_owned(),
-                        kind: RefKind::Identifier,
-                        span: (node.start_byte(), node.end_byte()),
-                        enclosing_macro_idx: cur_macro,
-                    });
-                }
-            }
-            return;
-        }
-        "numeric_label_reference" => {
-            if let Some(text) = ctx.text.get(node.start_byte()..node.end_byte())
-                && let Some((digits, forward)) = super::parse_numeric_ref_token(text)
-            {
-                ctx.references.push(SymbolRef {
-                    name: digits.to_owned(),
-                    kind: if forward {
-                        RefKind::NumericForward
-                    } else {
-                        RefKind::NumericBackward
-                    },
-                    span: (node.start_byte(), node.end_byte()),
-                    enclosing_macro_idx: cur_macro,
-                });
-            }
-            return;
-        }
-        "macro_variable" | "string_macro_variable" => {
-            if let Some(raw) = ctx.text.get(node.start_byte()..node.end_byte())
-                && let Some(param) = super::parse_macro_var_token(raw)
-            {
-                let start = node.start_byte();
-                // Span covering `\param` (avoid including trailing `\()...` in rename span)
-                let end = (start + 1 + param.len()).min(node.end_byte());
-                ctx.references.push(SymbolRef {
-                    name: param.to_owned(),
-                    kind: RefKind::MacroParam,
-                    span: (start, end),
-                    enclosing_macro_idx: cur_macro,
-                });
-            }
-            return;
-        }
-        _ => {}
     }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_ast(child, ctx);
-    }
-}
-
-fn handle_directive(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
-    let Some(mnem_node) = node.child_by_field_name("mnemonic") else {
-        return;
-    };
-    let Some(mnem_raw) = ctx.text.get(mnem_node.start_byte()..mnem_node.end_byte()) else {
-        return;
-    };
-    let mnem = mnem_raw.to_ascii_lowercase();
-
-    if mnem == ".macro" {
+    fn handle_macro_directive(&mut self, node: Node<'_>) {
         if let Some(name_node) = node.child_by_field_name("name")
-            && let Some(name) = ctx.text.get(name_node.start_byte()..name_node.end_byte())
+            && let Some(name) = self.text.get(name_node.start_byte()..name_node.end_byte())
         {
             let mut params = Vec::new();
             if let Some(params_node) = node.child_by_field_name("parameters") {
-                collect_macro_params(params_node, ctx.text, &mut params);
+                collect_macro_params(params_node, self.text, &mut params);
             }
-            let def_idx = ctx.definitions.len();
-            ctx.definitions.push(SymbolDef {
+            let def_idx = self.definitions.len();
+            self.definitions.push(SymbolDef {
                 name: name.to_owned(),
                 kind: SymKind::Macro,
                 assign_kind: None,
                 name_span: (name_node.start_byte(), name_node.end_byte()),
-                full_span: (node.start_byte(), ctx.text.len()),
-                line_text: line_text_at(ctx.text, ctx.line_index, node.start_byte()),
+                full_span: (node.start_byte(), self.text.len()),
+                line_text: line_text_at(self.text, self.line_index, node.start_byte()),
                 value_text: None,
                 params,
                 enclosing_label_idx: None,
                 enclosing_macro_idx: None,
             });
-            ctx.macro_stack.push(def_idx);
+            self.macro_stack.push(def_idx);
         }
-        return;
     }
 
-    if mnem == ".endm" {
-        if let Some(open_idx) = ctx.macro_stack.pop()
-            && let Some(def) = ctx.definitions.get_mut(open_idx)
-        {
-            def.full_span.1 = node.end_byte();
-        }
-        return;
-    }
-
-    if matches!(mnem.as_str(), ".irp" | ".irpc") {
+    fn handle_irp_directive(&mut self, node: Node<'_>, mnem: String) {
         if let Some(ops_node) = node.child_by_field_name("operands")
-            && let Some(raw_ops) = ctx.text.get(ops_node.start_byte()..ops_node.end_byte())
+            && let Some(raw_ops) = self.text.get(ops_node.start_byte()..ops_node.end_byte())
         {
             let lead = raw_ops.len() - raw_ops.trim_start().len();
             let param_start = ops_node.start_byte() + lead;
@@ -499,112 +297,263 @@ fn handle_directive(node: Node<'_>, ctx: &mut ExtractCtx<'_>) {
             if param_len > 0 {
                 let param_name = &trimmed[..param_len];
                 let param_end = param_start + param_len;
-                let scope_idx = ctx.repeat_scopes.len();
-                ctx.repeat_scopes.push(RepeatScope {
+                let scope_idx = self.repeat_scopes.len();
+                self.repeat_scopes.push(RepeatScope {
                     directive: mnem,
                     param: MacroParamDef {
                         name: param_name.to_owned(),
                         span: (param_start, param_end),
                     },
-                    full_span: (node.start_byte(), ctx.text.len()),
-                    line_text: line_text_at(ctx.text, ctx.line_index, node.start_byte()),
+                    full_span: (node.start_byte(), self.text.len()),
+                    line_text: line_text_at(self.text, self.line_index, node.start_byte()),
                 });
-                ctx.repeat_stack.push(Some(scope_idx));
-                walk_ast_after_offset(ops_node, param_end, ctx);
+                self.repeat_stack.push(Some(scope_idx));
+                walk_node_after_offset(ops_node, param_end, self.text, self);
                 return;
             }
         }
-        ctx.repeat_stack.push(None);
-        return;
+        self.repeat_stack.push(None);
     }
 
-    if mnem == ".rept" {
-        ctx.repeat_stack.push(None);
-        if let Some(ops_node) = node.child_by_field_name("operands") {
-            walk_ast(ops_node, ctx);
-        }
-        return;
-    }
-
-    if mnem == ".endr" {
-        if let Some(Some(scope_idx)) = ctx.repeat_stack.pop()
-            && let Some(scope) = ctx.repeat_scopes.get_mut(scope_idx)
-        {
-            scope.full_span.1 = node.end_byte();
-        }
-        return;
-    }
-
-    if matches!(mnem.as_str(), ".equ" | ".set" | ".equiv")
-        && let Some(ops_node) = node.child_by_field_name("operands")
-    {
+    fn handle_equ_directive(&mut self, node: Node<'_>, mnem: &str) -> bool {
+        let Some(ops_node) = node.child_by_field_name("operands") else {
+            return true;
+        };
         let mut cursor = ops_node.walk();
         let children: Vec<Node<'_>> = ops_node.children(&mut cursor).collect();
-        if let Some(sym_node) = children.iter().find(|c| c.kind() == "symbol")
-            && let Some(name) = ctx.text.get(sym_node.start_byte()..sym_node.end_byte())
-        {
-            let sym_id = sym_node.id();
-            let value_text = ctx
-                .text
-                .get(sym_node.end_byte()..ops_node.end_byte())
-                .and_then(|rest| rest.split_once(',').map(|(_, v)| v.trim().to_owned()))
-                .filter(|s| !s.is_empty());
-            let assign_kind = match mnem.as_str() {
-                ".set" => AssignKind::Set,
-                ".equiv" => AssignKind::Equiv,
-                _ => AssignKind::Equ,
-            };
-            ctx.definitions.push(SymbolDef {
-                name: name.to_owned(),
-                kind: SymKind::Equ,
-                assign_kind: Some(assign_kind),
-                name_span: (sym_node.start_byte(), sym_node.end_byte()),
-                full_span: (node.start_byte(), node.end_byte()),
-                line_text: line_text_at(ctx.text, ctx.line_index, node.start_byte()),
-                value_text,
-                params: Vec::new(),
-                enclosing_label_idx: None,
-                enclosing_macro_idx: None,
+        let Some(sym_node) = children.iter().find(|c| c.kind() == "symbol") else {
+            return true;
+        };
+        let Some(name) = self.text.get(sym_node.start_byte()..sym_node.end_byte()) else {
+            return true;
+        };
+        if name == "." {
+            return true;
+        }
+        let sym_id = sym_node.id();
+        let value_text = self
+            .text
+            .get(sym_node.end_byte()..ops_node.end_byte())
+            .and_then(|rest| rest.split_once(',').map(|(_, v)| v.trim().to_owned()))
+            .filter(|s| !s.is_empty());
+        let assign_kind = match mnem {
+            ".set" => AssignKind::Set,
+            ".equiv" => AssignKind::Equiv,
+            _ => AssignKind::Equ,
+        };
+        self.definitions.push(SymbolDef {
+            name: name.to_owned(),
+            kind: SymKind::Equ,
+            assign_kind: Some(assign_kind),
+            name_span: (sym_node.start_byte(), sym_node.end_byte()),
+            full_span: (node.start_byte(), node.end_byte()),
+            line_text: line_text_at(self.text, self.line_index, node.start_byte()),
+            value_text,
+            params: Vec::new(),
+            enclosing_label_idx: None,
+            enclosing_macro_idx: None,
+        });
+        for child in children {
+            if child.id() != sym_id {
+                walk_node(child, self.text, self);
+            }
+        }
+        false
+    }
+}
+
+impl AstVisitor for ExtractVisitor<'_> {
+    fn on_label(&mut self, node: Node<'_>, name: &str) {
+        let name_start = node.start_byte();
+        let name_end = name_start + name.len();
+        let sym_kind = if name.bytes().all(|b| b.is_ascii_digit()) {
+            SymKind::NumericLabel
+        } else if name.starts_with(".L") {
+            SymKind::LocalLabel
+        } else {
+            SymKind::Label
+        };
+        self.definitions.push(SymbolDef {
+            name: name.to_owned(),
+            kind: sym_kind,
+            assign_kind: None,
+            name_span: (name_start, name_end),
+            full_span: (node.start_byte(), node.end_byte()),
+            line_text: line_text_at(self.text, self.line_index, name_start),
+            value_text: None,
+            params: Vec::new(),
+            enclosing_label_idx: None,
+            enclosing_macro_idx: None,
+        });
+    }
+
+    fn on_numeric_label(&mut self, node: Node<'_>, name: &str) {
+        let name_start = node.start_byte();
+        let name_end = name_start + name.len();
+        self.definitions.push(SymbolDef {
+            name: name.to_owned(),
+            kind: SymKind::NumericLabel,
+            assign_kind: None,
+            name_span: (name_start, name_end),
+            full_span: (node.start_byte(), node.end_byte()),
+            line_text: line_text_at(self.text, self.line_index, name_start),
+            value_text: None,
+            params: Vec::new(),
+            enclosing_label_idx: None,
+            enclosing_macro_idx: None,
+        });
+    }
+
+    fn enter_instruction(&mut self, mnem: Node<'_>, name: &str) -> bool {
+        let span = (mnem.start_byte(), mnem.end_byte());
+        if let Some(param_name) = super::parse_macro_var_token(name) {
+            self.references.push(SymbolRef {
+                name: param_name.to_owned(),
+                kind: RefKind::MacroParam,
+                span,
+                enclosing_macro_idx: self.cur_macro(),
             });
-            for child in children {
-                if child.id() != sym_id {
-                    walk_ast(child, ctx);
+        } else if name != "." {
+            self.references.push(SymbolRef {
+                name: name.to_owned(),
+                kind: RefKind::Identifier,
+                span,
+                enclosing_macro_idx: self.cur_macro(),
+            });
+        }
+        false
+    }
+
+    fn enter_call_statement(&mut self, name_node: Node<'_>, name: &str) -> bool {
+        self.references.push(SymbolRef {
+            name: name.to_owned(),
+            kind: RefKind::Identifier,
+            span: (name_node.start_byte(), name_node.end_byte()),
+            enclosing_macro_idx: self.cur_macro(),
+        });
+        false
+    }
+
+    fn on_assignment(
+        &mut self,
+        full: Node<'_>,
+        left: Node<'_>,
+        name: &str,
+        right: Option<Node<'_>>,
+    ) {
+        let value_text = right
+            .and_then(|r| self.text.get(r.start_byte()..r.end_byte()))
+            .map(|s| s.trim().to_owned());
+        self.definitions.push(SymbolDef {
+            name: name.to_owned(),
+            kind: SymKind::Equ,
+            assign_kind: Some(AssignKind::Equals),
+            name_span: (left.start_byte(), left.end_byte()),
+            full_span: (full.start_byte(), full.end_byte()),
+            line_text: line_text_at(self.text, self.line_index, left.start_byte()),
+            value_text,
+            params: Vec::new(),
+            enclosing_label_idx: None,
+            enclosing_macro_idx: None,
+        });
+    }
+
+    fn on_symbol(&mut self, node: Node<'_>, name: &str) {
+        self.push_ref(name, (node.start_byte(), node.end_byte()));
+    }
+
+    fn on_numeric_label_ref(&mut self, node: Node<'_>, raw: &str) {
+        if let Some((digits, forward)) = super::parse_numeric_ref_token(raw) {
+            self.references.push(SymbolRef {
+                name: digits.to_owned(),
+                kind: if forward {
+                    RefKind::NumericForward
+                } else {
+                    RefKind::NumericBackward
+                },
+                span: (node.start_byte(), node.end_byte()),
+                enclosing_macro_idx: self.cur_macro(),
+            });
+        }
+    }
+
+    fn on_macro_var(&mut self, param: &str, span: (usize, usize)) {
+        self.references.push(SymbolRef {
+            name: param.to_owned(),
+            kind: RefKind::MacroParam,
+            span,
+            enclosing_macro_idx: self.cur_macro(),
+        });
+    }
+
+    fn on_directive(&mut self, node: Node<'_>) -> bool {
+        let Some(mnem_node) = node.child_by_field_name("mnemonic") else {
+            return true;
+        };
+        let Some(mnem_raw) = self.text.get(mnem_node.start_byte()..mnem_node.end_byte()) else {
+            return true;
+        };
+        let mnem = mnem_raw.to_ascii_lowercase();
+        match mnem.as_str() {
+            ".macro" => {
+                self.handle_macro_directive(node);
+                false
+            }
+            ".endm" => {
+                if let Some(open_idx) = self.macro_stack.pop()
+                    && let Some(def) = self.definitions.get_mut(open_idx)
+                {
+                    def.full_span.1 = node.end_byte();
                 }
+                false
             }
-            return;
-        }
-    }
-
-    if mnem == ".include" {
-        if let Some(ops_node) = node.child_by_field_name("operands")
-            && let Some(raw) = ctx.text.get(ops_node.start_byte()..ops_node.end_byte())
-        {
-            let trimmed = raw.trim();
-            if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                ctx.includes.push(IncludeDirective {
-                    target: inner.to_owned(),
-                    is_system: false,
-                });
+            ".irp" | ".irpc" => {
+                self.handle_irp_directive(node, mnem);
+                false
             }
-        }
-        return;
-    }
-
-    if matches!(mnem.as_str(), ".globl" | ".global")
-        && let Some(ops_node) = node.child_by_field_name("operands")
-    {
-        let mut cursor = ops_node.walk();
-        for child in ops_node.children(&mut cursor) {
-            if child.kind() == "symbol"
-                && let Some(name) = ctx.text.get(child.start_byte()..child.end_byte())
-            {
-                ctx.globals.insert(name.to_owned());
+            ".rept" => {
+                self.repeat_stack.push(None);
+                true
             }
+            ".endr" => {
+                if let Some(Some(scope_idx)) = self.repeat_stack.pop()
+                    && let Some(scope) = self.repeat_scopes.get_mut(scope_idx)
+                {
+                    scope.full_span.1 = node.end_byte();
+                }
+                false
+            }
+            ".equ" | ".set" | ".equiv" => self.handle_equ_directive(node, &mnem),
+            ".include" => {
+                if let Some(ops_node) = node.child_by_field_name("operands")
+                    && let Some(raw) = self.text.get(ops_node.start_byte()..ops_node.end_byte())
+                {
+                    let trimmed = raw.trim();
+                    if let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                    {
+                        self.includes.push(IncludeDirective {
+                            target: inner.to_owned(),
+                            is_system: false,
+                        });
+                    }
+                }
+                false
+            }
+            ".globl" | ".global" => {
+                if let Some(ops_node) = node.child_by_field_name("operands") {
+                    let mut cursor = ops_node.walk();
+                    for child in ops_node.children(&mut cursor) {
+                        if child.kind() == "symbol"
+                            && let Some(name) = self.text.get(child.start_byte()..child.end_byte())
+                        {
+                            self.globals.insert(name.to_owned());
+                        }
+                    }
+                }
+                true
+            }
+            _ => true,
         }
-    }
-
-    if let Some(ops_node) = node.child_by_field_name("operands") {
-        walk_ast(ops_node, ctx);
     }
 }
 
@@ -641,7 +590,6 @@ fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<
         let code = raw_line.split('#').next().unwrap_or(raw_line);
         let code = code.split("//").next().unwrap_or(code);
         if let Some((lhs, rhs)) = code.split_once('=') {
-            // Ignore `==`, `!=`, `<=`, `>=`
             let lhs_trim = lhs.trim();
             if !lhs_trim.is_empty()
                 && !lhs_trim.ends_with(['!', '<', '>'])
@@ -671,6 +619,9 @@ fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<
 }
 
 fn is_valid_ident(s: &str) -> bool {
+    if s == "." {
+        return false;
+    }
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -680,7 +631,6 @@ fn is_valid_ident(s: &str) -> bool {
 }
 
 fn finalize_label_hierarchy_and_ranges(text: &str, defs: &mut [SymbolDef], refs: &mut [SymbolRef]) {
-    // Ordinary labels sorted by start offset define ranges up to just before the next ordinary label
     let mut label_indices: Vec<usize> = defs
         .iter()
         .enumerate()
@@ -701,7 +651,6 @@ fn finalize_label_hierarchy_and_ranges(text: &str, defs: &mut [SymbolDef], refs:
         defs[idx].full_span = (start, end.max(defs[idx].name_span.1));
     }
 
-    // Attach numeric labels to their enclosing ordinary label via binary search (O(log N))
     for i in 0..defs.len() {
         if defs[i].kind != SymKind::NumericLabel {
             continue;
@@ -715,7 +664,6 @@ fn finalize_label_hierarchy_and_ranges(text: &str, defs: &mut [SymbolDef], refs:
         defs[i].enclosing_label_idx = parent;
     }
 
-    // Ensure enclosing_macro_idx on refs aligns with full_span
     let macro_ranges: Vec<(usize, usize, usize)> = defs
         .iter()
         .enumerate()

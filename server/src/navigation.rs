@@ -277,8 +277,7 @@ pub fn rename_symbol(
     }
 
     let is_macro_param = matches!(target, TargetSymbol::MacroParam { .. });
-    #[allow(clippy::mutable_key_type)]
-    let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+    let mut grouped: HashMap<String, (Uri, Vec<TextEdit>)> = HashMap::new();
     for loc in locs {
         let mut range = loc.range;
         if is_macro_param {
@@ -294,14 +293,19 @@ pub fn rename_symbol(
                 }
             }
         }
-        changes.entry(loc.uri).or_default().push(TextEdit {
-            range,
-            new_text: new_name.to_owned(),
-        });
+        let key = loc.uri.as_str().to_owned();
+        grouped
+            .entry(key)
+            .or_insert_with(|| (loc.uri, Vec::new()))
+            .1
+            .push(TextEdit {
+                range,
+                new_text: new_name.to_owned(),
+            });
     }
 
     Ok(Some(WorkspaceEdit {
-        changes: Some(changes),
+        changes: Some(grouped.into_values().collect()),
         ..WorkspaceEdit::default()
     }))
 }
@@ -570,51 +574,24 @@ fn collect_occurrences(
 
     match target {
         TargetSymbol::Numeric { digits, def_span } => {
-            if include_declaration {
-                push_unique(&mut out, &mut seen, cur_file.location(*def_span));
-            }
-            for r in &cur_file.references {
-                let forward = match r.kind {
-                    RefKind::NumericForward => true,
-                    RefKind::NumericBackward => false,
-                    _ => continue,
-                };
-                if r.name == *digits
-                    && let Some(resolved) = resolve_numeric_def(cur_file, digits, forward, r.span.0)
-                    && resolved.name_span == *def_span
-                {
-                    push_unique(&mut out, &mut seen, cur_file.location(r.span));
-                }
-            }
+            collect_numeric_occurrences(
+                cur_file,
+                digits,
+                *def_span,
+                include_declaration,
+                &mut out,
+                &mut seen,
+            );
         }
         TargetSymbol::MacroParam { scope, param_name } => {
-            if include_declaration {
-                match scope {
-                    ParamScope::Macro(macro_idx) => {
-                        if let Some(macro_def) = cur_file.definitions.get(*macro_idx)
-                            && let Some(p) = macro_def.params.iter().find(|p| p.name == *param_name)
-                        {
-                            push_unique(&mut out, &mut seen, cur_file.location(p.span));
-                        }
-                    }
-                    ParamScope::Repeat(rep_idx) => {
-                        if let Some(rep) = cur_file.repeat_scopes.get(*rep_idx)
-                            && rep.param.name == *param_name
-                        {
-                            push_unique(&mut out, &mut seen, cur_file.location(rep.param.span));
-                        }
-                    }
-                }
-            }
-            for r in &cur_file.references {
-                if r.kind == RefKind::MacroParam
-                    && r.name == *param_name
-                    && resolve_param_scope(cur_file, r.span.0, &r.name)
-                        .is_some_and(|(resolved_scope, ..)| resolved_scope == *scope)
-                {
-                    push_unique(&mut out, &mut seen, cur_file.location(r.span));
-                }
-            }
+            collect_macro_param_occurrences(
+                cur_file,
+                *scope,
+                param_name,
+                include_declaration,
+                &mut out,
+                &mut seen,
+            );
         }
         TargetSymbol::LocalLabel { name } => {
             if include_declaration {
@@ -632,41 +609,18 @@ fn collect_occurrences(
         }
         TargetSymbol::ScopedEquOrMacro { name, def_file }
         | TargetSymbol::Define { name, def_file } => {
-            let scope_files = if current_file_only {
-                vec![cur_file.path.clone()]
-            } else {
-                let mut set: HashSet<_> = index
-                    .resolve_include_closure(&cur_file.path, ctx)
-                    .into_iter()
-                    .collect();
-                for p in index.files_including(&def_file.path, ctx) {
-                    set.insert(p);
-                }
-                set.into_iter().collect()
-            };
-            let is_define = matches!(target, TargetSymbol::Define { .. });
-
-            for path in scope_files {
-                if let Some(f) = index.files().find(|f| f.path == path) {
-                    if include_declaration {
-                        for def in &f.definitions {
-                            let match_kind = if is_define {
-                                def.kind == SymKind::Define
-                            } else {
-                                matches!(def.kind, SymKind::Equ | SymKind::Macro)
-                            };
-                            if match_kind && def.name == *name {
-                                push_unique(&mut out, &mut seen, f.location(def.name_span));
-                            }
-                        }
-                    }
-                    for r in &f.references {
-                        if r.kind == RefKind::Identifier && r.name == *name {
-                            push_unique(&mut out, &mut seen, f.location(r.span));
-                        }
-                    }
-                }
-            }
+            collect_scoped_occurrences(ScopedOccurrenceQuery {
+                index,
+                cur_file,
+                def_file,
+                name,
+                is_define: matches!(target, TargetSymbol::Define { .. }),
+                include_declaration,
+                current_file_only,
+                ctx,
+                out: &mut out,
+                seen: &mut seen,
+            });
         }
         TargetSymbol::GlobalLabel { name } => {
             let files: Vec<FileIndex> = if current_file_only {
@@ -692,6 +646,121 @@ fn collect_occurrences(
     }
 
     out
+}
+
+fn collect_numeric_occurrences(
+    cur_file: &FileIndex,
+    digits: &str,
+    def_span: (usize, usize),
+    include_declaration: bool,
+    out: &mut Vec<Location>,
+    seen: &mut HashSet<(String, u32, u32)>,
+) {
+    if include_declaration {
+        push_unique(out, seen, cur_file.location(def_span));
+    }
+    for r in &cur_file.references {
+        let forward = match r.kind {
+            RefKind::NumericForward => true,
+            RefKind::NumericBackward => false,
+            _ => continue,
+        };
+        if r.name == digits
+            && let Some(resolved) = resolve_numeric_def(cur_file, digits, forward, r.span.0)
+            && resolved.name_span == def_span
+        {
+            push_unique(out, seen, cur_file.location(r.span));
+        }
+    }
+}
+
+fn collect_macro_param_occurrences(
+    cur_file: &FileIndex,
+    scope: ParamScope,
+    param_name: &str,
+    include_declaration: bool,
+    out: &mut Vec<Location>,
+    seen: &mut HashSet<(String, u32, u32)>,
+) {
+    if include_declaration {
+        match scope {
+            ParamScope::Macro(macro_idx) => {
+                if let Some(macro_def) = cur_file.definitions.get(macro_idx)
+                    && let Some(p) = macro_def.params.iter().find(|p| p.name == param_name)
+                {
+                    push_unique(out, seen, cur_file.location(p.span));
+                }
+            }
+            ParamScope::Repeat(rep_idx) => {
+                if let Some(rep) = cur_file.repeat_scopes.get(rep_idx)
+                    && rep.param.name == param_name
+                {
+                    push_unique(out, seen, cur_file.location(rep.param.span));
+                }
+            }
+        }
+    }
+    for r in &cur_file.references {
+        if r.kind == RefKind::MacroParam
+            && r.name == param_name
+            && resolve_param_scope(cur_file, r.span.0, &r.name)
+                .is_some_and(|(resolved_scope, ..)| resolved_scope == scope)
+        {
+            push_unique(out, seen, cur_file.location(r.span));
+        }
+    }
+}
+
+struct ScopedOccurrenceQuery<'a> {
+    index: &'a mut WorkspaceIndex,
+    cur_file: &'a FileIndex,
+    def_file: &'a FileIndex,
+    name: &'a str,
+    is_define: bool,
+    include_declaration: bool,
+    current_file_only: bool,
+    ctx: &'a mut CompileContext,
+    out: &'a mut Vec<Location>,
+    seen: &'a mut HashSet<(String, u32, u32)>,
+}
+
+fn collect_scoped_occurrences(q: ScopedOccurrenceQuery<'_>) {
+    let scope_files = if q.current_file_only {
+        vec![q.cur_file.path.clone()]
+    } else {
+        let mut set: HashSet<_> = q
+            .index
+            .resolve_include_closure(&q.cur_file.path, q.ctx)
+            .into_iter()
+            .collect();
+        for p in q.index.files_including(&q.def_file.path, q.ctx) {
+            set.insert(p);
+        }
+        set.into_iter().collect()
+    };
+
+    for path in scope_files {
+        let Some(f) = q.index.files().find(|f| f.path == path) else {
+            continue;
+        };
+        if q.include_declaration {
+            for def in &f.definitions {
+                let match_kind = if q.is_define {
+                    def.kind == SymKind::Define
+                } else {
+                    matches!(def.kind, SymKind::Equ | SymKind::Macro)
+                };
+                if match_kind && def.name == q.name {
+                    push_unique(q.out, q.seen, f.location(def.name_span));
+                }
+            }
+        }
+        for r in &f.references {
+            if r.kind == RefKind::Identifier && r.name == q.name {
+                push_unique(q.out, q.seen, f.location(r.span));
+            }
+        }
+    }
 }
 
 fn push_unique(out: &mut Vec<Location>, seen: &mut HashSet<(String, u32, u32)>, loc: Location) {

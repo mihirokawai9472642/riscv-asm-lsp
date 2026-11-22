@@ -1,0 +1,453 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": "f0",
+      "documentation": "Register · Floating-point · caller-saved\n\n```riscv\nft0 (f0)\n```\n\n---\n\nCaller-saved temporary register.",
+      "insertText": "ft0, ",
+      "kind": 6,
+      "label": "ft0"
+    },
+    {
+      "detail": "ft0",
+      "documentation": "Register · Floating-point · caller-saved\n\n```riscv\nft0 (f0)\n```\n\n---\n\nCaller-saved temporary register.",
+      "insertText": "f0, ",
+      "kind": 6,
+      "label": "f0"
+    },
+    {
+      "detail": "f1",
+      "documentation": "Register · Floating-point · caller-saved\n\n```riscv\nft1 (f1)\n```\n\n---\n\nCaller-saved temporary register.",
+      "insertText": "ft1, ",
+      "kind": 6,
+      "label": "ft1"
+    },
+    {
+      "detail": "ft1",
+      "documentation": "Register · Floating-point · caller-saved\n\n```riscv\nft1 (f1)\n```\n\n---\n\nCaller-saved temporary register.",
+      "insertText": "f1, ",
+      "kind": 6,
+      "label": "f1"
+    },
+    {
+      "detail": "f2",
+      "documentation": "Register · Floating-point · caller-saved\n\n```riscv\nft2 (f2)\n```\n\n---\n\nCaller-saved temporary register.",
+      "insertText": "ft2, ",
+      "kind": 6,
+      "label": "ft2"
+    },
+    {
+      "detail": "ft2",
+      "documentation": null,
+      "insertText": "f2, ",
+      "kind": 6,
+      "label": "f2"
+    },
+    {
+      "detail": "f3",
+      "documentation": null,
+      "insertText": "ft3, ",
+      "kind": 6,
+      "label": "ft3"
+    },
+    {
+      "detail": "ft3",
+      "documentation": null,
+      "insertText": "f3, ",
+      "kind": 6,
+      "label": "f3"
+    },
+    {
+      "detail": "f4",
+      "documentation": null,
+      "insertText": "ft4, ",
+      "kind": 6,
+      "label": "ft4"
+    },
+    {
+      "detail": "ft4",
+      "documentation": null,
+      "insertText": "f4, ",
+      "kind": 6,
+      "label": "f4"
+    },
+    {
+      "detail": "f5",
+      "documentation": null,
+      "insertText": "ft5, ",
+      "kind": 6,
+      "label": "ft5"
+    },
+    {
+      "detail": "ft5",
+      "documentation": null,
+      "insertText": "f5, ",
+      "kind": 6,
+      "label": "f5"
+    },
+    {
+      "detail": "f6",
+      "documentation": null,
+      "insertText": "ft6, ",
+      "kind": 6,
+      "label": "ft6"
+    },
+    {
+      "detail": "ft6",
+      "documentation": null,
+      "insertText": "f6, ",
+      "kind": 6,
+      "label": "f6"
+    },
+    {
+      "detail": "f7",
+      "documentation": null,
+      "insertText": "ft7, ",
+      "kind": 6,
+      "label": "ft7"
+    },
+    {
+      "detail": "ft7",
+      "documentation": null,
+      "insertText": "f7, ",
+      "kind": 6,
+      "label": "f7"
+    },
+    {
+      "detail": "f8",
+      "documentation": null,
+      "insertText": "fs0, ",
+      "kind": 6,
+      "label": "fs0"
+    },
+    {
+      "detail": "fs0",
+      "documentation": null,
+      "insertText": "f8, ",
+      "kind": 6,
+      "label": "f8"
+    },
+    {
+      "detail": "f9",
+      "documentation": null,
+      "insertText": "fs1, ",
+      "kind": 6,
+      "label": "fs1"
+    },
+    {
+      "detail": "fs1",
+      "documentation": null,
+      "insertText": "f9, ",
+      "kind": 6,
+      "label": "f9"
+    },
+    {
+      "detail": "f10",
+      "documentation": null,
+      "insertText": "fa0, ",
+      "kind": 6,
+      "label": "fa0"
+    },
+    {
+      "detail": "fa0",
+      "documentation": null,
+      "insertText": "f10, ",
+      "kind": 6,
+      "label": "f10"
+    },
+    {
+      "detail": "f11",
+      "documentation": null,
+      "insertText": "fa1, ",
+      "kind": 6,
+      "label": "fa1"
+    },
+    {
+      "detail": "fa1",
+      "documentation": null,
+      "insertText": "f11, ",
+      "kind": 6,
+      "label": "f11"
+    },
+    {
+      "detail": "f12",
+      "documentation": null,
+      "insertText": "fa2, ",
+      "kind": 6,
+      "label": "fa2"
+    },
+    {
+      "detail": "fa2",
+      "documentation": null,
+      "insertText": "f12, ",
+      "kind": 6,
+      "label": "f12"
+    },
+    {
+      "detail": "f13",
+      "documentation": null,
+      "insertText": "fa3, ",
+      "kind": 6,
+      "label": "fa3"
+    },
+    {
+      "detail": "fa3",
+      "documentation": null,
+      "insertText": "f13, ",
+      "kind": 6,
+      "label": "f13"
+    },
+    {
+      "detail": "f14",
+      "documentation": null,
+      "insertText": "fa4, ",
+      "kind": 6,
+      "label": "fa4"
+    },
+    {
+      "detail": "fa4",
+      "documentation": null,
+      "insertText": "f14, ",
+      "kind": 6,
+      "label": "f14"
+    },
+    {
+      "detail": "f15",
+      "documentation": null,
+      "insertText": "fa5, ",
+      "kind": 6,
+      "label": "fa5"
+    },
+    {
+      "detail": "fa5",
+      "documentation": null,
+      "insertText": "f15, ",
+      "kind": 6,
+      "label": "f15"
+    },
+    {
+      "detail": "f16",
+      "documentation": null,
+      "insertText": "fa6, ",
+      "kind": 6,
+      "label": "fa6"
+    },
+    {
+      "detail": "fa6",
+      "documentation": null,
+      "insertText": "f16, ",
+      "kind": 6,
+      "label": "f16"
+    },
+    {
+      "detail": "f17",
+      "documentation": null,
+      "insertText": "fa7, ",
+      "kind": 6,
+      "label": "fa7"
+    },
+    {
+      "detail": "fa7",
+      "documentation": null,
+      "insertText": "f17, ",
+      "kind": 6,
+      "label": "f17"
+    },
+    {
+      "detail": "f18",
+      "documentation": null,
+      "insertText": "fs2, ",
+      "kind": 6,
+      "label": "fs2"
+    },
+    {
+      "detail": "fs2",
+      "documentation": null,
+      "insertText": "f18, ",
+      "kind": 6,
+      "label": "f18"
+    },
+    {
+      "detail": "f19",
+      "documentation": null,
+      "insertText": "fs3, ",
+      "kind": 6,
+      "label": "fs3"
+    },
+    {
+      "detail": "fs3",
+      "documentation": null,
+      "insertText": "f19, ",
+      "kind": 6,
+      "label": "f19"
+    },
+    {
+      "detail": "f20",
+      "documentation": null,
+      "insertText": "fs4, ",
+      "kind": 6,
+      "label": "fs4"
+    },
+    {
+      "detail": "fs4",
+      "documentation": null,
+      "insertText": "f20, ",
+      "kind": 6,
+      "label": "f20"
+    },
+    {
+      "detail": "f21",
+      "documentation": null,
+      "insertText": "fs5, ",
+      "kind": 6,
+      "label": "fs5"
+    },
+    {
+      "detail": "fs5",
+      "documentation": null,
+      "insertText": "f21, ",
+      "kind": 6,
+      "label": "f21"
+    },
+    {
+      "detail": "f22",
+      "documentation": null,
+      "insertText": "fs6, ",
+      "kind": 6,
+      "label": "fs6"
+    },
+    {
+      "detail": "fs6",
+      "documentation": null,
+      "insertText": "f22, ",
+      "kind": 6,
+      "label": "f22"
+    },
+    {
+      "detail": "f23",
+      "documentation": null,
+      "insertText": "fs7, ",
+      "kind": 6,
+      "label": "fs7"
+    },
+    {
+      "detail": "fs7",
+      "documentation": null,
+      "insertText": "f23, ",
+      "kind": 6,
+      "label": "f23"
+    },
+    {
+      "detail": "f24",
+      "documentation": null,
+      "insertText": "fs8, ",
+      "kind": 6,
+      "label": "fs8"
+    },
+    {
+      "detail": "fs8",
+      "documentation": null,
+      "insertText": "f24, ",
+      "kind": 6,
+      "label": "f24"
+    },
+    {
+      "detail": "f25",
+      "documentation": null,
+      "insertText": "fs9, ",
+      "kind": 6,
+      "label": "fs9"
+    },
+    {
+      "detail": "fs9",
+      "documentation": null,
+      "insertText": "f25, ",
+      "kind": 6,
+      "label": "f25"
+    },
+    {
+      "detail": "f26",
+      "documentation": null,
+      "insertText": "fs10, ",
+      "kind": 6,
+      "label": "fs10"
+    },
+    {
+      "detail": "fs10",
+      "documentation": null,
+      "insertText": "f26, ",
+      "kind": 6,
+      "label": "f26"
+    },
+    {
+      "detail": "f27",
+      "documentation": null,
+      "insertText": "fs11, ",
+      "kind": 6,
+      "label": "fs11"
+    },
+    {
+      "detail": "fs11",
+      "documentation": null,
+      "insertText": "f27, ",
+      "kind": 6,
+      "label": "f27"
+    },
+    {
+      "detail": "f28",
+      "documentation": null,
+      "insertText": "ft8, ",
+      "kind": 6,
+      "label": "ft8"
+    },
+    {
+      "detail": "ft8",
+      "documentation": null,
+      "insertText": "f28, ",
+      "kind": 6,
+      "label": "f28"
+    },
+    {
+      "detail": "f29",
+      "documentation": null,
+      "insertText": "ft9, ",
+      "kind": 6,
+      "label": "ft9"
+    },
+    {
+      "detail": "ft9",
+      "documentation": null,
+      "insertText": "f29, ",
+      "kind": 6,
+      "label": "f29"
+    },
+    {
+      "detail": "f30",
+      "documentation": null,
+      "insertText": "ft10, ",
+      "kind": 6,
+      "label": "ft10"
+    },
+    {
+      "detail": "ft10",
+      "documentation": null,
+      "insertText": "f30, ",
+      "kind": 6,
+      "label": "f30"
+    },
+    {
+      "detail": "f31",
+      "documentation": null,
+      "insertText": "ft11, ",
+      "kind": 6,
+      "label": "ft11"
+    },
+    {
+      "detail": "ft11",
+      "documentation": null,
+      "insertText": "f31, ",
+      "kind": 6,
+      "label": "f31"
+    }
+  ]
+}

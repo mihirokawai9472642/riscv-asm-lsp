@@ -1,3 +1,4 @@
+pub mod ast;
 pub mod code_action;
 pub mod completion;
 pub mod config;
@@ -7,6 +8,7 @@ pub mod diagnostics;
 pub mod document;
 pub mod hover;
 pub mod index;
+pub mod line;
 pub mod navigation;
 pub mod position;
 pub mod preprocessor;

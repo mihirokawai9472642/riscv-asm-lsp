@@ -195,75 +195,9 @@ impl WorkspaceIndex {
         let token = file.text.get(tok_start..tok_end)?;
         let range = file.range((tok_start, tok_end));
 
-        // Numeric label reference (`1f` / `1b`)
-        if let Some((digits, forward)) = parse_numeric_ref_token(token)
-            && let Some(target_def) = resolve_numeric_def(&file, digits, forward, tok_start)
-        {
-            let target_pos = file
-                .line_index
-                .offset_to_position(&file.text, target_def.name_span.0);
-            return Some(SymbolHoverInfo {
-                name: token.to_owned(),
-                kind: SymKind::NumericLabel,
-                assign_kind: None,
-                assignment_count: 1,
-                param_label: None,
-                def_line: target_def.line_text.clone(),
-                value: None,
-                target_uri: Some(file.uri.clone()),
-                target_line_1based: Some(target_pos.line + 1),
-                range,
-            });
+        if let Some(info) = hover_numeric_or_param(&file, token, offset, tok_start, range) {
+            return Some(info);
         }
-
-        // Direct cursor on a `.irp` / `.irpc` parameter declaration
-        if let Some(scope) = file
-            .repeat_scopes
-            .iter()
-            .rev()
-            .find(|s| offset >= s.param.span.0 && offset <= s.param.span.1)
-        {
-            let label = if scope.directive == ".irpc" {
-                ".irpc parameter"
-            } else {
-                ".irp parameter"
-            };
-            let line = file.line_index.line_at_offset(scope.param.span.0) + 1;
-            return Some(SymbolHoverInfo {
-                name: scope.param.name.clone(),
-                kind: SymKind::MacroParam,
-                assign_kind: None,
-                assignment_count: 1,
-                param_label: Some(label.to_owned()),
-                def_line: scope.line_text.clone(),
-                value: None,
-                target_uri: Some(file.uri.clone()),
-                target_line_1based: Some(line as u32),
-                range,
-            });
-        }
-
-        // Macro or `.irp` / `.irpc` parameter reference (`\reg`)
-        if let Some(param_name) = parse_macro_var_token(token)
-            && let Some((_, param, def_line, kind_label)) =
-                resolve_param_scope(&file, tok_start, param_name)
-        {
-            let line = file.line_index.line_at_offset(param.span.0) + 1;
-            return Some(SymbolHoverInfo {
-                name: param.name.clone(),
-                kind: SymKind::MacroParam,
-                assign_kind: None,
-                assignment_count: 1,
-                param_label: Some(kind_label.to_owned()),
-                def_line: def_line.to_owned(),
-                value: None,
-                target_uri: Some(file.uri.clone()),
-                target_line_1based: Some(line as u32),
-                range,
-            });
-        }
-
-        // Local label (`.L...`)
         if token.starts_with(".L")
             && let Some(def) = file
                 .definitions
@@ -272,8 +206,17 @@ impl WorkspaceIndex {
         {
             return Some(hover_from_def(&file, def, range, 1));
         }
+        self.hover_scoped_or_global(&file, token, (tok_start, tok_end), range, ctx)
+    }
 
-        // Included `.equ` / `.set` / `=` / `.macro` / `#define` (starts with `file.path` itself)
+    fn hover_scoped_or_global(
+        &mut self,
+        file: &FileIndex,
+        token: &str,
+        tok_span: (usize, usize),
+        range: Range,
+        ctx: &mut CompileContext,
+    ) -> Option<SymbolHoverInfo> {
         let closure = self.resolve_include_closure(&file.path, ctx);
         let mut first_non_equ: Option<(&FileIndex, &SymbolDef)> = None;
         let mut equ_candidates: Vec<(&FileIndex, &SymbolDef)> = Vec::new();
@@ -295,16 +238,13 @@ impl WorkspaceIndex {
         }
         if !equ_candidates.is_empty() {
             let count = equ_candidates.len();
-            let chosen = select_effective_equ(&file.path, tok_start, tok_end, &equ_candidates);
+            let chosen = select_effective_equ(&file.path, tok_span.0, tok_span.1, &equ_candidates);
             return Some(hover_from_def(chosen.0, chosen.1, range, count));
         }
         if let Some((inc_file, def)) = first_non_equ {
             return Some(hover_from_def(inc_file, def, range, 1));
         }
-
-        // Project-wide ordinary label
-        if let Some(def_file_and_def) = self
-            .files
+        self.files
             .values()
             .filter_map(|f| {
                 f.definitions
@@ -313,16 +253,7 @@ impl WorkspaceIndex {
                     .map(|d| (f, d))
             })
             .next()
-        {
-            return Some(hover_from_def(
-                def_file_and_def.0,
-                def_file_and_def.1,
-                range,
-                1,
-            ));
-        }
-
-        None
+            .map(|(f, def)| hover_from_def(f, def, range, 1))
     }
 
     pub fn visible_symbols_for_completion(
@@ -444,6 +375,78 @@ impl WorkspaceIndex {
 
         out
     }
+}
+
+fn hover_numeric_or_param(
+    file: &FileIndex,
+    token: &str,
+    offset: usize,
+    tok_start: usize,
+    range: Range,
+) -> Option<SymbolHoverInfo> {
+    if let Some((digits, forward)) = parse_numeric_ref_token(token)
+        && let Some(target_def) = resolve_numeric_def(file, digits, forward, tok_start)
+    {
+        let target_pos = file
+            .line_index
+            .offset_to_position(&file.text, target_def.name_span.0);
+        return Some(SymbolHoverInfo {
+            name: token.to_owned(),
+            kind: SymKind::NumericLabel,
+            assign_kind: None,
+            assignment_count: 1,
+            param_label: None,
+            def_line: target_def.line_text.clone(),
+            value: None,
+            target_uri: Some(file.uri.clone()),
+            target_line_1based: Some(target_pos.line + 1),
+            range,
+        });
+    }
+    if let Some(scope) = file
+        .repeat_scopes
+        .iter()
+        .rev()
+        .find(|s| offset >= s.param.span.0 && offset <= s.param.span.1)
+    {
+        let label = if scope.directive == ".irpc" {
+            ".irpc parameter"
+        } else {
+            ".irp parameter"
+        };
+        let line = file.line_index.line_at_offset(scope.param.span.0) + 1;
+        return Some(SymbolHoverInfo {
+            name: scope.param.name.clone(),
+            kind: SymKind::MacroParam,
+            assign_kind: None,
+            assignment_count: 1,
+            param_label: Some(label.to_owned()),
+            def_line: scope.line_text.clone(),
+            value: None,
+            target_uri: Some(file.uri.clone()),
+            target_line_1based: Some(line as u32),
+            range,
+        });
+    }
+    if let Some(param_name) = parse_macro_var_token(token)
+        && let Some((_, param, def_line, kind_label)) =
+            resolve_param_scope(file, tok_start, param_name)
+    {
+        let line = file.line_index.line_at_offset(param.span.0) + 1;
+        return Some(SymbolHoverInfo {
+            name: param.name.clone(),
+            kind: SymKind::MacroParam,
+            assign_kind: None,
+            assignment_count: 1,
+            param_label: Some(kind_label.to_owned()),
+            def_line: def_line.to_owned(),
+            value: None,
+            target_uri: Some(file.uri.clone()),
+            target_line_1based: Some(line as u32),
+            range,
+        });
+    }
+    None
 }
 
 fn select_effective_equ<'a>(

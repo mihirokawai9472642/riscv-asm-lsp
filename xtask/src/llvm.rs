@@ -193,130 +193,147 @@ fn extract_instructions_and_aliases(
 ) -> Vec<LlvmInstruction> {
     let mut out = Vec::new();
     let mut inst_mnemonic_by_def: HashMap<String, String> = HashMap::new();
-
-    if let Some(inst_defs) = instanceof.get("Instruction").and_then(Value::as_array) {
-        for def_val in inst_defs {
-            let Some(def_name) = def_val.as_str() else {
-                continue;
-            };
-            let Some(rec) = root.get(def_name).and_then(Value::as_object) else {
-                continue;
-            };
-            if rec.get("Namespace").and_then(Value::as_str) != Some("RISCV") {
-                continue;
-            }
-            if rec
-                .get("isCodeGenOnly")
-                .and_then(Value::as_i64)
-                .unwrap_or(0)
-                != 0
-            {
-                continue;
-            }
-            let asm_string = rec
-                .get("AsmString")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if asm_string.is_empty() {
-                continue;
-            }
-            let pred_names = predicate_def_names(rec);
-            if pred_names.iter().any(|p| p.contains("Vendor")) {
-                continue;
-            }
-
-            let mnemonic = extract_mnemonic(asm_string);
-            if mnemonic.is_empty() || mnemonic.starts_with('.') {
-                continue;
-            }
-            inst_mnemonic_by_def.insert(def_name.to_owned(), mnemonic.clone());
-
-            let operand_map = collect_instruction_operand_classes(rec);
-            let (syntax, operands) = format_syntax_and_operands(asm_string, &operand_map);
-            let (required_extensions, xlen) = decode_predicates(root, &pred_names);
-            let kind = if rec.get("isPseudo").and_then(Value::as_i64).unwrap_or(0) != 0 {
-                InstructionKind::Pseudo
-            } else {
-                InstructionKind::Instruction
-            };
-
-            out.push(LlvmInstruction {
-                mnemonic,
-                kind,
-                variant: InstructionVariant {
-                    syntax,
-                    operands,
-                    required_extensions,
-                    xlen,
-                    alias_of: None,
-                },
-            });
-        }
-    }
-
-    if let Some(alias_defs) = instanceof.get("InstAlias").and_then(Value::as_array) {
-        for def_val in alias_defs {
-            let Some(def_name) = def_val.as_str() else {
-                continue;
-            };
-            let Some(rec) = root.get(def_name).and_then(Value::as_object) else {
-                continue;
-            };
-            let asm_string = rec
-                .get("AsmString")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if asm_string.is_empty() {
-                continue;
-            }
-            let pred_names = predicate_def_names(rec);
-            if pred_names.iter().any(|p| p.contains("Vendor")) {
-                continue;
-            }
-            let result_inst = rec.get("ResultInst").and_then(Value::as_object);
-            let target_def = result_inst
-                .and_then(|r| r.get("operator"))
-                .and_then(|o| o.get("def"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            if let Some(target_rec) = root.get(target_def).and_then(Value::as_object)
-                && target_rec.get("Namespace").and_then(Value::as_str) != Some("RISCV")
-            {
-                continue;
-            }
-            let mnemonic = extract_mnemonic(asm_string);
-            if mnemonic.is_empty() || mnemonic.starts_with('.') {
-                continue;
-            }
-
-            let operand_map = collect_alias_operand_classes(result_inst);
-            let (syntax, operands) = format_syntax_and_operands(asm_string, &operand_map);
-            let (required_extensions, xlen) = decode_predicates(root, &pred_names);
-            let alias_of = inst_mnemonic_by_def.get(target_def).cloned().or_else(|| {
-                root.get(target_def)
-                    .and_then(|v| v.get("AsmString"))
-                    .and_then(Value::as_str)
-                    .map(extract_mnemonic)
-                    .filter(|s| !s.is_empty())
-            });
-
-            out.push(LlvmInstruction {
-                mnemonic,
-                kind: InstructionKind::Alias,
-                variant: InstructionVariant {
-                    syntax,
-                    operands,
-                    required_extensions,
-                    xlen,
-                    alias_of,
-                },
-            });
-        }
-    }
-
+    extract_instructions(root, instanceof, &mut inst_mnemonic_by_def, &mut out);
+    extract_aliases(root, instanceof, &inst_mnemonic_by_def, &mut out);
     out
+}
+
+fn extract_instructions(
+    root: &serde_json::Map<String, Value>,
+    instanceof: &serde_json::Map<String, Value>,
+    inst_mnemonic_by_def: &mut HashMap<String, String>,
+    out: &mut Vec<LlvmInstruction>,
+) {
+    let Some(inst_defs) = instanceof.get("Instruction").and_then(Value::as_array) else {
+        return;
+    };
+    for def_val in inst_defs {
+        let Some(def_name) = def_val.as_str() else {
+            continue;
+        };
+        let Some(rec) = root.get(def_name).and_then(Value::as_object) else {
+            continue;
+        };
+        if rec.get("Namespace").and_then(Value::as_str) != Some("RISCV") {
+            continue;
+        }
+        if rec
+            .get("isCodeGenOnly")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            != 0
+        {
+            continue;
+        }
+        let asm_string = rec
+            .get("AsmString")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if asm_string.is_empty() {
+            continue;
+        }
+        let pred_names = predicate_def_names(rec);
+        if pred_names.iter().any(|p| p.contains("Vendor")) {
+            continue;
+        }
+
+        let mnemonic = extract_mnemonic(asm_string);
+        if mnemonic.is_empty() || mnemonic.starts_with('.') {
+            continue;
+        }
+        inst_mnemonic_by_def.insert(def_name.to_owned(), mnemonic.clone());
+
+        let operand_map = collect_instruction_operand_classes(rec);
+        let (syntax, operands) = format_syntax_and_operands(asm_string, &operand_map);
+        let (required_extensions, xlen) = decode_predicates(root, &pred_names);
+        let kind = if rec.get("isPseudo").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            InstructionKind::Pseudo
+        } else {
+            InstructionKind::Instruction
+        };
+
+        out.push(LlvmInstruction {
+            mnemonic,
+            kind,
+            variant: InstructionVariant {
+                syntax,
+                operands,
+                required_extensions,
+                xlen,
+                alias_of: None,
+            },
+        });
+    }
+}
+
+fn extract_aliases(
+    root: &serde_json::Map<String, Value>,
+    instanceof: &serde_json::Map<String, Value>,
+    inst_mnemonic_by_def: &HashMap<String, String>,
+    out: &mut Vec<LlvmInstruction>,
+) {
+    let Some(alias_defs) = instanceof.get("InstAlias").and_then(Value::as_array) else {
+        return;
+    };
+    for def_val in alias_defs {
+        let Some(def_name) = def_val.as_str() else {
+            continue;
+        };
+        let Some(rec) = root.get(def_name).and_then(Value::as_object) else {
+            continue;
+        };
+        let asm_string = rec
+            .get("AsmString")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if asm_string.is_empty() {
+            continue;
+        }
+        let pred_names = predicate_def_names(rec);
+        if pred_names.iter().any(|p| p.contains("Vendor")) {
+            continue;
+        }
+        let result_inst = rec.get("ResultInst").and_then(Value::as_object);
+        let target_def = result_inst
+            .and_then(|r| r.get("operator"))
+            .and_then(|o| o.get("def"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(target_rec) = root.get(target_def).and_then(Value::as_object)
+            && target_rec.get("Namespace").and_then(Value::as_str) != Some("RISCV")
+        {
+            continue;
+        }
+        let mnemonic = extract_mnemonic(asm_string);
+        if mnemonic.is_empty() || mnemonic.starts_with('.') {
+            continue;
+        }
+
+        let operand_map = collect_alias_operand_classes(result_inst);
+        let (syntax, operands) = format_syntax_and_operands(asm_string, &operand_map);
+        let (required_extensions, xlen) = decode_predicates(root, &pred_names);
+        let alias_of = inst_mnemonic_by_def.get(target_def).cloned().or_else(|| {
+            root.get(target_def)
+                .and_then(|v| v.get("AsmString"))
+                .and_then(Value::as_str)
+                .map(extract_mnemonic)
+                .filter(|s| !s.is_empty())
+        });
+
+        out.push(LlvmInstruction {
+            mnemonic,
+            kind: InstructionKind::Alias,
+            variant: InstructionVariant {
+                syntax,
+                operands,
+                required_extensions,
+                xlen,
+                alias_of,
+            },
+        });
+    }
 }
 
 fn predicate_def_names(rec: &serde_json::Map<String, Value>) -> Vec<String> {
@@ -651,6 +668,7 @@ fn extract_registers(
             number: num,
             abi_names: Vec::new(),
             class,
+            summary: None,
             description: None,
             saver: None,
         });

@@ -1,0 +1,47 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": "rounding mode",
+      "documentation": "Round to Nearest, ties to Even",
+      "insertText": "rne",
+      "kind": 20,
+      "label": "rne"
+    },
+    {
+      "detail": "rounding mode",
+      "documentation": "Round towards Zero",
+      "insertText": "rtz",
+      "kind": 20,
+      "label": "rtz"
+    },
+    {
+      "detail": "rounding mode",
+      "documentation": "Round Down (towards -infinity)",
+      "insertText": "rdn",
+      "kind": 20,
+      "label": "rdn"
+    },
+    {
+      "detail": "rounding mode",
+      "documentation": "Round Up (towards +infinity)",
+      "insertText": "rup",
+      "kind": 20,
+      "label": "rup"
+    },
+    {
+      "detail": "rounding mode",
+      "documentation": "Round to Nearest, ties to Max Magnitude",
+      "insertText": "rmm",
+      "kind": 20,
+      "label": "rmm"
+    },
+    {
+      "detail": "rounding mode",
+      "documentation": "Dynamic rounding mode (use frm CSR)",
+      "insertText": "dyn",
+      "kind": 20,
+      "label": "dyn"
+    }
+  ]
+}

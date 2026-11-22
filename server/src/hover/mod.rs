@@ -1,5 +1,6 @@
 mod expand;
 mod format;
+mod operands;
 
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -21,12 +22,16 @@ use crate::preprocessor::{HashLineKind, classify_hash_line};
 use crate::tools::{ToolKind, ToolRunner};
 
 use expand::{
-    CachedExpansion, ExpansionCacheKey, PendingExpansion, append_cached_expansion,
-    collect_cpp_preamble, resolve_expansion,
+    CachedExpansion, ExpansionCacheKey, PendingExpansion, collect_cpp_preamble,
+    format_this_line_fact, resolve_expansion,
 };
 use format::{
-    format_cpp_directive_hover, format_csr_hover, format_directive_hover, format_instruction_hover,
-    format_register_hover, format_symbol_hover,
+    RenderedHoverParts, build_instruction_hover_parts, format_cpp_directive_hover,
+    format_include_hover, format_macro_counter_hover, format_symbol_hover,
+};
+pub(crate) use format::{
+    format_csr_hover, format_directive_hover, format_instruction_completion_doc,
+    format_register_hover,
 };
 
 #[derive(Clone, Default)]
@@ -38,7 +43,7 @@ pub fn new_expansion_cache() -> ExpansionCache {
 
 #[derive(Debug, Clone)]
 pub struct DeferredHover {
-    pub base_markdown: String,
+    pub base_parts: RenderedHoverParts,
     pub range: Range,
     pub pending: PendingExpansion,
 }
@@ -114,6 +119,14 @@ impl HoverWorker {
     }
 }
 
+enum HoverTarget<'a> {
+    Directive(&'a DirectiveEntry),
+    Instruction(&'a InstructionEntry),
+    Register(&'a RegisterEntry),
+    Csr(&'a CsrEntry),
+    Symbol(SymbolHoverInfo),
+}
+
 pub fn prepare_hover(
     doc: &Document,
     pos: Position,
@@ -155,14 +168,16 @@ pub fn prepare_hover(
         let range = doc
             .line_index
             .byte_span_to_range(&doc.text, line_start, line_end);
-        let md = format!(
-            "### Include `{inc_target}`\n\nResolved path: `{}`",
-            resolved_path.display()
-        );
+        let md = format_include_hover(&inc_target, &resolved_path.display().to_string());
         return HoverResolution::Ready(Some(make_hover(md, range)));
     }
 
-    if is_inside_comment(&doc.text, doc, offset, file_ctx.preprocessed) {
+    if crate::line::is_offset_in_comment(
+        &doc.text,
+        doc.tree.as_ref(),
+        offset,
+        file_ctx.preprocessed,
+    ) {
         return HoverResolution::Ready(None);
     }
 
@@ -176,134 +191,190 @@ pub fn prepare_hover(
     let range = doc.line_index.byte_span_to_range(&doc.text, start, end);
 
     if token == "\\@" {
-        return HoverResolution::Ready(Some(make_hover(
-            "### Macro invocation counter (`\\@`)\n\nExpands to the number of macros executed so far, useful for generating unique local labels such as `loop_\\@:` inside `.macro` bodies.".to_owned(),
-            range,
-        )));
+        return HoverResolution::Ready(Some(make_hover(format_macro_counter_hover(db), range)));
     }
 
     let line_prefix = doc.text.get(line_start..start).unwrap_or("");
-    let is_head = is_statement_head(line_prefix);
-
     let (effective_march, option_lines) =
         effective_options_at_line(&doc.text, pos.line as usize, &file_ctx.march);
-
-    enum Target<'a> {
-        Directive(&'a DirectiveEntry),
-        Instruction(&'a InstructionEntry),
-        Register(&'a RegisterEntry),
-        Csr(&'a CsrEntry),
-        Symbol(SymbolHoverInfo),
-    }
-
-    let target = if token.starts_with('.') {
-        if let Some(dir) = db.directive(&token) {
-            Target::Directive(dir)
-        } else if let Some(inst) = db.instruction(&token) {
-            Target::Instruction(inst)
-        } else if let Some(sym) = index.token_hover_info(&doc.uri, offset, ctx) {
-            Target::Symbol(sym)
-        } else {
-            return HoverResolution::Ready(None);
-        }
-    } else if is_head {
-        if let Some(inst) = db.instruction(&token) {
-            Target::Instruction(inst)
-        } else if let Some(reg) = db.register(&token) {
-            Target::Register(reg)
-        } else if let Some(csr) = db.csr(&token) {
-            Target::Csr(csr)
-        } else if let Some(sym) = index.token_hover_info(&doc.uri, offset, ctx) {
-            Target::Symbol(sym)
-        } else {
-            return HoverResolution::Ready(None);
-        }
-    } else if let Some(reg) = db.register(&token) {
-        Target::Register(reg)
-    } else if let Some(csr) = db.csr(&token) {
-        Target::Csr(csr)
-    } else if is_csr_operand_position(line_prefix, db, &effective_march)
-        && let Some(num) = parse_csr_number(&token)
-        && let Some(csr) = db.csr_by_number(num)
-    {
-        Target::Csr(csr)
-    } else if let Some(sym) = index.token_hover_info(&doc.uri, offset, ctx) {
-        Target::Symbol(sym)
-    } else if let Some(inst) = db.instruction(&token) {
-        Target::Instruction(inst)
-    } else {
+    let query = TokenTargetQuery {
+        token: &token,
+        line_prefix,
+        doc,
+        offset,
+        effective_march: &effective_march,
+        db,
+        ctx,
+        index,
+    };
+    let Some(target) = resolve_token_target(query) else {
         return HoverResolution::Ready(None);
     };
 
     match target {
-        Target::Directive(dir) => {
+        HoverTarget::Directive(dir) => {
             HoverResolution::Ready(Some(make_hover(format_directive_hover(dir), range)))
         }
-        Target::Register(reg) => {
+        HoverTarget::Register(reg) => {
             HoverResolution::Ready(Some(make_hover(format_register_hover(reg), range)))
         }
-        Target::Csr(csr) => HoverResolution::Ready(Some(make_hover(format_csr_hover(csr), range))),
-        Target::Symbol(sym) => {
+        HoverTarget::Csr(csr) => {
+            HoverResolution::Ready(Some(make_hover(format_csr_hover(csr), range)))
+        }
+        HoverTarget::Symbol(sym) => {
             HoverResolution::Ready(Some(make_hover(format_symbol_hover(&sym), range)))
         }
-        Target::Instruction(inst) => {
-            let enabled_by_march = !inst.llvm_supported
-                || inst
-                    .variants
-                    .iter()
-                    .any(|v| effective_march.supports_extensions(&v.required_extensions, v.xlen));
-            let base_markdown = format_instruction_hover(inst, &effective_march, enabled_by_march);
-            if !inst.llvm_supported || !enabled_by_march || tools.is_disabled(ToolKind::LlvmMc) {
-                return HoverResolution::Ready(Some(make_hover(base_markdown, range)));
-            }
-            let Some(stmt) = extract_statement_at(full_line, start.saturating_sub(line_start))
-            else {
-                return HoverResolution::Ready(Some(make_hover(base_markdown, range)));
-            };
-
-            let known_consts = index.constant_defines_in_scope(&doc.uri, Some(offset), ctx);
-            let mut const_pairs: Vec<(String, String)> = known_consts
-                .iter()
-                .filter(|(name, _)| expand::contains_ident(&stmt, name))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            const_pairs.sort();
-
-            let key = ExpansionCacheKey {
-                stmt,
-                triple: file_ctx.march.llvm_triple().to_owned(),
-                mattr: file_ctx.march.to_llvm_mattr(),
-                option_lines,
-                const_pairs,
-            };
-
-            if let Ok(guard) = cache.0.lock()
-                && let Some(cached) = guard.get(&key)
-            {
-                let md = append_cached_expansion(base_markdown, cached);
-                return HoverResolution::Ready(Some(make_hover(md, range)));
-            }
-
-            let file_dir = uri_to_path(&doc.uri).and_then(|p| p.parent().map(Path::to_path_buf));
-            let cpp_preamble = if file_ctx.preprocessed {
-                collect_cpp_preamble(&doc.text, pos.line as usize)
-            } else {
-                Vec::new()
-            };
-            HoverResolution::Deferred(Box::new(DeferredHover {
-                base_markdown,
-                range,
-                pending: PendingExpansion {
-                    key,
-                    clang_flags: file_ctx.clang_flags,
-                    file_dir,
-                    working_dir: file_ctx.working_dir,
-                    cpp_preamble,
-                    known_consts,
-                },
-            }))
-        }
+        HoverTarget::Instruction(inst) => prepare_instruction_hover(InstructionHoverCtx {
+            inst,
+            doc,
+            pos,
+            token_start: start,
+            line_start,
+            offset,
+            full_line,
+            range,
+            file_ctx: &file_ctx,
+            effective_march: &effective_march,
+            option_lines,
+            db,
+            ctx,
+            index,
+            tools,
+            cache,
+        }),
     }
+}
+
+struct TokenTargetQuery<'q, 'db> {
+    token: &'q str,
+    line_prefix: &'q str,
+    doc: &'q Document,
+    offset: usize,
+    effective_march: &'q MarchSpec,
+    db: &'db Database,
+    ctx: &'q mut CompileContext,
+    index: &'q mut WorkspaceIndex,
+}
+
+fn resolve_token_target<'q, 'db>(q: TokenTargetQuery<'q, 'db>) -> Option<HoverTarget<'db>> {
+    let is_head = crate::line::is_statement_head(q.line_prefix);
+    if q.token.starts_with('.') {
+        if let Some(dir) = q.db.directive(q.token) {
+            Some(HoverTarget::Directive(dir))
+        } else if let Some(inst) = q.db.instruction(q.token) {
+            Some(HoverTarget::Instruction(inst))
+        } else {
+            q.index
+                .token_hover_info(&q.doc.uri, q.offset, q.ctx)
+                .map(HoverTarget::Symbol)
+        }
+    } else if is_head {
+        if let Some(inst) = q.db.instruction(q.token) {
+            Some(HoverTarget::Instruction(inst))
+        } else if let Some(reg) = q.db.register(q.token) {
+            Some(HoverTarget::Register(reg))
+        } else if let Some(csr) = q.db.csr(q.token) {
+            Some(HoverTarget::Csr(csr))
+        } else {
+            q.index
+                .token_hover_info(&q.doc.uri, q.offset, q.ctx)
+                .map(HoverTarget::Symbol)
+        }
+    } else if let Some(reg) = q.db.register(q.token) {
+        Some(HoverTarget::Register(reg))
+    } else if let Some(csr) = q.db.csr(q.token) {
+        Some(HoverTarget::Csr(csr))
+    } else if is_csr_operand_position(q.line_prefix, q.db, q.effective_march)
+        && let Some(num) = parse_csr_number(q.token)
+        && let Some(csr) = q.db.csr_by_number(num)
+    {
+        Some(HoverTarget::Csr(csr))
+    } else if let Some(sym) = q.index.token_hover_info(&q.doc.uri, q.offset, q.ctx) {
+        Some(HoverTarget::Symbol(sym))
+    } else {
+        q.db.instruction(q.token).map(HoverTarget::Instruction)
+    }
+}
+
+struct InstructionHoverCtx<'a> {
+    inst: &'a InstructionEntry,
+    doc: &'a Document,
+    pos: Position,
+    token_start: usize,
+    line_start: usize,
+    offset: usize,
+    full_line: &'a str,
+    range: Range,
+    file_ctx: &'a crate::context::FileContext,
+    effective_march: &'a MarchSpec,
+    option_lines: Vec<String>,
+    db: &'a Database,
+    ctx: &'a mut CompileContext,
+    index: &'a mut WorkspaceIndex,
+    tools: &'a ToolRunner,
+    cache: &'a ExpansionCache,
+}
+
+fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
+    let enabled_by_march = !c.inst.llvm_supported
+        || c.inst.variants.iter().any(|v| {
+            c.effective_march
+                .supports_extensions(&v.required_extensions, v.xlen)
+        });
+    let mut parts =
+        build_instruction_hover_parts(c.inst, c.effective_march, enabled_by_march, c.db, None);
+    if !c.inst.llvm_supported || !enabled_by_march || c.tools.is_disabled(ToolKind::LlvmMc) {
+        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
+    }
+    let Some(stmt) =
+        crate::line::extract_statement_at(c.full_line, c.token_start.saturating_sub(c.line_start))
+    else {
+        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
+    };
+
+    let known_consts = c
+        .index
+        .constant_defines_in_scope(&c.doc.uri, Some(c.offset), c.ctx);
+    let mut const_pairs: Vec<(String, String)> = known_consts
+        .iter()
+        .filter(|(name, _)| expand::contains_ident(&stmt, name))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    const_pairs.sort();
+
+    let key = ExpansionCacheKey {
+        stmt,
+        triple: c.file_ctx.march.llvm_triple().to_owned(),
+        mattr: c.file_ctx.march.to_llvm_mattr(),
+        option_lines: c.option_lines,
+        const_pairs,
+    };
+
+    if let Ok(guard) = c.cache.0.lock()
+        && let Some(cached) = guard.get(&key)
+    {
+        parts.facts.push(format_this_line_fact(cached));
+        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
+    }
+
+    let file_dir = uri_to_path(&c.doc.uri).and_then(|p| p.parent().map(Path::to_path_buf));
+    let cpp_preamble = if c.file_ctx.preprocessed {
+        collect_cpp_preamble(&c.doc.text, c.pos.line as usize)
+    } else {
+        Vec::new()
+    };
+    HoverResolution::Deferred(Box::new(DeferredHover {
+        base_parts: parts,
+        range: c.range,
+        pending: PendingExpansion {
+            key,
+            clang_flags: c.file_ctx.clang_flags.clone(),
+            file_dir,
+            working_dir: c.file_ctx.working_dir.clone(),
+            cpp_preamble,
+            known_consts,
+        },
+    }))
 }
 
 /// Synchronous convenience wrapper for unit tests.
@@ -324,12 +395,12 @@ pub fn provide_hover(
 }
 
 fn finish_deferred_hover(
-    deferred: DeferredHover,
+    mut deferred: DeferredHover,
     tools: &ToolRunner,
     cache: &ExpansionCache,
 ) -> Hover {
     if tools.is_disabled(ToolKind::LlvmMc) {
-        return make_hover(deferred.base_markdown, deferred.range);
+        return make_hover(deferred.base_parts.render(), deferred.range);
     }
 
     let cached = resolve_expansion(&deferred.pending, tools);
@@ -342,12 +413,13 @@ fn finish_deferred_hover(
         guard.insert(deferred.pending.key, cached.clone());
     }
 
-    let md = if tools.is_disabled(ToolKind::LlvmMc) {
-        deferred.base_markdown
-    } else {
-        append_cached_expansion(deferred.base_markdown, &cached)
-    };
-    make_hover(md, deferred.range)
+    if !tools.is_disabled(ToolKind::LlvmMc) {
+        deferred
+            .base_parts
+            .facts
+            .push(format_this_line_fact(&cached));
+    }
+    make_hover(deferred.base_parts.render(), deferred.range)
 }
 
 fn make_hover(markdown: String, range: Range) -> Hover {
@@ -358,106 +430,6 @@ fn make_hover(markdown: String, range: Range) -> Hover {
         }),
         range: Some(range),
     }
-}
-
-fn extract_statement_at(full_line: &str, rel_col: usize) -> Option<String> {
-    let without_comment = strip_comment_from_line(full_line);
-    let mut start = 0usize;
-    let mut selected = without_comment;
-    for seg in without_comment.split(';') {
-        let seg_end = start + seg.len();
-        if rel_col >= start && rel_col <= seg_end {
-            selected = seg;
-            break;
-        }
-        start = seg_end + 1;
-    }
-    let mut s = selected.trim();
-    while let Some(colon) = s.find(':') {
-        let prefix = s[..colon].trim();
-        if !prefix.is_empty() && !prefix.contains(char::is_whitespace) {
-            s = s[colon + 1..].trim_start();
-        } else {
-            break;
-        }
-    }
-    if s.is_empty() {
-        None
-    } else {
-        Some(s.to_owned())
-    }
-}
-
-fn strip_comment_from_line(line: &str) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == b'\'' {
-                in_single = false;
-            }
-        } else if in_double {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == b'"' {
-                in_double = false;
-            }
-        } else if b == b'\'' {
-            in_single = true;
-        } else if b == b'"' {
-            in_double = true;
-        } else if b == b'#' || (b == b'/' && bytes.get(i + 1) == Some(&b'/')) {
-            return &line[..i];
-        }
-        i += 1;
-    }
-    line
-}
-
-fn is_inside_comment(text: &str, doc: &Document, offset: usize, preprocessed: bool) -> bool {
-    if let Some(tree) = &doc.tree {
-        let probe = if offset >= text.len() && offset > 0 {
-            offset - 1
-        } else {
-            offset
-        };
-        if let Some(node) = tree.root_node().descendant_for_byte_range(probe, probe)
-            && node.kind() == "comment"
-        {
-            if preprocessed
-                && let Ok(raw) = node.utf8_text(text.as_bytes())
-                && matches!(
-                    classify_hash_line(raw),
-                    Some(HashLineKind::Directive { .. })
-                )
-            {
-                return false;
-            }
-            return true;
-        }
-    }
-    false
-}
-
-fn is_statement_head(line_prefix: &str) -> bool {
-    let stmt_part = line_prefix.rsplit(';').next().unwrap_or(line_prefix);
-    let trimmed = stmt_part.trim_start();
-    if trimmed.is_empty() {
-        return true;
-    }
-    if let Some(after_colon) = trimmed.rsplit(':').next() {
-        return trimmed.contains(':') && after_colon.trim().is_empty();
-    }
-    false
 }
 
 fn parse_csr_number(token: &str) -> Option<u16> {
@@ -480,19 +452,7 @@ fn parse_csr_number(token: &str) -> Option<u16> {
 }
 
 fn is_csr_operand_position(line_prefix: &str, db: &Database, march: &MarchSpec) -> bool {
-    let mut stmt = line_prefix
-        .rsplit(';')
-        .next()
-        .unwrap_or(line_prefix)
-        .trim_start();
-    while let Some(colon) = stmt.find(':') {
-        let label = stmt[..colon].trim();
-        if !label.is_empty() && !label.contains(char::is_whitespace) {
-            stmt = stmt[colon + 1..].trim_start();
-        } else {
-            break;
-        }
-    }
+    let stmt = crate::line::active_statement_prefix(line_prefix);
     let Some(ws) = stmt.find(char::is_whitespace) else {
         return false;
     };
@@ -502,36 +462,8 @@ fn is_csr_operand_position(line_prefix: &str, db: &Database, march: &MarchSpec) 
         return false;
     };
 
-    let mut depth = 0usize;
-    let mut op_idx = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut chars = args.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if in_single {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '\'' {
-                in_single = false;
-            }
-        } else if in_double {
-            if ch == '\\' {
-                chars.next();
-            } else if ch == '"' {
-                in_double = false;
-            }
-        } else {
-            match ch {
-                '\'' => in_single = true,
-                '"' => in_double = true,
-                '(' => depth += 1,
-                ')' => depth = depth.saturating_sub(1),
-                ',' if depth == 0 => op_idx += 1,
-                _ => {}
-            }
-        }
-    }
-    if depth > 0 {
+    let (op_idx, inside_parens) = crate::line::count_operand_position(args);
+    if inside_parens {
         return false;
     }
 
@@ -596,7 +528,7 @@ mod tests {
             panic!("expected markup");
         };
         assert!(m.value.contains("la"));
-        assert!(m.value.contains("pseudo-instruction"));
+        assert!(m.value.contains("Pseudo-instruction"));
 
         let h_sp = provide_hover(doc, Position::new(0, 7), &db, &mut ctx, &mut index, &tools)
             .expect("sp hover");
@@ -618,6 +550,7 @@ mod tests {
         let HoverContents::Markup(m) = h_stvec.contents else {
             panic!("expected markup");
         };
+        assert!(m.value.contains("stvec"));
         assert!(m.value.contains("0x105"));
         assert!(m.value.contains("S-mode"));
         assert!(m.value.contains("- `BASE`"));
@@ -632,14 +565,15 @@ mod tests {
         assert!(m.value.contains("```riscv\n.globl"));
         assert!(!m.value.contains("*Source:"));
 
-        // `ld` shows `RV64I` base and never claims self-alias (Item 6 + Review Item 6)
+        // `ld` shows `RV64I` base and never claims self-alias
         let h_ld = provide_hover(doc, Position::new(3, 5), &db, &mut ctx, &mut index, &tools)
             .expect("ld hover");
         let HoverContents::Markup(m) = h_ld.contents else {
             panic!("expected markup");
         };
-        assert!(!m.value.contains("alias of `ld`"));
+        assert!(!m.value.contains("Alias of: `ld`"));
         assert!(m.value.contains("`RV64I`"));
+        assert!(m.value.contains("Operands:"));
         assert!(!m.value.contains("**Spec syntax:**"));
         assert!(!m.value.contains("*Source:"));
 
@@ -762,11 +696,8 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].asm, "c.addi sp, -16");
         assert_eq!(items[0].encoding.as_deref(), Some("0x1141"));
-        let single_md = append_cached_expansion(String::new(), &CachedExpansion::Expanded(items));
-        assert_eq!(
-            single_md.trim(),
-            "**This line:** `c.addi sp, -16` · `0x1141`"
-        );
+        let single_md = format_this_line_fact(&CachedExpansion::Expanded(items));
+        assert_eq!(single_md.trim(), "This line: `c.addi sp, -16` → `0x1141`");
 
         let csr_out =
             "\tcsrrw\tzero, stvec, t0                 # encoding: [0x73,0x90,0x52,0x10]\n";
@@ -785,7 +716,7 @@ mod tests {
         assert_eq!(la_items.len(), 2);
         assert_eq!(la_items[0].encoding.as_deref(), Some("(relocated)"));
         assert_eq!(la_items[1].encoding.as_deref(), Some("(relocated)"));
-        let multi_md = append_cached_expansion(String::new(), &CachedExpansion::Expanded(la_items));
+        let multi_md = format_this_line_fact(&CachedExpansion::Expanded(la_items));
         assert!(!multi_md.contains("fixup"));
         assert!(!multi_md.contains("0bAAAA"));
         assert!(!multi_md.contains(".Lpcrel_hi0:"));
@@ -824,7 +755,7 @@ loop_\\@:
         let HoverContents::Markup(m) = h_before.contents else {
             panic!();
         };
-        assert!(m.value.contains("symbol (.set)"), "got: {}", m.value);
+        assert!(m.value.contains("Symbol (.set)"), "got: {}", m.value);
         assert!(m.value.contains("`1`"), "got: {}", m.value);
         assert!(m.value.contains("Assigned 2 times"), "got: {}", m.value);
 
@@ -840,7 +771,7 @@ loop_\\@:
         let HoverContents::Markup(m) = h_csr_num.contents else {
             panic!();
         };
-        assert!(m.value.contains("`stvec`") && m.value.contains("0x105"));
+        assert!(m.value.contains("stvec") && m.value.contains("0x105"));
 
         // Immediate operand on `addi` must NOT resolve as CSR 0x105
         assert!(

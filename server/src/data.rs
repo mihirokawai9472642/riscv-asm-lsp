@@ -1,5 +1,37 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelocationText {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreprocessorDirectiveText {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MacroCounterText {
+    pub symbol: String,
+    pub title: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextsData {
+    #[serde(default)]
+    pub relocations: Vec<RelocationText>,
+    #[serde(default)]
+    pub preprocessor_directives: Vec<PreprocessorDirectiveText>,
+    #[serde(default)]
+    pub macro_counter: MacroCounterText,
+    #[serde(default)]
+    pub operand_classes: HashMap<String, String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataMeta {
@@ -56,6 +88,8 @@ pub struct InstructionEntry {
     #[serde(default)]
     pub udb_assembly: Option<String>,
     pub long_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub description: Option<String>,
     pub description_source: Option<String>,
     pub llvm_supported: bool,
@@ -67,6 +101,8 @@ pub struct InstructionEntry {
 pub struct CsrField {
     pub name: String,
     pub bits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub description: Option<String>,
 }
 
@@ -77,6 +113,8 @@ pub struct CsrEntry {
     pub privilege: Option<String>,
     pub required_extensions: Vec<String>,
     pub fields: Vec<CsrField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
     pub description_source: Option<String>,
@@ -115,6 +153,8 @@ pub struct RegisterEntry {
     pub number: u8,
     pub abi_names: Vec<String>,
     pub class: RegisterClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub description: Option<String>,
     pub saver: Option<String>,
 }
@@ -123,6 +163,8 @@ pub struct RegisterEntry {
 pub struct DirectiveEntry {
     pub name: String,
     pub arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub description: String,
     pub source: String,
     pub llvm_supported: bool,
@@ -141,6 +183,7 @@ pub struct RiscvData {
 #[derive(Debug)]
 pub struct Database {
     pub raw: RiscvData,
+    pub texts: &'static TextsData,
     instructions_by_mnemonic: HashMap<String, usize>,
     csrs_by_name: HashMap<String, usize>,
     csrs_by_number: HashMap<u16, usize>,
@@ -150,6 +193,12 @@ pub struct Database {
 }
 
 const EMBEDDED_DATA_JSON: &str = include_str!("../../data/riscv.json");
+const EMBEDDED_TEXTS_JSON: &str = include_str!("../../data/texts.json");
+
+pub fn texts_data() -> &'static TextsData {
+    static TEXTS: OnceLock<TextsData> = OnceLock::new();
+    TEXTS.get_or_init(|| serde_json::from_str(EMBEDDED_TEXTS_JSON).unwrap_or_default())
+}
 
 impl Database {
     /// Load the embedded RISC-V instruction database.
@@ -214,6 +263,7 @@ impl Database {
 
         Self {
             raw,
+            texts: texts_data(),
             instructions_by_mnemonic,
             csrs_by_name,
             csrs_by_number,
@@ -271,6 +321,12 @@ mod tests {
     fn loads_embedded_database_without_panicking() {
         let db = Database::load();
         assert!(db.is_ok(), "embedded riscv.json must parse: {:?}", db.err());
+        let texts: TextsData =
+            serde_json::from_str(EMBEDDED_TEXTS_JSON).expect("embedded texts.json must parse");
+        assert!(!texts.relocations.is_empty());
+        assert!(!texts.preprocessor_directives.is_empty());
+        assert!(!texts.macro_counter.description.is_empty());
+        assert_eq!(texts.operand_classes.len(), 51);
     }
 
     #[test]
@@ -322,6 +378,57 @@ mod tests {
                 .and_then(|c| c.description_source.as_deref()),
             Some("riscv-asm-lsp (MIT)")
         );
+
+        for inst in &db.raw.instructions {
+            if let Some(s) = &inst.summary {
+                assert!(
+                    !s.trim_end().ends_with(':'),
+                    "instruction `{}` summary ends with `:`: {s}",
+                    inst.mnemonic
+                );
+            }
+        }
+        for csr in &db.raw.csrs {
+            if let Some(s) = &csr.summary {
+                assert!(
+                    !s.trim_end().ends_with(':'),
+                    "CSR `{}` summary ends with `:`: {s}",
+                    csr.name
+                );
+            }
+            for f in &csr.fields {
+                if let Some(s) = &f.summary {
+                    assert!(
+                        !s.trim_end().ends_with(':'),
+                        "CSR field `{}.{}` summary ends with `:`: {s}",
+                        csr.name,
+                        f.name
+                    );
+                }
+            }
+        }
+        for reg in &db.raw.registers {
+            if let Some(s) = &reg.summary {
+                assert!(
+                    !s.trim_end().ends_with(':'),
+                    "register `{}` summary ends with `:`: {s}",
+                    reg.name
+                );
+            }
+        }
+        for dir in &db.raw.directives {
+            let text = dir.summary.as_deref().unwrap_or(&dir.description);
+            assert!(
+                !text.trim_end().ends_with(':'),
+                "directive `{}` summary ends with `:`: {text}",
+                dir.name
+            );
+            assert!(
+                !text.to_ascii_lowercase().contains("see .") && !text.contains("Refer to"),
+                "directive `{}` text has dangling reference: {text}",
+                dir.name
+            );
+        }
     }
 
     fn assert_clean_description(owner: &str, desc: &str) {

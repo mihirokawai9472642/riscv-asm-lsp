@@ -39,11 +39,30 @@ pub struct UdbData {
     pub instructions: Vec<UdbInstruction>,
     pub csrs: Vec<UdbCsr>,
     pub registers: HashMap<String, UdbRegisterInfo>,
+    pub cleaned_todos: Vec<String>,
 }
 
 pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
     let isa_dir = udb_dir.join("spec/std/isa");
+    let mut cleaned_todos = Vec::new();
+    let instructions = load_instructions(&isa_dir, &mut cleaned_todos)?;
+    let csrs = load_csrs(&isa_dir, &mut cleaned_todos)?;
+    let registers = load_registers(&isa_dir)?;
 
+    cleaned_todos.sort();
+    cleaned_todos.dedup();
+    Ok(UdbData {
+        instructions,
+        csrs,
+        registers,
+        cleaned_todos,
+    })
+}
+
+fn load_instructions(
+    isa_dir: &Path,
+    cleaned_todos: &mut Vec<String>,
+) -> Result<Vec<UdbInstruction>, Box<dyn std::error::Error>> {
     let mut inst_files = Vec::new();
     collect_yaml_files(&isa_dir.join("inst"), &mut inst_files)?;
     inst_files.sort();
@@ -69,11 +88,14 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
             .and_then(Value::as_str)
             .map(clean_text)
             .filter(|s| !s.is_empty());
-        let description = doc
-            .get("description")
-            .and_then(Value::as_str)
-            .map(clean_text)
-            .filter(|s| !s.is_empty());
+        let description = strip_todo_sentences(
+            &mnemonic,
+            doc.get("description")
+                .and_then(Value::as_str)
+                .map(|s| clean_text_with_hpm(s, None))
+                .filter(|s| !s.is_empty()),
+            cleaned_todos,
+        );
         let assembly = doc
             .get("assembly")
             .and_then(Value::as_str)
@@ -137,6 +159,13 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
         instructions.push(pseudo);
     }
 
+    Ok(instructions)
+}
+
+fn load_csrs(
+    isa_dir: &Path,
+    cleaned_todos: &mut Vec<String>,
+) -> Result<Vec<UdbCsr>, Box<dyn std::error::Error>> {
     let mut csr_files = Vec::new();
     collect_yaml_files(&isa_dir.join("csr"), &mut csr_files)?;
     csr_files.sort();
@@ -160,6 +189,8 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
         let Ok(address) = u16::try_from(address_val) else {
             continue;
         };
+        let csr_name = name.trim().to_ascii_lowercase();
+        let hpm_num = csr_hpm_num(&csr_name);
         let long_name = doc
             .get("long_name")
             .and_then(Value::as_str)
@@ -172,11 +203,14 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         let extensions = extract_defined_by(doc.get("definedBy"));
-        let description = doc
-            .get("description")
-            .and_then(Value::as_str)
-            .map(clean_text)
-            .filter(|s| !s.is_empty());
+        let description = strip_todo_sentences(
+            &csr_name,
+            doc.get("description")
+                .and_then(Value::as_str)
+                .map(|s| clean_text_with_hpm(s, hpm_num.as_deref()))
+                .filter(|s| !s.is_empty()),
+            cleaned_todos,
+        );
 
         let mut fields = Vec::new();
         if let Some(fields_map) = doc.get("fields").and_then(Value::as_mapping) {
@@ -186,21 +220,26 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
                     continue;
                 }
                 let bits = field_bits_str(v);
-                let fdesc = v
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(clean_text)
-                    .filter(|s| !s.is_empty());
+                let field_owner = format!("{csr_name}.{fname}");
+                let fdesc = strip_todo_sentences(
+                    &field_owner,
+                    v.get("description")
+                        .and_then(Value::as_str)
+                        .map(|s| clean_text_with_hpm(s, hpm_num.as_deref()))
+                        .filter(|s| !s.is_empty()),
+                    cleaned_todos,
+                );
                 fields.push(CsrField {
                     name: fname.to_owned(),
                     bits,
+                    summary: None,
                     description: fdesc,
                 });
             }
         }
 
         csrs.push(UdbCsr {
-            name: name.trim().to_ascii_lowercase(),
+            name: csr_name,
             long_name,
             address,
             privilege,
@@ -210,6 +249,12 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
         });
     }
 
+    Ok(csrs)
+}
+
+fn load_registers(
+    isa_dir: &Path,
+) -> Result<HashMap<String, UdbRegisterInfo>, Box<dyn std::error::Error>> {
     let mut reg_files = Vec::new();
     collect_yaml_files(&isa_dir.join("register_file"), &mut reg_files)?;
     reg_files.sort();
@@ -245,12 +290,12 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
             );
         }
     }
+    Ok(registers)
+}
 
-    Ok(UdbData {
-        instructions,
-        csrs,
-        registers,
-    })
+fn csr_hpm_num(csr_name: &str) -> Option<String> {
+    let digits: String = csr_name.chars().filter(|c| c.is_ascii_digit()).collect();
+    (!digits.is_empty() && csr_name.contains("hpm")).then_some(digits)
 }
 
 fn collect_yaml_files(
@@ -332,10 +377,157 @@ fn field_bits_str(v: &Value) -> String {
 }
 
 pub fn clean_text(raw: &str) -> String {
+    clean_text_with_hpm(raw, None)
+}
+
+fn clean_text_with_hpm(raw: &str, hpm_num: Option<&str>) -> String {
     let stripped_erb = strip_erb_tags(raw);
     let decoded = decode_html_entities(&stripped_erb);
     let cleaned_adoc = clean_asciidoc(&decoded);
-    collapse_blank_lines(&cleaned_adoc)
+    let no_pp = strip_asciidoc_passthrough(&cleaned_adoc);
+    let no_attrs = strip_stray_attribute_refs(&no_pp, hpm_num);
+    collapse_blank_lines(&no_attrs)
+}
+
+fn strip_asciidoc_passthrough(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(pos) = rest.find("++") {
+        let prev_is_alnum = rest[..pos]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric());
+        if prev_is_alnum {
+            out.push_str(&rest[..pos + 2]);
+            rest = &rest[pos + 2..];
+            continue;
+        }
+        let after = &rest[pos + 2..];
+        if let Some(close) = after.find("++")
+            && !after[..close].contains('\n')
+        {
+            out.push_str(&rest[..pos]);
+            out.push_str(&after[..close]);
+            rest = &after[close + 2..];
+        } else {
+            out.push_str(&rest[..pos + 2]);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_stray_attribute_refs(input: &str, hpm_num: Option<&str>) -> String {
+    let substituted = if let Some(n) = hpm_num {
+        input.replace("{hpm_num}", n)
+    } else {
+        input.to_owned()
+    };
+    let mut out = String::with_capacity(substituted.len());
+    let mut rest = substituted.as_str();
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let prev_boundary = rest[..open]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace());
+        if let Some(close) = after.find('}')
+            && !after[..close].contains(['\n', '{', ' '])
+            && prev_boundary
+        {
+            rest = &after[close + 1..];
+            continue;
+        }
+        out.push('{');
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+fn contains_todo_word(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut idx = 0;
+    while let Some(pos) = s[idx..].find("TODO") {
+        let abs = idx + pos;
+        let left_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric() && bytes[abs - 1] != b'_';
+        let right = abs + 4;
+        let right_ok =
+            right >= bytes.len() || !bytes[right].is_ascii_alphanumeric() && bytes[right] != b'_';
+        if left_ok && right_ok {
+            return true;
+        }
+        idx = right;
+    }
+    false
+}
+
+fn strip_todo_sentences(
+    owner: &str,
+    text: Option<String>,
+    cleaned_todos: &mut Vec<String>,
+) -> Option<String> {
+    let raw = text?;
+    if !contains_todo_word(&raw) {
+        return Some(raw);
+    }
+    cleaned_todos.push(owner.to_owned());
+
+    let mut kept_paras = Vec::new();
+    for para in raw.split("\n\n") {
+        let trimmed = para.trim();
+        if trimmed.is_empty() || !contains_todo_word(trimmed) {
+            if !trimmed.is_empty() {
+                kept_paras.push(trimmed.to_owned());
+            }
+            continue;
+        }
+        // Drop standalone lines containing TODO; within a paragraph drop individual TODO sentences.
+        let mut kept_lines = Vec::new();
+        for line in trimmed.lines() {
+            if !contains_todo_word(line) {
+                kept_lines.push(line.to_owned());
+                continue;
+            }
+            let cleaned_line = filter_todo_sentences_in_line(line);
+            if !cleaned_line.is_empty() {
+                kept_lines.push(cleaned_line);
+            }
+        }
+        let rejoined = kept_lines.join("\n").trim().to_owned();
+        if !rejoined.is_empty() {
+            kept_paras.push(rejoined);
+        }
+    }
+
+    let final_text = kept_paras.join("\n\n").trim().to_owned();
+    if final_text.is_empty() {
+        None
+    } else {
+        Some(final_text)
+    }
+}
+
+fn filter_todo_sentences_in_line(line: &str) -> String {
+    let mut kept = Vec::new();
+    let mut start = 0usize;
+    let bytes = line.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b'.' && (idx + 1 >= bytes.len() || bytes[idx + 1].is_ascii_whitespace()) {
+            let sentence = line[start..=idx].trim();
+            if !sentence.is_empty() && !contains_todo_word(sentence) {
+                kept.push(sentence);
+            }
+            start = idx + 1;
+        }
+    }
+    let tail = line[start..].trim();
+    if !tail.is_empty() && !contains_todo_word(tail) {
+        kept.push(tail);
+    }
+    kept.join(" ")
 }
 
 fn strip_erb_tags(input: &str) -> String {
@@ -669,5 +861,44 @@ Computes `latexmath:[$x \\times y$]` with `xref:insns-add[ADD]` and <<#sec-mul, 
         assert!(!cleaned_complex.contains("|==="));
         assert!(!cleaned_complex.contains("[.rotate]"));
         assert!(cleaned_complex.contains("See the RISC-V ISA specification"));
+    }
+
+    #[test]
+    fn clean_text_preserves_cpp_resolves_hpm_num_and_drops_todo_sentences() {
+        let sc = clean_text("Sequentially consistent in the C++ memory_order_seq_cst sense.");
+        assert!(sc.contains("C++ memory_order_seq_cst"), "damaged C++: {sc}");
+
+        let pp = clean_text("Value ++x[0]++ stays readable while C++ stays intact.");
+        assert!(pp.contains("x[0]"), "passthrough not stripped: {pp}");
+        assert!(pp.contains("C++"), "C++ damaged: {pp}");
+
+        let hpm = clean_text_with_hpm(
+            "Alias of `mhpmevent{hpm_num}`[63:32]. Preserves `vset{i}vl{i}` and drops {stray}.",
+            Some("3"),
+        );
+        assert!(
+            hpm.contains("`mhpmevent3`"),
+            "hpm_num not substituted: {hpm}"
+        );
+        assert!(
+            hpm.contains("`vset{i}vl{i}`"),
+            "mnemonic template damaged: {hpm}"
+        );
+        assert!(!hpm.contains("{stray}"), "stray attr not stripped: {hpm}");
+
+        let mut todos = Vec::new();
+        let kept = strip_todo_sentences(
+            "mtinst",
+            Some("First sentence is useful. The values are documented in TODO.\n\nSecond paragraph stays.".to_owned()),
+            &mut todos,
+        )
+        .expect("non-empty kept");
+        assert!(kept.contains("First sentence is useful."));
+        assert!(kept.contains("Second paragraph stays."));
+        assert!(!kept.contains("TODO"), "TODO remained: {kept}");
+        assert_eq!(todos, vec!["mtinst".to_owned()]);
+
+        let dropped = strip_todo_sentences("mncause.CODE", Some("TODO".to_owned()), &mut todos);
+        assert!(dropped.is_none());
     }
 }

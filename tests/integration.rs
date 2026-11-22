@@ -10,6 +10,8 @@ mod hover;
 mod navigation;
 #[path = "integration/semantic_tokens.rs"]
 mod semantic_tokens;
+#[path = "integration/snapshots.rs"]
+mod snapshots;
 #[path = "integration/workspace.rs"]
 mod workspace;
 #[path = "integration/zed_extension.rs"]

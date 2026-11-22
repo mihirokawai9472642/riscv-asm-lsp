@@ -1,0 +1,332 @@
+[
+  {
+    "char": 0,
+    "length": 8,
+    "line": 0,
+    "modifiers": [],
+    "type": "preprocessor"
+  },
+  {
+    "char": 5,
+    "length": 11,
+    "line": 2,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "constant"
+  },
+  {
+    "char": 5,
+    "length": 9,
+    "line": 3,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "constant"
+  },
+  {
+    "char": 7,
+    "length": 8,
+    "line": 5,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "macro"
+  },
+  {
+    "char": 16,
+    "length": 3,
+    "line": 5,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "parameter"
+  },
+  {
+    "char": 21,
+    "length": 6,
+    "line": 5,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "parameter"
+  },
+  {
+    "char": 7,
+    "length": 4,
+    "line": 6,
+    "modifiers": [],
+    "type": "parameter"
+  },
+  {
+    "char": 14,
+    "length": 7,
+    "line": 6,
+    "modifiers": [],
+    "type": "parameter"
+  },
+  {
+    "char": 27,
+    "length": 2,
+    "line": 6,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 11,
+    "length": 6,
+    "line": 10,
+    "modifiers": [],
+    "type": "label"
+  },
+  {
+    "char": 0,
+    "length": 6,
+    "line": 11,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "label"
+  },
+  {
+    "char": 9,
+    "length": 2,
+    "line": 12,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 7,
+    "line": 12,
+    "modifiers": [],
+    "type": "csr"
+  },
+  {
+    "char": 9,
+    "length": 2,
+    "line": 13,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 2,
+    "line": 13,
+    "modifiers": [],
+    "type": "label"
+  },
+  {
+    "char": 7,
+    "length": 2,
+    "line": 14,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 11,
+    "length": 10,
+    "line": 14,
+    "modifiers": [],
+    "type": "label"
+  },
+  {
+    "char": 7,
+    "length": 2,
+    "line": 15,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 11,
+    "length": 11,
+    "line": 15,
+    "modifiers": [],
+    "type": "constant"
+  },
+  {
+    "char": 9,
+    "length": 5,
+    "line": 16,
+    "modifiers": [],
+    "type": "csr"
+  },
+  {
+    "char": 16,
+    "length": 2,
+    "line": 16,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 7,
+    "length": 2,
+    "line": 17,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 11,
+    "length": 4,
+    "line": 17,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 4,
+    "length": 8,
+    "line": 18,
+    "modifiers": [],
+    "type": "macro"
+  },
+  {
+    "char": 13,
+    "length": 2,
+    "line": 18,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 9,
+    "length": 11,
+    "line": 19,
+    "modifiers": [],
+    "type": "label"
+  },
+  {
+    "char": 0,
+    "length": 1,
+    "line": 20,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "label"
+  },
+  {
+    "char": 6,
+    "length": 2,
+    "line": 22,
+    "modifiers": [],
+    "type": "label"
+  },
+  {
+    "char": 11,
+    "length": 11,
+    "line": 24,
+    "modifiers": [],
+    "type": "label"
+  },
+  {
+    "char": 0,
+    "length": 11,
+    "line": 26,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "label"
+  },
+  {
+    "char": 9,
+    "length": 2,
+    "line": 27,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 6,
+    "line": 27,
+    "modifiers": [],
+    "type": "csr"
+  },
+  {
+    "char": 9,
+    "length": 2,
+    "line": 28,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 2,
+    "line": 28,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 7,
+    "length": 2,
+    "line": 29,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 2,
+    "line": 29,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 7,
+    "length": 2,
+    "line": 30,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 2,
+    "line": 30,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 9,
+    "length": 2,
+    "line": 31,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 13,
+    "length": 2,
+    "line": 31,
+    "modifiers": [],
+    "type": "register"
+  },
+  {
+    "char": 0,
+    "length": 14,
+    "line": 34,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "label"
+  },
+  {
+    "char": 0,
+    "length": 13,
+    "line": 39,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "label"
+  },
+  {
+    "char": 11,
+    "length": 10,
+    "line": 40,
+    "modifiers": [],
+    "type": "constant"
+  },
+  {
+    "char": 0,
+    "length": 10,
+    "line": 41,
+    "modifiers": [
+      "declaration"
+    ],
+    "type": "label"
+  }
+]

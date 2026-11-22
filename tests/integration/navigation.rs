@@ -667,3 +667,91 @@ _start:
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn location_counter_dot_excluded_from_symbols_refs_and_semantic_tokens() {
+    let mut client = LspClient::start(None, None);
+    let uri: lsp_types::Uri = "file:///tmp/location_counter.S".parse().expect("uri");
+    let src = "\
+.equ ALIGN_BYTES, 8
+. = ALIGN_BYTES
+. = . + 16
+.Lkeep:
+    nop
+";
+    client.open_doc(&uri, 1, src);
+
+    // Document symbols contain ALIGN_BYTES and .Lkeep, never `.`
+    let doc_syms = client.send_request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    let sym_names: Vec<String> = doc_syms
+        .result
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["name"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        sym_names.contains(&"ALIGN_BYTES".to_owned()),
+        "got: {sym_names:?}"
+    );
+    assert!(
+        sym_names.contains(&".Lkeep".to_owned()),
+        "got: {sym_names:?}"
+    );
+    assert!(
+        !sym_names.contains(&".".to_owned()),
+        "`.` leaked into doc symbols: {sym_names:?}"
+    );
+
+    // Definition / references on `.` return null / empty
+    let def_dot = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 2, "character": 4 }
+        }),
+    );
+    assert!(def_dot.result.is_none_or(|v| v.is_null()));
+
+    // Semantic tokens must not emit a token at column 0 of line 1 or columns 0 / 4 of line 2
+    let st = client.send_request(
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    let data = st.result.expect("semantic tokens")["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut line = 0u64;
+    let mut ch = 0u64;
+    let mut token_positions = Vec::new();
+    for chunk in data.as_chunks::<5>().0 {
+        let dl = chunk[0].as_u64().unwrap();
+        let ds = chunk[1].as_u64().unwrap();
+        line += dl;
+        ch = if dl == 0 { ch + ds } else { ds };
+        token_positions.push((line, ch));
+    }
+    assert!(
+        !token_positions.contains(&(1, 0)),
+        "dot emitted at (1,0): {token_positions:?}"
+    );
+    assert!(
+        !token_positions.contains(&(2, 0)),
+        "dot emitted at (2,0): {token_positions:?}"
+    );
+    assert!(
+        !token_positions.contains(&(2, 4)),
+        "dot emitted at (2,4): {token_positions:?}"
+    );
+    assert!(
+        token_positions.contains(&(1, 4)),
+        "ALIGN_BYTES ref should remain: {token_positions:?}"
+    );
+
+    client.shutdown_and_exit();
+}

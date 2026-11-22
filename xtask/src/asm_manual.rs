@@ -69,6 +69,7 @@ fn parse_directives(text: &str) -> Vec<DirectiveEntry> {
         out.push(DirectiveEntry {
             name,
             arguments: if args.is_empty() { None } else { Some(args) },
+            summary: None,
             description: desc,
             source: "riscv-asm-manual (CC-BY-4.0)".to_owned(),
             llvm_supported,

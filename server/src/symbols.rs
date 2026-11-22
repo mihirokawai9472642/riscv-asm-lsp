@@ -2,6 +2,7 @@ use lsp_types::{DocumentSymbol, DocumentSymbolResponse, SymbolInformation, Symbo
 
 use crate::index::{SymKind, WorkspaceIndex};
 
+// `lsp_types::DocumentSymbol` has a deprecated `deprecated` field that must still be initialized in struct literals.
 #[allow(deprecated)]
 pub fn document_symbols(index: &WorkspaceIndex, uri: &Uri) -> Option<DocumentSymbolResponse> {
     let file = index.file_by_uri(uri)?;
@@ -95,6 +96,7 @@ pub fn document_symbols(index: &WorkspaceIndex, uri: &Uri) -> Option<DocumentSym
     Some(DocumentSymbolResponse::Nested(top_level))
 }
 
+// `lsp_types::SymbolInformation` has a deprecated `deprecated` field that must still be initialized in struct literals.
 #[allow(deprecated)]
 pub fn workspace_symbols(index: &WorkspaceIndex, query: &str) -> Vec<SymbolInformation> {
     let q = query.trim().to_ascii_lowercase();

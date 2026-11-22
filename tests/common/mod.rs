@@ -1,3 +1,5 @@
+pub mod snapshot;
+
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;

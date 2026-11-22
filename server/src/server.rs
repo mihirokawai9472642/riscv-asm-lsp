@@ -19,13 +19,14 @@ use lsp_types::{
     TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WatchKind, WorkspaceSymbolParams,
 };
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::code_action::provide_code_actions;
 use crate::completion::{CompletionClientCaps, provide_completion, resolve_completion_item};
 use crate::config::Config;
-use crate::context::{CompileContext, uri_to_path};
+use crate::context::{CompileContext, is_linker_script_uri, uri_to_path};
 use crate::data::Database;
-use crate::diagnostics::{DiagnosticsCache, DiagnosticsWorker, MessageSink};
+use crate::diagnostics::{DiagnosticsWorker, MessageSink};
 use crate::document::DocumentStore;
 use crate::hover::{HoverResolution, HoverWorker, prepare_hover};
 use crate::index::WorkspaceIndex;
@@ -35,6 +36,8 @@ use crate::navigation::{
 use crate::semantic_tokens::{legend, provide_semantic_tokens_full, provide_semantic_tokens_range};
 use crate::symbols::{document_symbols, workspace_symbols};
 use crate::tools::ToolRunner;
+
+const INDEX_DEBOUNCE: Duration = Duration::from_millis(150);
 
 pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
@@ -94,20 +97,19 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         == Some(true);
     let workspace_root = extract_workspace_root(&init_params);
     let config = Config::from_init_options(init_params.initialization_options);
-    let mut ctx = CompileContext::new(workspace_root.clone(), config.clone());
-    let mut store = DocumentStore::new().map_err(std::io::Error::other)?;
+    let ctx = CompileContext::new(workspace_root.clone(), config.clone());
+    let store = DocumentStore::new().map_err(std::io::Error::other)?;
     let mut index = WorkspaceIndex::new(workspace_root).map_err(std::io::Error::other)?;
     index.start_background_scan(progress_ok.then(|| make_message_sink(&connection)));
     let tools = Arc::new(ToolRunner::new(
         config.clang.clone(),
         config.llvm_mc.clone(),
     ));
-    let diag_sender = make_message_sink(&connection);
     let diag_worker = DiagnosticsWorker::new(
         config.diagnostics.enable,
         config.diagnostics.delay_ms,
         Arc::clone(&tools),
-        diag_sender,
+        make_message_sink(&connection),
     );
     let hover_worker = HoverWorker::new(Arc::clone(&tools), make_message_sink(&connection));
 
@@ -119,18 +121,28 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         db.raw.csrs.len()
     );
 
-    let loop_res = main_loop(
-        &connection,
-        &db,
-        &mut ctx,
-        &mut store,
-        &mut index,
-        &tools,
-        &diag_worker,
-        &hover_worker,
+    let mut state = ServerState {
+        connection: &connection,
+        db: &db,
+        ctx,
+        store,
+        index,
+        tools,
+        diag_worker,
+        hover_worker,
         completion_caps,
-    );
-    // Shut down background workers before dropping `connection` so `LspServerWriter` drains cleanly.
+        dirty_docs: HashMap::new(),
+        logged_panics: HashSet::new(),
+    };
+
+    let loop_res = state.main_loop();
+    // Shut down background workers and drop `state` before `connection` so `LspServerWriter` drains cleanly.
+    let ServerState {
+        mut index,
+        diag_worker,
+        hover_worker,
+        ..
+    } = state;
     index.shutdown();
     diag_worker.shutdown();
     hover_worker.shutdown();
@@ -153,6 +165,517 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         }
     }
     Ok(exit_code)
+}
+
+struct ServerState<'a> {
+    connection: &'a Connection,
+    db: &'a Database,
+    ctx: CompileContext,
+    store: DocumentStore,
+    index: WorkspaceIndex,
+    tools: Arc<ToolRunner>,
+    diag_worker: DiagnosticsWorker,
+    hover_worker: HoverWorker,
+    completion_caps: CompletionClientCaps,
+    dirty_docs: HashMap<String, (Uri, Instant)>,
+    logged_panics: HashSet<String>,
+}
+
+enum NextMsg {
+    Message(Message),
+    Timeout,
+    Closed,
+}
+
+impl ServerState<'_> {
+    fn main_loop(&mut self) -> Result<(bool, i32), Box<dyn std::error::Error>> {
+        let mut shutdown_received = false;
+        let mut exit_code = 0i32;
+
+        loop {
+            let msg = match self.next_message() {
+                NextMsg::Message(m) => m,
+                NextMsg::Timeout => continue,
+                NextMsg::Closed => break,
+            };
+            match msg {
+                Message::Request(req) => {
+                    if req.method == "shutdown" {
+                        if shutdown_received {
+                            reply_err(
+                                self.connection,
+                                req.id,
+                                ErrorCode::InvalidRequest,
+                                "server is already shutting down".to_owned(),
+                            )?;
+                        } else {
+                            reply_ok(self.connection, req.id, serde_json::Value::Null)?;
+                            shutdown_received = true;
+                        }
+                        continue;
+                    }
+                    if shutdown_received {
+                        reply_err(
+                            self.connection,
+                            req.id,
+                            ErrorCode::InvalidRequest,
+                            "server is shutting down".to_owned(),
+                        )?;
+                        continue;
+                    }
+                    self.dispatch_request_guarded(req)?;
+                }
+                Message::Notification(not) => {
+                    if not.method == "exit" {
+                        exit_code = if shutdown_received { 0 } else { 1 };
+                        break;
+                    }
+                    if !shutdown_received {
+                        self.dispatch_notification_guarded(not.method, not.params);
+                    }
+                }
+                Message::Response(_) => {}
+            }
+        }
+        Ok((shutdown_received, exit_code))
+    }
+
+    fn next_message(&mut self) -> NextMsg {
+        if let Some(next_due) = self.dirty_docs.values().map(|(_, due)| *due).min() {
+            let remaining = next_due.saturating_duration_since(Instant::now());
+            match self.connection.receiver.recv_timeout(remaining) {
+                Ok(m) => NextMsg::Message(m),
+                Err(err) if err.is_timeout() => {
+                    self.flush_due_dirty_docs();
+                    NextMsg::Timeout
+                }
+                Err(_) => NextMsg::Closed,
+            }
+        } else {
+            match self.connection.receiver.recv() {
+                Ok(m) => NextMsg::Message(m),
+                Err(_) => NextMsg::Closed,
+            }
+        }
+    }
+
+    fn dispatch_request_guarded(&mut self, req: Request) -> Result<(), Box<dyn std::error::Error>> {
+        let id = req.id.clone();
+        let method = req.method.clone();
+        let connection = self.connection;
+        match catch_unwind(AssertUnwindSafe(|| {
+            if !matches!(
+                method.as_str(),
+                "completionItem/resolve" | "textDocument/codeAction"
+            ) {
+                self.flush_all_dirty_docs();
+            }
+            let store = &self.store;
+            if matches!(
+                method.as_str(),
+                "textDocument/definition"
+                    | "textDocument/references"
+                    | "textDocument/rename"
+                    | "workspace/symbol"
+            ) {
+                self.index
+                    .drain_background_wait(&|p| store.is_open_path(p), Duration::from_millis(200));
+            } else {
+                self.index.drain_background(&|p| store.is_open_path(p));
+            }
+            self.handle_request(req)
+        })) {
+            Ok(res) => res,
+            Err(payload) => {
+                if self.logged_panics.insert(method.clone()) {
+                    let msg = panic_payload_message(&*payload);
+                    eprintln!("riscv-asm-lsp: panic while handling request `{method}`: {msg}");
+                }
+                reply_err(
+                    connection,
+                    id,
+                    ErrorCode::InternalError,
+                    format!("internal error while handling {method}"),
+                )
+            }
+        }
+    }
+
+    fn dispatch_notification_guarded(&mut self, method: String, params: serde_json::Value) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| {
+            let store = &self.store;
+            self.index.drain_background(&|p| store.is_open_path(p));
+            self.handle_notification(&method, params);
+        })) && self.logged_panics.insert(method.clone())
+        {
+            let msg = panic_payload_message(&*payload);
+            eprintln!("riscv-asm-lsp: panic while handling notification `{method}`: {msg}");
+        }
+    }
+
+    fn handle_request(&mut self, req: Request) -> Result<(), Box<dyn std::error::Error>> {
+        let id = req.id;
+        let params = req.params;
+        if req.method.starts_with("textDocument/")
+            && let Some(uri_str) = params
+                .get("textDocument")
+                .and_then(|td| td.get("uri"))
+                .and_then(|u| u.as_str())
+            && let Ok(td_uri) = uri_str.parse::<Uri>()
+            && is_linker_script_uri(&td_uri)
+        {
+            return reply_ok(self.connection, id, serde_json::Value::Null);
+        }
+
+        match req.method.as_str() {
+            "textDocument/hover" => self.handle_hover(id, params),
+            "textDocument/completion" => {
+                self.dispatch_typed(id, params, |s, p: CompletionParams| {
+                    let uri = &p.text_document_position.text_document.uri;
+                    let pos = p.text_document_position.position;
+                    Ok(s.store.get(uri).and_then(|doc| {
+                        provide_completion(
+                            doc,
+                            pos,
+                            s.db,
+                            &mut s.ctx,
+                            &mut s.index,
+                            s.completion_caps,
+                        )
+                    }))
+                })
+            }
+            "completionItem/resolve" => {
+                self.dispatch_typed(id, params, |s, item: CompletionItem| {
+                    Ok(resolve_completion_item(item, s.db))
+                })
+            }
+            "textDocument/definition"
+            | "textDocument/references"
+            | "textDocument/documentHighlight"
+            | "textDocument/prepareRename"
+            | "textDocument/rename" => {
+                self.handle_navigation_request(req.method.as_str(), id, params)
+            }
+            "textDocument/documentSymbol"
+            | "workspace/symbol"
+            | "textDocument/codeAction"
+            | "textDocument/semanticTokens/full"
+            | "textDocument/semanticTokens/range" => {
+                self.handle_analysis_request(req.method.as_str(), id, params)
+            }
+            other => reply_err(
+                self.connection,
+                id,
+                ErrorCode::MethodNotFound,
+                format!("unsupported method: {other}"),
+            ),
+        }
+    }
+
+    fn handle_navigation_request(
+        &mut self,
+        method: &str,
+        id: RequestId,
+        params: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match method {
+            "textDocument/definition" => {
+                self.dispatch_typed(id, params, |s, p: GotoDefinitionParams| {
+                    let uri = &p.text_document_position_params.text_document.uri;
+                    let pos = p.text_document_position_params.position;
+                    Ok(goto_definition(&mut s.index, uri, pos, &mut s.ctx))
+                })
+            }
+            "textDocument/references" => {
+                self.dispatch_typed(id, params, |s, p: ReferenceParams| {
+                    let uri = &p.text_document_position.text_document.uri;
+                    let pos = p.text_document_position.position;
+                    Ok(find_references(
+                        &mut s.index,
+                        uri,
+                        pos,
+                        p.context.include_declaration,
+                        &mut s.ctx,
+                    ))
+                })
+            }
+            "textDocument/documentHighlight" => {
+                self.dispatch_typed(id, params, |s, p: DocumentHighlightParams| {
+                    let uri = &p.text_document_position_params.text_document.uri;
+                    let pos = p.text_document_position_params.position;
+                    Ok(document_highlight(&mut s.index, uri, pos, &mut s.ctx))
+                })
+            }
+            "textDocument/prepareRename" => {
+                self.dispatch_typed(id, params, |s, p: TextDocumentPositionParams| {
+                    Ok(prepare_rename(
+                        &mut s.index,
+                        &p.text_document.uri,
+                        p.position,
+                        s.db,
+                        &mut s.ctx,
+                    ))
+                })
+            }
+            "textDocument/rename" => self.dispatch_typed(id, params, |s, p: RenameParams| {
+                let uri = &p.text_document_position.text_document.uri;
+                let pos = p.text_document_position.position;
+                rename_symbol(&mut s.index, uri, pos, &p.new_name, s.db, &mut s.ctx)
+            }),
+            _ => unreachable!(),
+        }
+    }
+
+    fn handle_analysis_request(
+        &mut self,
+        method: &str,
+        id: RequestId,
+        params: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match method {
+            "textDocument/documentSymbol" => {
+                self.dispatch_typed(id, params, |s, p: DocumentSymbolParams| {
+                    Ok(document_symbols(&s.index, &p.text_document.uri))
+                })
+            }
+            "workspace/symbol" => self.dispatch_typed(id, params, |s, p: WorkspaceSymbolParams| {
+                Ok(workspace_symbols(&s.index, &p.query))
+            }),
+            "textDocument/codeAction" => {
+                self.dispatch_typed(id, params, |s, p: CodeActionParams| {
+                    let doc = s.store.get(&p.text_document.uri);
+                    let preprocessed = s.ctx.for_uri(&p.text_document.uri).preprocessed;
+                    Ok(provide_code_actions(
+                        &p.text_document.uri,
+                        p.range,
+                        doc,
+                        preprocessed,
+                        &s.diag_worker.cache,
+                    ))
+                })
+            }
+            "textDocument/semanticTokens/full" => {
+                self.dispatch_typed(id, params, |s, p: SemanticTokensParams| {
+                    Ok(s.store
+                        .get(&p.text_document.uri)
+                        .and_then(|doc| {
+                            provide_semantic_tokens_full(doc, s.db, &mut s.ctx, &mut s.index)
+                        })
+                        .map(SemanticTokensResult::Tokens))
+                })
+            }
+            "textDocument/semanticTokens/range" => {
+                self.dispatch_typed(id, params, |s, p: SemanticTokensRangeParams| {
+                    Ok(s.store
+                        .get(&p.text_document.uri)
+                        .and_then(|doc| {
+                            provide_semantic_tokens_range(
+                                doc,
+                                p.range,
+                                s.db,
+                                &mut s.ctx,
+                                &mut s.index,
+                            )
+                        })
+                        .map(SemanticTokensResult::Tokens))
+                })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn dispatch_typed<P, R, F>(
+        &mut self,
+        id: RequestId,
+        params: serde_json::Value,
+        handler: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        P: DeserializeOwned,
+        R: Serialize,
+        F: FnOnce(&mut Self, P) -> Result<R, String>,
+    {
+        let parsed: P = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(err) => {
+                return reply_err(
+                    self.connection,
+                    id,
+                    ErrorCode::InvalidParams,
+                    err.to_string(),
+                );
+            }
+        };
+        match handler(self, parsed) {
+            Ok(res) => reply_ok(self.connection, id, res),
+            Err(msg) => reply_err(self.connection, id, ErrorCode::InvalidParams, msg),
+        }
+    }
+
+    fn handle_hover(
+        &mut self,
+        id: RequestId,
+        params: serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let parsed: HoverParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(err) => {
+                return reply_err(
+                    self.connection,
+                    id,
+                    ErrorCode::InvalidParams,
+                    err.to_string(),
+                );
+            }
+        };
+        let uri = &parsed.text_document_position_params.text_document.uri;
+        let pos = parsed.text_document_position_params.position;
+        let Some(doc) = self.store.get(uri) else {
+            return reply_ok(self.connection, id, Option::<lsp_types::Hover>::None);
+        };
+        match prepare_hover(
+            doc,
+            pos,
+            self.db,
+            &mut self.ctx,
+            &mut self.index,
+            &self.tools,
+            &self.hover_worker.cache,
+        ) {
+            HoverResolution::Ready(hover) => reply_ok(self.connection, id, hover),
+            HoverResolution::Deferred(deferred) => {
+                self.hover_worker.submit(id, *deferred);
+                Ok(())
+            }
+        }
+    }
+
+    fn handle_notification(&mut self, method: &str, params: serde_json::Value) {
+        match method {
+            "textDocument/didOpen" => {
+                if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
+                    let uri = p.text_document.uri;
+                    if is_linker_script_uri(&uri) {
+                        self.diag_worker.clear(&uri);
+                        return;
+                    }
+                    let version = p.text_document.version;
+                    let text = p.text_document.text;
+                    self.dirty_docs.remove(uri.as_str());
+                    let file_ctx = self.ctx.for_uri(&uri);
+                    let doc = self.store.open(uri.clone(), version, text.clone());
+                    self.index
+                        .upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
+                    self.index.prioritize_open_document(&uri);
+                    self.diag_worker.schedule(uri, version, text, file_ctx);
+                }
+            }
+            "textDocument/didChange" => {
+                if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(params) {
+                    let uri = p.text_document.uri;
+                    if is_linker_script_uri(&uri) {
+                        return;
+                    }
+                    let version = p.text_document.version;
+                    if let Some(doc) = self.store.change(&uri, version, p.content_changes) {
+                        self.dirty_docs.insert(
+                            uri.as_str().to_owned(),
+                            (uri.clone(), Instant::now() + INDEX_DEBOUNCE),
+                        );
+                        let text = doc.text.clone();
+                        let file_ctx = self.ctx.for_uri(&uri);
+                        self.diag_worker.schedule(uri, version, text, file_ctx);
+                    }
+                }
+            }
+            "textDocument/didSave" => {
+                if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(params) {
+                    let uri = p.text_document.uri;
+                    if is_linker_script_uri(&uri) {
+                        return;
+                    }
+                    self.dirty_docs.remove(uri.as_str());
+                    if let Some(doc) = self.store.get(&uri) {
+                        let file_ctx = self.ctx.for_uri(&uri);
+                        self.index
+                            .upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
+                        let version = doc.version;
+                        let text = doc.text.clone();
+                        self.diag_worker.schedule(uri, version, text, file_ctx);
+                    } else {
+                        self.index.reload_path(&uri);
+                    }
+                }
+            }
+            "textDocument/didClose" => {
+                if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
+                    self.dirty_docs.remove(p.text_document.uri.as_str());
+                    self.store.close(&p.text_document.uri);
+                    self.index.reload_path(&p.text_document.uri);
+                    self.diag_worker.clear(&p.text_document.uri);
+                }
+            }
+            "workspace/didChangeWatchedFiles" => {
+                if let Ok(p) = serde_json::from_value::<DidChangeWatchedFilesParams>(params) {
+                    self.handle_watched_files(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_watched_files(&mut self, params: DidChangeWatchedFilesParams) {
+        for change in params.changes {
+            if is_linker_script_uri(&change.uri) {
+                continue;
+            }
+            if change.uri.as_str().ends_with("compile_commands.json") {
+                self.ctx.reload_if_needed();
+                for (open_uri, version, text) in self.store.all_open_snapshots() {
+                    let file_ctx = self.ctx.for_uri(&open_uri);
+                    self.index
+                        .sync_preprocessed(&open_uri, file_ctx.preprocessed);
+                    self.diag_worker.schedule(open_uri, version, text, file_ctx);
+                }
+                continue;
+            }
+            if self.store.get(&change.uri).is_some() {
+                continue;
+            }
+            if change.typ == FileChangeType::DELETED {
+                self.index.remove_path(&change.uri);
+            } else {
+                self.index.reload_path(&change.uri);
+            }
+        }
+    }
+
+    fn flush_due_dirty_docs(&mut self) {
+        let now = Instant::now();
+        let due: Vec<(String, Uri)> = self
+            .dirty_docs
+            .iter()
+            .filter(|(_, (_, due_at))| *due_at <= now)
+            .map(|(k, (u, _))| (k.clone(), u.clone()))
+            .collect();
+        for (key, uri) in due {
+            self.dirty_docs.remove(&key);
+            if let Some(doc) = self.store.get(&uri) {
+                let pre = self.ctx.for_uri(&uri).preprocessed;
+                self.index.upsert_open_document_with_preprocessed(doc, pre);
+            }
+        }
+    }
+
+    fn flush_all_dirty_docs(&mut self) {
+        for (_, (uri, _)) in self.dirty_docs.drain() {
+            if let Some(doc) = self.store.get(&uri) {
+                let pre = self.ctx.for_uri(&uri).preprocessed;
+                self.index.upsert_open_document_with_preprocessed(doc, pre);
+            }
+        }
+    }
 }
 
 fn make_message_sink(connection: &Connection) -> MessageSink {
@@ -223,6 +746,7 @@ fn extract_completion_caps(params: &InitializeParams) -> CompletionClientCaps {
     }
 }
 
+// Legacy clients may still send deprecated `root_uri` or `root_path` instead of `workspace_folders`.
 #[allow(deprecated)]
 fn extract_workspace_root(params: &InitializeParams) -> Option<PathBuf> {
     if let Some(folders) = &params.workspace_folders
@@ -239,134 +763,6 @@ fn extract_workspace_root(params: &InitializeParams) -> Option<PathBuf> {
     params.root_path.as_deref().map(PathBuf::from)
 }
 
-const INDEX_DEBOUNCE: Duration = Duration::from_millis(150);
-
-#[allow(clippy::too_many_arguments)]
-fn main_loop(
-    connection: &Connection,
-    db: &Database,
-    ctx: &mut CompileContext,
-    store: &mut DocumentStore,
-    index: &mut WorkspaceIndex,
-    tools: &ToolRunner,
-    diag_worker: &DiagnosticsWorker,
-    hover_worker: &HoverWorker,
-    completion_caps: CompletionClientCaps,
-) -> Result<(bool, i32), Box<dyn std::error::Error>> {
-    let mut dirty_docs: HashMap<String, (Uri, Instant)> = HashMap::new();
-    let mut logged_panics: HashSet<String> = HashSet::new();
-    let mut shutdown_received = false;
-    let mut exit_code = 0i32;
-
-    loop {
-        let msg = if let Some(next_due) = dirty_docs.values().map(|(_, due)| *due).min() {
-            let remaining = next_due.saturating_duration_since(Instant::now());
-            match connection.receiver.recv_timeout(remaining) {
-                Ok(m) => m,
-                Err(err) if err.is_timeout() => {
-                    flush_due_dirty_docs(ctx, store, index, &mut dirty_docs);
-                    continue;
-                }
-                Err(_) => break,
-            }
-        } else {
-            match connection.receiver.recv() {
-                Ok(m) => m,
-                Err(_) => break,
-            }
-        };
-
-        match msg {
-            Message::Request(req) => {
-                if req.method == "shutdown" {
-                    if shutdown_received {
-                        reply_err(
-                            connection,
-                            req.id,
-                            ErrorCode::InvalidRequest,
-                            "server is already shutting down".to_owned(),
-                        )?;
-                    } else {
-                        reply_ok(connection, req.id, serde_json::Value::Null)?;
-                        shutdown_received = true;
-                    }
-                    continue;
-                }
-                if shutdown_received {
-                    reply_err(
-                        connection,
-                        req.id,
-                        ErrorCode::InvalidRequest,
-                        "server is shutting down".to_owned(),
-                    )?;
-                    continue;
-                }
-                let id = req.id.clone();
-                let method = req.method.clone();
-                run_guarded_request(connection, id, &method, &mut logged_panics, || {
-                    if !matches!(
-                        method.as_str(),
-                        "completionItem/resolve" | "textDocument/codeAction"
-                    ) {
-                        flush_all_dirty_docs(ctx, store, index, &mut dirty_docs);
-                    }
-                    if matches!(
-                        method.as_str(),
-                        "textDocument/definition"
-                            | "textDocument/references"
-                            | "textDocument/rename"
-                            | "workspace/symbol"
-                    ) {
-                        index.drain_background_wait(
-                            &|p| store.is_open_path(p),
-                            Duration::from_millis(200),
-                        );
-                    } else {
-                        index.drain_background(&|p| store.is_open_path(p));
-                    }
-                    handle_request(
-                        connection,
-                        req,
-                        db,
-                        ctx,
-                        store,
-                        index,
-                        tools,
-                        &diag_worker.cache,
-                        hover_worker,
-                        completion_caps,
-                    )
-                })?;
-            }
-            Message::Notification(not) => {
-                if not.method == "exit" {
-                    exit_code = if shutdown_received { 0 } else { 1 };
-                    break;
-                }
-                if shutdown_received {
-                    continue;
-                }
-                let method = not.method;
-                let params = not.params;
-                run_guarded_notification(&method, &mut logged_panics, || {
-                    index.drain_background(&|p| store.is_open_path(p));
-                    handle_notification(
-                        &method,
-                        params,
-                        ctx,
-                        store,
-                        index,
-                        diag_worker,
-                        &mut dirty_docs,
-                    );
-                });
-            }
-            Message::Response(_) => {}
-        }
-    }
-    Ok((shutdown_received, exit_code))
-}
-
 pub(crate) fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_owned()
@@ -374,363 +770,6 @@ pub(crate) fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
         s.clone()
     } else {
         "unknown panic".to_owned()
-    }
-}
-
-fn run_guarded_request<F>(
-    connection: &Connection,
-    id: RequestId,
-    method: &str,
-    logged_panics: &mut HashSet<String>,
-    f: F,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
-{
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(res) => res,
-        Err(payload) => {
-            if logged_panics.insert(method.to_owned()) {
-                let msg = panic_payload_message(&*payload);
-                eprintln!("riscv-asm-lsp: panic while handling request `{method}`: {msg}");
-            }
-            reply_err(
-                connection,
-                id,
-                ErrorCode::InternalError,
-                format!("internal error while handling {method}"),
-            )?;
-            Ok(())
-        }
-    }
-}
-
-fn run_guarded_notification<F>(method: &str, logged_panics: &mut HashSet<String>, f: F)
-where
-    F: FnOnce(),
-{
-    if let Err(payload) = catch_unwind(AssertUnwindSafe(f))
-        && logged_panics.insert(method.to_owned())
-    {
-        let msg = panic_payload_message(&*payload);
-        eprintln!("riscv-asm-lsp: panic while handling notification `{method}`: {msg}");
-    }
-}
-
-fn flush_due_dirty_docs(
-    ctx: &mut CompileContext,
-    store: &DocumentStore,
-    index: &mut WorkspaceIndex,
-    dirty_docs: &mut HashMap<String, (Uri, Instant)>,
-) {
-    let now = Instant::now();
-    let due: Vec<(String, Uri)> = dirty_docs
-        .iter()
-        .filter(|(_, (_, due_at))| *due_at <= now)
-        .map(|(k, (u, _))| (k.clone(), u.clone()))
-        .collect();
-    for (key, uri) in due {
-        dirty_docs.remove(&key);
-        if let Some(doc) = store.get(&uri) {
-            let pre = ctx.for_uri(&uri).preprocessed;
-            index.upsert_open_document_with_preprocessed(doc, pre);
-        }
-    }
-}
-
-fn flush_all_dirty_docs(
-    ctx: &mut CompileContext,
-    store: &DocumentStore,
-    index: &mut WorkspaceIndex,
-    dirty_docs: &mut HashMap<String, (Uri, Instant)>,
-) {
-    for (_, (uri, _)) in dirty_docs.drain() {
-        if let Some(doc) = store.get(&uri) {
-            let pre = ctx.for_uri(&uri).preprocessed;
-            index.upsert_open_document_with_preprocessed(doc, pre);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_request(
-    connection: &Connection,
-    req: Request,
-    db: &Database,
-    ctx: &mut CompileContext,
-    store: &DocumentStore,
-    index: &mut WorkspaceIndex,
-    tools: &ToolRunner,
-    diag_cache: &DiagnosticsCache,
-    hover_worker: &HoverWorker,
-    completion_caps: CompletionClientCaps,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let id = req.id.clone();
-    match req.method.as_str() {
-        "textDocument/hover" => {
-            let params: HoverParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let uri = &params.text_document_position_params.text_document.uri;
-            let pos = params.text_document_position_params.position;
-            let Some(doc) = store.get(uri) else {
-                return reply_ok(connection, id, Option::<lsp_types::Hover>::None);
-            };
-            match prepare_hover(doc, pos, db, ctx, index, tools, &hover_worker.cache) {
-                HoverResolution::Ready(hover) => reply_ok(connection, id, hover)?,
-                HoverResolution::Deferred(deferred) => hover_worker.submit(id, *deferred),
-            }
-        }
-        "textDocument/completion" => {
-            let params: CompletionParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let uri = &params.text_document_position.text_document.uri;
-            let pos = params.text_document_position.position;
-            let result = store
-                .get(uri)
-                .and_then(|doc| provide_completion(doc, pos, db, ctx, index, completion_caps));
-            reply_ok(connection, id, result)?;
-        }
-        "completionItem/resolve" => {
-            let item: CompletionItem = match serde_json::from_value(req.params) {
-                Ok(i) => i,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let resolved = resolve_completion_item(item, db);
-            reply_ok(connection, id, resolved)?;
-        }
-        "textDocument/definition" => {
-            let params: GotoDefinitionParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let uri = &params.text_document_position_params.text_document.uri;
-            let pos = params.text_document_position_params.position;
-            let result = goto_definition(index, uri, pos, ctx);
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/references" => {
-            let params: ReferenceParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let uri = &params.text_document_position.text_document.uri;
-            let pos = params.text_document_position.position;
-            let include_decl = params.context.include_declaration;
-            let result = find_references(index, uri, pos, include_decl, ctx);
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/documentHighlight" => {
-            let params: DocumentHighlightParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let uri = &params.text_document_position_params.text_document.uri;
-            let pos = params.text_document_position_params.position;
-            let result = document_highlight(index, uri, pos, ctx);
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/prepareRename" => {
-            let params: TextDocumentPositionParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let result = prepare_rename(index, &params.text_document.uri, params.position, db, ctx);
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/rename" => {
-            let params: RenameParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let uri = &params.text_document_position.text_document.uri;
-            let pos = params.text_document_position.position;
-            match rename_symbol(index, uri, pos, &params.new_name, db, ctx) {
-                Ok(edit) => reply_ok(connection, id, edit)?,
-                Err(msg) => reply_err(connection, id, ErrorCode::InvalidParams, msg)?,
-            }
-        }
-        "textDocument/documentSymbol" => {
-            let params: DocumentSymbolParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let result = document_symbols(index, &params.text_document.uri);
-            reply_ok(connection, id, result)?;
-        }
-        "workspace/symbol" => {
-            let params: WorkspaceSymbolParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let result = workspace_symbols(index, &params.query);
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/codeAction" => {
-            let params: CodeActionParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let doc = store.get(&params.text_document.uri);
-            let preprocessed = ctx.for_uri(&params.text_document.uri).preprocessed;
-            let result = provide_code_actions(
-                &params.text_document.uri,
-                params.range,
-                doc,
-                preprocessed,
-                diag_cache,
-            );
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/semanticTokens/full" => {
-            let params: SemanticTokensParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let result = store
-                .get(&params.text_document.uri)
-                .and_then(|doc| provide_semantic_tokens_full(doc, db, ctx, index))
-                .map(SemanticTokensResult::Tokens);
-            reply_ok(connection, id, result)?;
-        }
-        "textDocument/semanticTokens/range" => {
-            let params: SemanticTokensRangeParams = match serde_json::from_value(req.params) {
-                Ok(p) => p,
-                Err(err) => {
-                    return reply_err(connection, id, ErrorCode::InvalidParams, err.to_string());
-                }
-            };
-            let result = store
-                .get(&params.text_document.uri)
-                .and_then(|doc| provide_semantic_tokens_range(doc, params.range, db, ctx, index))
-                .map(SemanticTokensResult::Tokens);
-            reply_ok(connection, id, result)?;
-        }
-        other => {
-            reply_err(
-                connection,
-                id,
-                ErrorCode::MethodNotFound,
-                format!("unsupported method: {other}"),
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn handle_notification(
-    method: &str,
-    params: serde_json::Value,
-    ctx: &mut CompileContext,
-    store: &mut DocumentStore,
-    index: &mut WorkspaceIndex,
-    diag_worker: &DiagnosticsWorker,
-    dirty_docs: &mut HashMap<String, (Uri, Instant)>,
-) {
-    match method {
-        "textDocument/didOpen" => {
-            if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
-                let uri = p.text_document.uri;
-                let version = p.text_document.version;
-                let text = p.text_document.text;
-                dirty_docs.remove(uri.as_str());
-                let file_ctx = ctx.for_uri(&uri);
-                let doc = store.open(uri.clone(), version, text.clone());
-                index.upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
-                index.prioritize_open_document(&uri);
-                diag_worker.schedule(uri, version, text, file_ctx);
-            }
-        }
-        "textDocument/didChange" => {
-            if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(params) {
-                let uri = p.text_document.uri;
-                let version = p.text_document.version;
-                if let Some(doc) = store.change(&uri, version, p.content_changes) {
-                    dirty_docs.insert(
-                        uri.as_str().to_owned(),
-                        (uri.clone(), Instant::now() + INDEX_DEBOUNCE),
-                    );
-                    let text = doc.text.clone();
-                    let file_ctx = ctx.for_uri(&uri);
-                    diag_worker.schedule(uri, version, text, file_ctx);
-                }
-            }
-        }
-        "textDocument/didSave" => {
-            if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(params) {
-                let uri = p.text_document.uri;
-                dirty_docs.remove(uri.as_str());
-                if let Some(doc) = store.get(&uri) {
-                    let file_ctx = ctx.for_uri(&uri);
-                    index.upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
-                    let version = doc.version;
-                    let text = doc.text.clone();
-                    diag_worker.schedule(uri, version, text, file_ctx);
-                } else {
-                    index.reload_path(&uri);
-                }
-            }
-        }
-        "textDocument/didClose" => {
-            if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
-                dirty_docs.remove(p.text_document.uri.as_str());
-                store.close(&p.text_document.uri);
-                index.reload_path(&p.text_document.uri);
-                diag_worker.clear(&p.text_document.uri);
-            }
-        }
-        "workspace/didChangeWatchedFiles" => {
-            if let Ok(p) = serde_json::from_value::<DidChangeWatchedFilesParams>(params) {
-                for change in p.changes {
-                    if change.uri.as_str().ends_with("compile_commands.json") {
-                        ctx.reload_if_needed();
-                        for (open_uri, version, text) in store.all_open_snapshots() {
-                            let file_ctx = ctx.for_uri(&open_uri);
-                            index.sync_preprocessed(&open_uri, file_ctx.preprocessed);
-                            diag_worker.schedule(open_uri, version, text, file_ctx);
-                        }
-                        continue;
-                    }
-                    // Open buffers stay authoritative until saved/closed
-                    if store.get(&change.uri).is_some() {
-                        continue;
-                    }
-                    if change.typ == FileChangeType::DELETED {
-                        index.remove_path(&change.uri);
-                    } else {
-                        index.reload_path(&change.uri);
-                    }
-                }
-            }
-        }
-        _ => {}
     }
 }
 
@@ -764,12 +803,39 @@ fn reply_err(
 mod tests {
     use super::*;
 
+    fn run_guarded_request_test<F>(
+        connection: &Connection,
+        id: RequestId,
+        method: &str,
+        logged_panics: &mut HashSet<String>,
+        f: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+    {
+        match catch_unwind(AssertUnwindSafe(f)) {
+            Ok(res) => res,
+            Err(payload) => {
+                if logged_panics.insert(method.to_owned()) {
+                    let msg = panic_payload_message(&*payload);
+                    eprintln!("riscv-asm-lsp: panic while handling request `{method}`: {msg}");
+                }
+                reply_err(
+                    connection,
+                    id,
+                    ErrorCode::InternalError,
+                    format!("internal error while handling {method}"),
+                )
+            }
+        }
+    }
+
     #[test]
     fn panic_guard_replies_internal_error_and_continues() {
         let (server_conn, client_conn) = Connection::memory();
         let mut logged = HashSet::new();
 
-        let res = run_guarded_request(
+        let res = run_guarded_request_test(
             &server_conn,
             RequestId::from(42),
             "textDocument/hover",
@@ -786,11 +852,5 @@ mod tests {
         assert_eq!(resp.id, RequestId::from(42));
         let err = resp.response_result.expect_err("expected InternalError");
         assert_eq!(err.code, ErrorCode::InternalError as i32);
-
-        // Notification panic does not abort either
-        run_guarded_notification("textDocument/didChange", &mut logged, || {
-            panic!("simulated notification panic");
-        });
-        assert!(logged.contains("textDocument/didChange"));
     }
 }

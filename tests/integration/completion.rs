@@ -242,7 +242,9 @@ fn completion_snippets_variant_order_distinct_labels_and_separators() {
         resolved_ld["documentation"]["value"]
             .as_str()
             .unwrap_or("")
-            .starts_with("```riscv\nld rd, imm12(rs1)\n```")
+            .starts_with(
+                "Instruction · Load doubleword · `RV64I` · RV64\n\n```riscv\nld rd, imm12(rs1)\n```"
+            )
     );
 
     // Item 5: deprecated aliases carry DEPRECATED tag (1) and sort after preferred names
@@ -448,6 +450,78 @@ fn completion_caps_large_symbol_lists_with_is_incomplete_and_prefix_filter() {
     );
     let labels = completion_labels(&filtered.result);
     assert!(labels.iter().any(|l| l == "label_259"));
+
+    client.shutdown_and_exit();
+}
+
+#[test]
+fn completion_inside_block_and_line_comments_via_lsp() {
+    let mut client = LspClient::start(None, None);
+    let uri: lsp_types::Uri = "file:///tmp/block_comments.S".parse().expect("uri");
+    let src = "\
+/* single line ad */
+    /* indented ad */
+/* x */ nop
+/* a */ /* b ad */
+/*
+ ad
+*/
+addi a0, a1, 1 /* ad */
+// ad
+# ad
+/* x */ 
+";
+    client.open_doc(&uri, 1, src);
+
+    for (line, ch, desc) in [
+        (0, 17, "col 0 block comment"),
+        (1, 18, "indented block comment"),
+        (3, 15, "second block comment"),
+        (5, 3, "multiline block comment"),
+        (7, 20, "trailing block comment"),
+        (8, 5, "// comment"),
+        (9, 4, "# comment"),
+    ] {
+        let resp = client.send_request(
+            "textDocument/completion",
+            json!({
+                "textDocument": { "uri": uri.as_str() },
+                "position": { "line": line, "character": ch }
+            }),
+        );
+        assert!(
+            completion_items_vec(&resp.result).is_empty(),
+            "expected 0 completion items in {desc}"
+        );
+    }
+
+    let nop_resp = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 2, "character": 11 }
+        }),
+    );
+    assert!(
+        completion_labels(&nop_resp.result)
+            .iter()
+            .any(|l| l == "nop"),
+        "expected completion after /* x */ nop"
+    );
+
+    let space_resp = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 10, "character": 8 }
+        }),
+    );
+    assert!(
+        completion_labels(&space_resp.result)
+            .iter()
+            .any(|l| l == "addi"),
+        "expected statement-start completion after /* x */ "
+    );
 
     client.shutdown_and_exit();
 }

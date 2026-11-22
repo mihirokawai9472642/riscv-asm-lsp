@@ -15,7 +15,8 @@ use super::snippets::{
     trailing_operand_sep, variant_slot_count,
 };
 use super::{
-    CompletionClientCaps, MAX_SYMBOL_CANDIDATES, make_item_with_data, make_rich_item, match_rank,
+    CompletionClientCaps, MAX_SYMBOL_CANDIDATES, RichItemSpec, make_item_with_data, make_rich_item,
+    match_rank,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,44 +57,40 @@ pub(super) fn serialize_payload(payload: &ResolvePayload) -> Option<serde_json::
 pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Option<Documentation> {
     let data = item.data.as_ref()?;
     let payload: ResolvePayload = serde_json::from_value(data.clone()).ok()?;
+    let default_march = MarchSpec::parse("rv64gc");
     match payload {
         ResolvePayload::Inst { m, s } => {
             let inst = db.instruction(&m)?;
-            format_instruction_doc(
+            let md = crate::hover::format_instruction_completion_doc(
+                inst,
+                &default_march,
+                db,
                 s.as_deref(),
-                inst.long_name.as_deref(),
-                inst.description.as_deref(),
-                inst.deprecated,
-                inst.preferred_name.as_deref(),
-            )
+            );
+            Some(markdown_doc(md))
         }
         ResolvePayload::Dir { n } => {
             let dir = db.directive(&n)?;
-            Some(Documentation::String(dir.description.clone()))
+            Some(markdown_doc(crate::hover::format_directive_hover(dir)))
         }
         ResolvePayload::Reg { n } => {
             let reg = db.register(&n)?;
-            reg.description.clone().map(Documentation::String)
+            Some(markdown_doc(crate::hover::format_register_hover(reg)))
         }
         ResolvePayload::Csr { n } => {
             let csr = db.csr(&n)?;
-            if let Some(desc) = &csr.description {
-                Some(Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: desc.clone(),
-                }))
-            } else {
-                Some(Documentation::String(format_csr_detail(csr)))
-            }
+            Some(markdown_doc(crate::hover::format_csr_hover(csr)))
         }
         ResolvePayload::Opt { n } => OPTION_SUBCOMMANDS
             .iter()
             .find(|(name, _)| *name == n)
             .map(|(_, desc)| Documentation::String((*desc).to_owned())),
-        ResolvePayload::Reloc { n } => RELOCATION_FUNCTIONS
+        ResolvePayload::Reloc { n } => db
+            .texts
+            .relocations
             .iter()
-            .find(|(name, _)| *name == n)
-            .map(|(_, desc)| Documentation::String((*desc).to_owned())),
+            .find(|r| r.label == n)
+            .map(|r| Documentation::String(r.description.clone())),
         ResolvePayload::Frm { n } => ROUNDING_MODES
             .iter()
             .find(|(name, _)| *name == n)
@@ -103,6 +100,13 @@ pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Opt
             .find(|(name, _)| *name == n)
             .map(|(_, desc)| Documentation::String((*desc).to_owned())),
     }
+}
+
+fn markdown_doc(value: String) -> Documentation {
+    Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value,
+    })
 }
 
 pub(super) const OPTION_SUBCOMMANDS: &[(&str, &str)] = &[
@@ -118,23 +122,6 @@ pub(super) const OPTION_SUBCOMMANDS: &[(&str, &str)] = &[
     (
         "exact",
         "Assemble instructions exactly as written without relaxation",
-    ),
-];
-
-const RELOCATION_FUNCTIONS: &[(&str, &str)] = &[
-    ("%hi(", "Bits [31:12] of absolute symbol address"),
-    ("%lo(", "Bits [11:0] of absolute symbol address"),
-    ("%pcrel_hi(", "Bits [31:12] of PC-relative symbol address"),
-    (
-        "%pcrel_lo(",
-        "Bits [11:0] offset referencing the matching %pcrel_hi label",
-    ),
-    ("%tprel_hi(", "Bits [31:12] of TLS local-exec offset"),
-    ("%tprel_lo(", "Bits [11:0] of TLS local-exec offset"),
-    ("%tprel_add(", "TLS tp-relative add relocation annotation"),
-    (
-        "%got_pcrel_hi(",
-        "Bits [31:12] of PC-relative GOT entry address",
     ),
 ];
 
@@ -215,26 +202,24 @@ pub(super) fn collect_instruction_completions(
                 s: None,
             });
             let sort = format!("{rank}_{cat_tier}_{}", inst.mnemonic);
-            items.push(make_rich_item(
-                inst.mnemonic.clone(),
-                inst.mnemonic.clone(),
+            items.push(make_rich_item(RichItemSpec {
+                label: inst.mnemonic.clone(),
+                filter_text: inst.mnemonic.clone(),
                 new_text,
                 kind,
                 detail,
                 tags,
                 data,
-                Some(InsertTextFormat::PLAIN_TEXT),
-                sort,
+                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                sort_text: sort,
                 replace_range,
-            ));
+            }));
             continue;
         }
 
         for (idx, v) in unique_variants.drain(..).enumerate() {
             let args_str = syntax_args(&inst.mnemonic, &v.syntax);
             let (new_text, format) = build_instruction_snippet(&inst.mnemonic, args_str, v);
-            // Put operand syntax in `label` so variants are distinct in Zed (`ld rd, imm12(rs1)`),
-            // keep the mnemonic in `filterText`, and keep the long name in `detail` (Item 4c).
             let label = v.syntax.clone();
             let detail = inst.long_name.clone();
             let data = serialize_payload(&ResolvePayload::Inst {
@@ -243,72 +228,20 @@ pub(super) fn collect_instruction_completions(
             });
             let sort = format!("{rank}_{cat_tier}_{}_{idx:02}", inst.mnemonic);
 
-            items.push(make_rich_item(
+            items.push(make_rich_item(RichItemSpec {
                 label,
-                inst.mnemonic.clone(),
+                filter_text: inst.mnemonic.clone(),
                 new_text,
                 kind,
                 detail,
-                tags.clone(),
+                tags: tags.clone(),
                 data,
-                Some(format),
-                sort,
+                insert_text_format: Some(format),
+                sort_text: sort,
                 replace_range,
-            ));
+            }));
         }
     }
-}
-
-fn format_instruction_doc(
-    variant_syntax: Option<&str>,
-    long_name: Option<&str>,
-    desc: Option<&str>,
-    deprecated: bool,
-    preferred_name: Option<&str>,
-) -> Option<Documentation> {
-    let mut parts = Vec::new();
-    if let Some(syn) = variant_syntax {
-        parts.push(format!("```riscv\n{syn}\n```"));
-    }
-    if let Some(ln) = long_name {
-        parts.push(format!("**{ln}**"));
-    }
-    if deprecated {
-        if let Some(pref) = preferred_name {
-            parts.push(format!("> Deprecated — prefer `{pref}`."));
-        } else {
-            parts.push("> Deprecated.".to_owned());
-        }
-    }
-    if let Some(d) = desc.map(first_sentence).filter(|s| !s.is_empty()) {
-        parts.push(d);
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(Documentation::MarkupContent(MarkupContent {
-        kind: MarkupKind::Markdown,
-        value: parts.join("\n\n"),
-    }))
-}
-
-fn first_sentence(desc: &str) -> String {
-    let para = desc.split("\n\n").next().unwrap_or(desc).trim();
-    let mut in_tick = false;
-    for (idx, ch) in para.char_indices() {
-        if ch == '`' {
-            in_tick = !in_tick;
-        } else if ch == '.' && !in_tick {
-            let next_ok = para[idx + 1..]
-                .chars()
-                .next()
-                .is_none_or(char::is_whitespace);
-            if next_ok {
-                return para[..=idx].replace('\n', " ");
-            }
-        }
-    }
-    para.replace('\n', " ")
 }
 
 pub(super) fn collect_directive_completions(
@@ -324,42 +257,41 @@ pub(super) fn collect_directive_completions(
             continue;
         }
         let rank = match_rank(&dir.name, typed_lower);
-
         let dir_data = serialize_payload(&ResolvePayload::Dir {
             n: dir.name.clone(),
         });
 
         if caps.snippet_support && dir.name == ".option" {
-            items.push(make_rich_item(
-                ".option push ... pop".to_owned(),
-                ".option".to_owned(),
-                ".option push\n.option ${1:norvc}\n$0\n.option pop".to_owned(),
-                CompletionItemKind::SNIPPET,
-                None,
-                None,
-                dir_data.clone(),
-                Some(InsertTextFormat::SNIPPET),
-                format!("{rank}_2_.option_0"),
+            items.push(make_rich_item(RichItemSpec {
+                label: ".option push ... pop".to_owned(),
+                filter_text: ".option".to_owned(),
+                new_text: ".option push\n.option ${1:norvc}\n$0\n.option pop".to_owned(),
+                kind: CompletionItemKind::SNIPPET,
+                detail: None,
+                tags: None,
+                data: dir_data.clone(),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                sort_text: format!("{rank}_2_.option_0"),
                 replace_range,
-            ));
+            }));
 
             let inline_text = if next_is_ws {
                 ".option".to_owned()
             } else {
                 ".option ".to_owned()
             };
-            items.push(make_rich_item(
-                ".option <opt>".to_owned(),
-                ".option".to_owned(),
-                inline_text,
-                CompletionItemKind::KEYWORD,
-                None,
-                None,
-                dir_data,
-                Some(InsertTextFormat::PLAIN_TEXT),
-                format!("{rank}_2_.option_1"),
+            items.push(make_rich_item(RichItemSpec {
+                label: ".option <opt>".to_owned(),
+                filter_text: ".option".to_owned(),
+                new_text: inline_text,
+                kind: CompletionItemKind::KEYWORD,
+                detail: None,
+                tags: None,
+                data: dir_data,
+                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                sort_text: format!("{rank}_2_.option_1"),
                 replace_range,
-            ));
+            }));
             continue;
         }
 
@@ -381,54 +313,173 @@ pub(super) fn collect_directive_completions(
         };
 
         let sort = format!("{rank}_2_{}", dir.name);
-        items.push(make_rich_item(
+        items.push(make_rich_item(RichItemSpec {
             label,
-            dir.name.clone(),
+            filter_text: dir.name.clone(),
             new_text,
-            CompletionItemKind::KEYWORD,
-            dir.arguments.clone(),
-            None,
-            dir_data,
-            Some(format),
-            sort,
+            kind: CompletionItemKind::KEYWORD,
+            detail: dir.arguments.clone(),
+            tags: None,
+            data: dir_data,
+            insert_text_format: Some(format),
+            sort_text: sort,
             replace_range,
-        ));
+        }));
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct OperandQuery<'a> {
+    pub db: &'a Database,
+    pub march: &'a MarchSpec,
+    pub mnemonic: &'a str,
+    pub operand_index: usize,
+    pub inside_parens: bool,
+    pub next_is_comma: bool,
+    pub visible_syms: &'a [CompletionSymbol],
+    pub in_macro_body: bool,
+    pub typed_lower: &'a str,
+    pub replace_range: Range,
+}
+
+#[derive(Default)]
+struct OperandDemand {
+    int_reg: bool,
+    float_reg: bool,
+    vec_reg: bool,
+    csr: bool,
+    symbol_or_reloc: bool,
+    frm: bool,
+    fence: bool,
+    vmask: bool,
+}
+
 pub(super) fn collect_operand_completions(
-    db: &Database,
-    march: &MarchSpec,
-    mnemonic: &str,
-    operand_index: usize,
-    inside_parens: bool,
-    next_is_comma: bool,
-    visible_syms: &[CompletionSymbol],
-    in_macro_body: bool,
-    typed_lower: &str,
-    replace_range: Range,
+    q: OperandQuery<'_>,
     items: &mut Vec<CompletionItem>,
     is_incomplete: &mut bool,
 ) {
-    let mut want_int = false;
-    let mut want_float = false;
-    let mut want_vec = false;
-    let mut want_csr = false;
-    let mut want_symbol_or_reloc = false;
-    let mut want_frm = false;
-    let mut want_fence = false;
-    let mut want_vmask = false;
-    let mut active_variants: Vec<&InstructionVariant> = Vec::new();
+    let (demand, active_variants) = infer_operand_demand(&q);
+    let sep_for = |hint: CandidateHint| {
+        trailing_operand_sep(
+            &active_variants,
+            q.mnemonic,
+            q.operand_index,
+            q.inside_parens,
+            q.next_is_comma,
+            hint,
+        )
+    };
 
-    if inside_parens {
-        want_int = true;
-        want_symbol_or_reloc = true;
-    } else if let Some(inst) = db.instruction(mnemonic) {
+    if demand.int_reg {
+        push_register_completions(
+            q.db,
+            RegisterClass::Integer,
+            q.typed_lower,
+            q.replace_range,
+            sep_for(CandidateHint::IntReg),
+            items,
+        );
+    }
+    if demand.float_reg {
+        push_register_completions(
+            q.db,
+            RegisterClass::Float,
+            q.typed_lower,
+            q.replace_range,
+            sep_for(CandidateHint::FloatReg),
+            items,
+        );
+    }
+    if demand.vec_reg {
+        push_register_completions(
+            q.db,
+            RegisterClass::Vector,
+            q.typed_lower,
+            q.replace_range,
+            sep_for(CandidateHint::VecReg),
+            items,
+        );
+    }
+    if demand.csr {
+        push_csr_completions(
+            q.db,
+            q.march,
+            q.typed_lower,
+            q.replace_range,
+            sep_for(CandidateHint::Csr),
+            items,
+        );
+    }
+    if demand.frm {
+        push_frm_completions(
+            q.typed_lower,
+            q.replace_range,
+            sep_for(CandidateHint::Frm),
+            items,
+        );
+    }
+    if demand.fence {
+        push_fence_completions(
+            q.typed_lower,
+            q.replace_range,
+            sep_for(CandidateHint::Fence),
+            items,
+        );
+    }
+    if demand.vmask {
+        let rank = match_rank("v0.t", q.typed_lower);
+        let vmask_sep = sep_for(CandidateHint::Vmask);
+        items.push(make_rich_item(RichItemSpec {
+            label: "v0.t".to_owned(),
+            filter_text: "v0.t".to_owned(),
+            new_text: format!("v0.t{vmask_sep}"),
+            kind: CompletionItemKind::VALUE,
+            detail: Some("vector mask register".to_owned()),
+            tags: None,
+            data: None,
+            insert_text_format: None,
+            sort_text: format!("{rank}_0_v0.t"),
+            replace_range: q.replace_range,
+        }));
+    }
+    if demand.symbol_or_reloc {
+        push_visible_symbol_completions(
+            &q,
+            sep_for(CandidateHint::SymbolOrImm),
+            items,
+            is_incomplete,
+        );
+        push_relocation_completions(q.db, q.typed_lower, q.replace_range, items);
+    }
+    if q.in_macro_body {
+        let param_sep = if active_variants.is_empty() {
+            ""
+        } else {
+            sep_for(CandidateHint::IntReg)
+        };
+        push_macro_param_completions(
+            q.visible_syms,
+            q.typed_lower,
+            q.replace_range,
+            param_sep,
+            items,
+        );
+    }
+}
+
+fn infer_operand_demand<'a>(
+    q: &'a OperandQuery<'a>,
+) -> (OperandDemand, Vec<&'a InstructionVariant>) {
+    let mut demand = OperandDemand::default();
+    let mut active_variants = Vec::new();
+    if q.inside_parens {
+        demand.int_reg = true;
+        demand.symbol_or_reloc = true;
+    } else if let Some(inst) = q.db.instruction(q.mnemonic) {
         let variants: Vec<_> = inst
             .variants
             .iter()
-            .filter(|v| march.supports_extensions(&v.required_extensions, v.xlen))
+            .filter(|v| q.march.supports_extensions(&v.required_extensions, v.xlen))
             .collect();
         active_variants = if variants.is_empty() {
             inst.variants.iter().collect()
@@ -438,228 +489,150 @@ pub(super) fn collect_operand_completions(
 
         let mut matched_any = false;
         for &v in &active_variants {
-            if let Some(op) = v.operands.get(operand_index) {
+            if let Some(op) = v.operands.get(q.operand_index) {
                 matched_any = true;
-                classify_operand_class(
-                    &op.class,
-                    &mut want_int,
-                    &mut want_float,
-                    &mut want_vec,
-                    &mut want_csr,
-                    &mut want_symbol_or_reloc,
-                    &mut want_frm,
-                    &mut want_fence,
-                    &mut want_vmask,
-                );
+                classify_operand_class(&op.class, &mut demand);
             }
         }
-        if !matched_any && operand_index == 0 {
-            want_int = true;
+        if !matched_any && q.operand_index == 0 {
+            demand.int_reg = true;
         }
     } else {
-        want_symbol_or_reloc = true;
-        if !mnemonic.starts_with('.') {
-            want_int = true;
+        demand.symbol_or_reloc = true;
+        if !q.mnemonic.starts_with('.') {
+            demand.int_reg = true;
         }
     }
+    (demand, active_variants)
+}
 
-    let sep_for = |hint: CandidateHint| {
-        trailing_operand_sep(
-            &active_variants,
-            mnemonic,
-            operand_index,
-            inside_parens,
-            next_is_comma,
-            hint,
-        )
-    };
+fn push_frm_completions(
+    typed_lower: &str,
+    replace_range: Range,
+    frm_sep: &str,
+    items: &mut Vec<CompletionItem>,
+) {
+    for (name, _) in ROUNDING_MODES {
+        let rank = match_rank(name, typed_lower);
+        items.push(make_rich_item(RichItemSpec {
+            label: (*name).to_owned(),
+            filter_text: (*name).to_owned(),
+            new_text: format!("{name}{frm_sep}"),
+            kind: CompletionItemKind::ENUM_MEMBER,
+            detail: Some("rounding mode".to_owned()),
+            tags: None,
+            data: serialize_payload(&ResolvePayload::Frm {
+                n: (*name).to_owned(),
+            }),
+            insert_text_format: None,
+            sort_text: format!("{rank}_0_{name}"),
+            replace_range,
+        }));
+    }
+}
 
-    if want_int {
-        push_register_completions(
-            db,
-            RegisterClass::Integer,
-            typed_lower,
+fn push_fence_completions(
+    typed_lower: &str,
+    replace_range: Range,
+    fence_sep: &str,
+    items: &mut Vec<CompletionItem>,
+) {
+    for (name, _) in FENCE_ARGS {
+        let rank = match_rank(name, typed_lower);
+        items.push(make_rich_item(RichItemSpec {
+            label: (*name).to_owned(),
+            filter_text: (*name).to_owned(),
+            new_text: format!("{name}{fence_sep}"),
+            kind: CompletionItemKind::ENUM_MEMBER,
+            detail: Some("fence ordering".to_owned()),
+            tags: None,
+            data: serialize_payload(&ResolvePayload::Fence {
+                n: (*name).to_owned(),
+            }),
+            insert_text_format: None,
+            sort_text: format!("{rank}_0_{name}"),
             replace_range,
-            sep_for(CandidateHint::IntReg),
-            items,
-        );
+        }));
     }
-    if want_float {
-        push_register_completions(
-            db,
-            RegisterClass::Float,
-            typed_lower,
-            replace_range,
-            sep_for(CandidateHint::FloatReg),
-            items,
-        );
-    }
-    if want_vec {
-        push_register_completions(
-            db,
-            RegisterClass::Vector,
-            typed_lower,
-            replace_range,
-            sep_for(CandidateHint::VecReg),
-            items,
-        );
-    }
-    if want_csr {
-        push_csr_completions(
-            db,
-            march,
-            typed_lower,
-            replace_range,
-            sep_for(CandidateHint::Csr),
-            items,
-        );
-    }
-    if want_frm {
-        let frm_sep = sep_for(CandidateHint::Frm);
-        for (name, _) in ROUNDING_MODES {
-            let rank = match_rank(name, typed_lower);
-            items.push(make_rich_item(
-                (*name).to_owned(),
-                (*name).to_owned(),
-                format!("{name}{frm_sep}"),
-                CompletionItemKind::ENUM_MEMBER,
-                Some("rounding mode".to_owned()),
-                None,
-                serialize_payload(&ResolvePayload::Frm {
-                    n: (*name).to_owned(),
-                }),
-                None,
-                format!("{rank}_0_{name}"),
-                replace_range,
-            ));
+}
+
+fn push_visible_symbol_completions(
+    q: &OperandQuery<'_>,
+    sym_sep: &str,
+    items: &mut Vec<CompletionItem>,
+    is_incomplete: &mut bool,
+) {
+    let mut syms: Vec<&CompletionSymbol> = q
+        .visible_syms
+        .iter()
+        .filter(|s| s.kind != SymKind::MacroParam)
+        .collect();
+    if syms.len() > MAX_SYMBOL_CANDIDATES {
+        *is_incomplete = true;
+        if !q.typed_lower.is_empty() {
+            syms.retain(|s| s.name.to_ascii_lowercase().contains(q.typed_lower));
         }
+        syms.sort_by_key(|s| {
+            (
+                match_rank(&s.name, q.typed_lower),
+                s.name.to_ascii_lowercase(),
+            )
+        });
+        syms.truncate(MAX_SYMBOL_CANDIDATES);
     }
-    if want_fence {
-        let fence_sep = sep_for(CandidateHint::Fence);
-        for (name, _) in FENCE_ARGS {
-            let rank = match_rank(name, typed_lower);
-            items.push(make_rich_item(
-                (*name).to_owned(),
-                (*name).to_owned(),
-                format!("{name}{fence_sep}"),
-                CompletionItemKind::ENUM_MEMBER,
-                Some("fence ordering".to_owned()),
-                None,
-                serialize_payload(&ResolvePayload::Fence {
-                    n: (*name).to_owned(),
-                }),
-                None,
-                format!("{rank}_0_{name}"),
-                replace_range,
-            ));
-        }
-    }
-    if want_vmask {
-        let rank = match_rank("v0.t", typed_lower);
-        let vmask_sep = sep_for(CandidateHint::Vmask);
-        items.push(make_rich_item(
-            "v0.t".to_owned(),
-            "v0.t".to_owned(),
-            format!("v0.t{vmask_sep}"),
-            CompletionItemKind::VALUE,
-            Some("vector mask register".to_owned()),
-            None,
-            None,
-            None,
-            format!("{rank}_0_v0.t"),
-            replace_range,
-        ));
-    }
-    if want_symbol_or_reloc {
-        let sym_sep = sep_for(CandidateHint::SymbolOrImm);
-        let mut syms: Vec<&CompletionSymbol> = visible_syms
-            .iter()
-            .filter(|s| s.kind != SymKind::MacroParam)
-            .collect();
-        if syms.len() > MAX_SYMBOL_CANDIDATES {
-            *is_incomplete = true;
-            if !typed_lower.is_empty() {
-                syms.retain(|s| s.name.to_ascii_lowercase().contains(typed_lower));
-            }
-            syms.sort_by_key(|s| {
-                (
-                    match_rank(&s.name, typed_lower),
-                    s.name.to_ascii_lowercase(),
-                )
-            });
-            syms.truncate(MAX_SYMBOL_CANDIDATES);
-        }
-        for sym in syms {
-            let kind = match sym.kind {
-                SymKind::Equ | SymKind::Define => CompletionItemKind::CONSTANT,
-                _ => CompletionItemKind::REFERENCE,
-            };
-            let rank = match_rank(&sym.name, typed_lower);
-            let sort = format!("{rank}_2_{}", sym.name.to_ascii_lowercase());
-            items.push(make_rich_item(
-                sym.name.clone(),
-                sym.name.clone(),
-                format!("{}{sym_sep}", sym.name),
-                kind,
-                sym.detail.clone(),
-                None,
-                None,
-                None,
-                sort,
-                replace_range,
-            ));
-        }
-        push_relocation_completions(typed_lower, replace_range, items);
-    }
-    if in_macro_body {
-        let param_sep = if active_variants.is_empty() {
-            ""
-        } else {
-            sep_for(CandidateHint::IntReg)
+    for sym in syms {
+        let kind = match sym.kind {
+            SymKind::Equ | SymKind::Define => CompletionItemKind::CONSTANT,
+            _ => CompletionItemKind::REFERENCE,
         };
-        push_macro_param_completions(visible_syms, typed_lower, replace_range, param_sep, items);
+        let rank = match_rank(&sym.name, q.typed_lower);
+        let sort = format!("{rank}_2_{}", sym.name.to_ascii_lowercase());
+        items.push(make_rich_item(RichItemSpec {
+            label: sym.name.clone(),
+            filter_text: sym.name.clone(),
+            new_text: format!("{}{sym_sep}", sym.name),
+            kind,
+            detail: sym.detail.clone(),
+            tags: None,
+            data: None,
+            insert_text_format: None,
+            sort_text: sort,
+            replace_range: q.replace_range,
+        }));
     }
 }
 
 pub(super) fn operand_class_matches_hint(class: &str, hint: CandidateHint) -> bool {
-    let mut int = false;
-    let mut float = false;
-    let mut vec = false;
-    let mut csr = false;
-    let mut sym = false;
-    let mut frm = false;
-    let mut fence = false;
-    let mut vmask = false;
-    classify_operand_class(
-        class, &mut int, &mut float, &mut vec, &mut csr, &mut sym, &mut frm, &mut fence, &mut vmask,
-    );
+    let mut demand = OperandDemand::default();
+    classify_operand_class(class, &mut demand);
     match hint {
-        CandidateHint::IntReg => int,
-        CandidateHint::FloatReg => float,
-        CandidateHint::VecReg => vec,
-        CandidateHint::Csr => csr,
-        CandidateHint::Frm => frm,
-        CandidateHint::Fence => fence,
-        CandidateHint::Vmask => vmask,
-        CandidateHint::SymbolOrImm => sym,
+        CandidateHint::IntReg => demand.int_reg,
+        CandidateHint::FloatReg => demand.float_reg,
+        CandidateHint::VecReg => demand.vec_reg,
+        CandidateHint::Csr => demand.csr,
+        CandidateHint::Frm => demand.frm,
+        CandidateHint::Fence => demand.fence,
+        CandidateHint::Vmask => demand.vmask,
+        CandidateHint::SymbolOrImm => demand.symbol_or_reloc,
     }
 }
 
 pub(super) fn push_relocation_completions(
+    db: &Database,
     typed_lower: &str,
     replace_range: Range,
     items: &mut Vec<CompletionItem>,
 ) {
-    for &(reloc, _) in RELOCATION_FUNCTIONS {
-        let rank = match_rank(reloc, typed_lower);
+    for reloc in &db.texts.relocations {
+        let rank = match_rank(&reloc.label, typed_lower);
         items.push(make_item_with_data(
-            reloc.to_owned(),
+            reloc.label.clone(),
             CompletionItemKind::FUNCTION,
             Some("relocation modifier".to_owned()),
             serialize_payload(&ResolvePayload::Reloc {
-                n: reloc.to_owned(),
+                n: reloc.label.clone(),
             }),
-            format!("{rank}_3_{reloc}"),
+            format!("{rank}_3_{}", reloc.label),
             replace_range,
         ));
     }
@@ -675,58 +648,47 @@ pub(super) fn push_macro_param_completions(
     for sym in visible_syms {
         if sym.kind == SymKind::MacroParam {
             let rank = match_rank(&sym.name, typed_lower);
-            items.push(make_rich_item(
-                sym.name.clone(),
-                sym.name.clone(),
-                format!("{}{sep}", sym.name),
-                CompletionItemKind::VARIABLE,
-                Some("macro parameter".to_owned()),
-                None,
-                None,
-                None,
-                format!("{rank}_0_{}", sym.name),
+            items.push(make_rich_item(RichItemSpec {
+                label: sym.name.clone(),
+                filter_text: sym.name.clone(),
+                new_text: format!("{}{sep}", sym.name),
+                kind: CompletionItemKind::VARIABLE,
+                detail: Some("macro parameter".to_owned()),
+                tags: None,
+                data: None,
+                insert_text_format: None,
+                sort_text: format!("{rank}_0_{}", sym.name),
                 replace_range,
-            ));
+            }));
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn classify_operand_class(
-    class: &str,
-    want_int: &mut bool,
-    want_float: &mut bool,
-    want_vec: &mut bool,
-    want_csr: &mut bool,
-    want_symbol_or_reloc: &mut bool,
-    want_frm: &mut bool,
-    want_fence: &mut bool,
-    want_vmask: &mut bool,
-) {
+fn classify_operand_class(class: &str, demand: &mut OperandDemand) {
     if class == "csr_sysreg" {
-        *want_csr = true;
+        demand.csr = true;
     } else if class.starts_with("FPR") {
         if class.contains("INX") || class.contains("IN32X") {
-            *want_int = true;
+            demand.int_reg = true;
         } else {
-            *want_float = true;
+            demand.float_reg = true;
         }
     } else if class == "VMaskOp" {
-        *want_vmask = true;
+        demand.vmask = true;
     } else if class.starts_with("VR") {
-        *want_vec = true;
+        demand.vec_reg = true;
     } else if class.starts_with("GPR")
         || class.starts_with("SP")
         || class == "SR07"
         || class.starts_with("AnyReg")
     {
-        *want_int = true;
+        demand.int_reg = true;
     } else if class.starts_with("frmarg") {
-        *want_frm = true;
+        demand.frm = true;
     } else if class == "fencearg" {
-        *want_fence = true;
+        demand.fence = true;
     } else {
-        *want_symbol_or_reloc = true;
+        demand.symbol_or_reloc = true;
     }
 }
 
@@ -749,39 +711,35 @@ fn push_register_completions(
         for abi in &reg.abi_names {
             if seen.insert(abi.clone()) {
                 let rank = match_rank(abi, typed_lower);
-                items.push(make_rich_item(
-                    abi.clone(),
-                    abi.clone(),
-                    format!("{abi}{sep}"),
-                    CompletionItemKind::VARIABLE,
-                    Some(reg.name.clone()),
-                    None,
-                    reg_data.clone(),
-                    None,
-                    format!("{rank}_0_{:02}_{abi}", reg.number),
+                items.push(make_rich_item(RichItemSpec {
+                    label: abi.clone(),
+                    filter_text: abi.clone(),
+                    new_text: format!("{abi}{sep}"),
+                    kind: CompletionItemKind::VARIABLE,
+                    detail: Some(reg.name.clone()),
+                    tags: None,
+                    data: reg_data.clone(),
+                    insert_text_format: None,
+                    sort_text: format!("{rank}_0_{:02}_{abi}", reg.number),
                     replace_range,
-                ));
+                }));
             }
         }
         if seen.insert(reg.name.clone()) {
-            let detail = if reg.abi_names.is_empty() {
-                None
-            } else {
-                Some(reg.abi_names.join(", "))
-            };
+            let detail = (!reg.abi_names.is_empty()).then(|| reg.abi_names.join(", "));
             let rank = match_rank(&reg.name, typed_lower);
-            items.push(make_rich_item(
-                reg.name.clone(),
-                reg.name.clone(),
-                format!("{}{sep}", reg.name),
-                CompletionItemKind::VARIABLE,
+            items.push(make_rich_item(RichItemSpec {
+                label: reg.name.clone(),
+                filter_text: reg.name.clone(),
+                new_text: format!("{}{sep}", reg.name),
+                kind: CompletionItemKind::VARIABLE,
                 detail,
-                None,
-                reg_data,
-                None,
-                format!("{rank}_1_{:02}_{}", reg.number, reg.name),
+                tags: None,
+                data: reg_data,
+                insert_text_format: None,
+                sort_text: format!("{rank}_1_{:02}_{}", reg.number, reg.name),
                 replace_range,
-            ));
+            }));
         }
     }
 }
@@ -799,20 +757,20 @@ fn push_csr_completions(
             continue;
         }
         let rank = match_rank(&csr.name, typed_lower);
-        items.push(make_rich_item(
-            csr.name.clone(),
-            csr.name.clone(),
-            format!("{}{sep}", csr.name),
-            CompletionItemKind::CONSTANT,
-            Some(format_csr_detail(csr)),
-            None,
-            serialize_payload(&ResolvePayload::Csr {
+        items.push(make_rich_item(RichItemSpec {
+            label: csr.name.clone(),
+            filter_text: csr.name.clone(),
+            new_text: format!("{}{sep}", csr.name),
+            kind: CompletionItemKind::CONSTANT,
+            detail: Some(format_csr_detail(csr)),
+            tags: None,
+            data: serialize_payload(&ResolvePayload::Csr {
                 n: csr.name.clone(),
             }),
-            None,
-            format!("{rank}_0_{}", csr.name),
+            insert_text_format: None,
+            sort_text: format!("{rank}_0_{}", csr.name),
             replace_range,
-        ));
+        }));
     }
 }
 

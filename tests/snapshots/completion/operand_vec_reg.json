@@ -1,0 +1,229 @@
+{
+  "isIncomplete": false,
+  "items": [
+    {
+      "detail": null,
+      "documentation": "Register · Vector · caller-saved\n\n```riscv\nv0\n```\n\n---\n\nCaller-saved vector temporary register.",
+      "insertText": "v0, ",
+      "kind": 6,
+      "label": "v0"
+    },
+    {
+      "detail": null,
+      "documentation": "Register · Vector · caller-saved\n\n```riscv\nv1\n```\n\n---\n\nCaller-saved vector temporary register.",
+      "insertText": "v1, ",
+      "kind": 6,
+      "label": "v1"
+    },
+    {
+      "detail": null,
+      "documentation": "Register · Vector · caller-saved\n\n```riscv\nv2\n```\n\n---\n\nCaller-saved vector temporary register.",
+      "insertText": "v2, ",
+      "kind": 6,
+      "label": "v2"
+    },
+    {
+      "detail": null,
+      "documentation": "Register · Vector · caller-saved\n\n```riscv\nv3\n```\n\n---\n\nCaller-saved vector temporary register.",
+      "insertText": "v3, ",
+      "kind": 6,
+      "label": "v3"
+    },
+    {
+      "detail": null,
+      "documentation": "Register · Vector · caller-saved\n\n```riscv\nv4\n```\n\n---\n\nCaller-saved vector temporary register.",
+      "insertText": "v4, ",
+      "kind": 6,
+      "label": "v4"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v5, ",
+      "kind": 6,
+      "label": "v5"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v6, ",
+      "kind": 6,
+      "label": "v6"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v7, ",
+      "kind": 6,
+      "label": "v7"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v8, ",
+      "kind": 6,
+      "label": "v8"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v9, ",
+      "kind": 6,
+      "label": "v9"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v10, ",
+      "kind": 6,
+      "label": "v10"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v11, ",
+      "kind": 6,
+      "label": "v11"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v12, ",
+      "kind": 6,
+      "label": "v12"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v13, ",
+      "kind": 6,
+      "label": "v13"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v14, ",
+      "kind": 6,
+      "label": "v14"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v15, ",
+      "kind": 6,
+      "label": "v15"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v16, ",
+      "kind": 6,
+      "label": "v16"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v17, ",
+      "kind": 6,
+      "label": "v17"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v18, ",
+      "kind": 6,
+      "label": "v18"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v19, ",
+      "kind": 6,
+      "label": "v19"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v20, ",
+      "kind": 6,
+      "label": "v20"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v21, ",
+      "kind": 6,
+      "label": "v21"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v22, ",
+      "kind": 6,
+      "label": "v22"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v23, ",
+      "kind": 6,
+      "label": "v23"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v24, ",
+      "kind": 6,
+      "label": "v24"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v25, ",
+      "kind": 6,
+      "label": "v25"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v26, ",
+      "kind": 6,
+      "label": "v26"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v27, ",
+      "kind": 6,
+      "label": "v27"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v28, ",
+      "kind": 6,
+      "label": "v28"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v29, ",
+      "kind": 6,
+      "label": "v29"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v30, ",
+      "kind": 6,
+      "label": "v30"
+    },
+    {
+      "detail": null,
+      "documentation": null,
+      "insertText": "v31, ",
+      "kind": 6,
+      "label": "v31"
+    }
+  ]
+}

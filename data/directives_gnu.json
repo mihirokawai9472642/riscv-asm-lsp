@@ -426,6 +426,121 @@
       "name": ".tls_common",
       "arguments": "symbol, size[, alignment]",
       "description": "Declares a thread-local (TLS) common symbol of size bytes in .tbss."
+    },
+    {
+      "name": ".cfi_adjust_cfa_offset",
+      "arguments": "offset",
+      "description": "Modifies the current CFA offset by adding signed byte delta offset relative to the previous rule."
+    },
+    {
+      "name": ".cfi_escape",
+      "arguments": "expression[, ...]",
+      "description": "Appends raw DWARF CFA bytecode bytes directly into the current unwind instruction stream."
+    },
+    {
+      "name": ".cfi_lsda",
+      "arguments": "encoding[, symbol]",
+      "description": "Sets the DWARF pointer encoding and language-specific data area (LSDA) symbol for the current FDE."
+    },
+    {
+      "name": ".cfi_personality",
+      "arguments": "encoding[, symbol]",
+      "description": "Sets the DWARF pointer encoding and personality routine symbol for the current CIE."
+    },
+    {
+      "name": ".cfi_register",
+      "arguments": "register1, register2",
+      "description": "Records that the previous value of register1 is stored in register2."
+    },
+    {
+      "name": ".cfi_rel_offset",
+      "arguments": "register, offset",
+      "description": "Records that register is saved at CFA + offset, relative to the current CFA."
+    },
+    {
+      "name": ".cfi_return_column",
+      "arguments": "register",
+      "description": "Sets the DWARF return address column to register for the current frame description."
+    },
+    {
+      "name": ".cfi_same_value",
+      "arguments": "register",
+      "description": "Records that register currently holds the same value it had in the caller."
+    },
+    {
+      "name": ".cfi_sections",
+      "arguments": "section[, ...]",
+      "description": "Selects which unwind sections (such as .eh_frame or .debug_frame) subsequent CFI directives populate."
+    },
+    {
+      "name": ".cfi_signal_frame",
+      "arguments": null,
+      "description": "Marks the current FDE as a signal handler trampoline frame for stack unwinding."
+    },
+    {
+      "name": ".cfi_undefined",
+      "arguments": "register",
+      "description": "Marks register as having an undefined value that cannot be restored from the caller frame."
+    },
+    {
+      "name": ".cfi_window_save",
+      "arguments": null,
+      "description": "Records an architecture-specific bulk register window or callee-saved state save in DWARF unwind info."
+    },
+    {
+      "name": ".int",
+      "arguments": "expression[, ...]",
+      "description": "Emits one or more 32-bit integer values."
+    },
+    {
+      "name": ".weakref",
+      "arguments": "alias, target",
+      "description": "Creates a weak alias symbol that references target only if target is otherwise needed."
+    },
+    {
+      "name": ".line",
+      "arguments": "linenumber",
+      "description": "Sets the logical line number reported in assembler diagnostics and debug information."
+    },
+    {
+      "name": ".version",
+      "arguments": "\"string\"",
+      "description": "Emits an identification string into the .note section."
+    },
+    {
+      "name": ".dc",
+      "arguments": "expression[, ...]",
+      "description": "Defines one or more constant values (size suffix such as .b, .w, .l specifies element width)."
+    },
+    {
+      "name": ".dcb",
+      "arguments": "count[, value]",
+      "description": "Emits count repeated copies of value (size suffix specifies element width, default 0)."
+    },
+    {
+      "name": ".ds",
+      "arguments": "count[, value]",
+      "description": "Reserves a block of count zero-initialized elements (or filled with value) of the suffixed size."
+    },
+    {
+      "name": ".ifnotdef",
+      "arguments": "symbol",
+      "description": "Assembles the following block if symbol has not been defined yet."
+    },
+    {
+      "name": ".bundle_align_mode",
+      "arguments": "power",
+      "description": "Sets the instruction bundle alignment size to 2^power bytes for bundle-aligned emission."
+    },
+    {
+      "name": ".bundle_lock",
+      "arguments": "[align_to_end]",
+      "description": "Begins a group of instructions that must stay together within a single aligned bundle."
+    },
+    {
+      "name": ".bundle_unlock",
+      "arguments": null,
+      "description": "Ends a .bundle_lock instruction group."
     }
   ]
 }

@@ -9,6 +9,13 @@ use crate::diagnostics::{DiagnosticsCache, StoredDiagnostic};
 use crate::document::Document;
 use crate::preprocessor::{classify_hash_line, hash_to_slash_replacement};
 
+fn single_file_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: Some(std::iter::once((uri.clone(), edits)).collect()),
+        ..WorkspaceEdit::default()
+    }
+}
+
 pub fn provide_code_actions(
     uri: &Uri,
     range: Range,
@@ -22,124 +29,139 @@ pub fn provide_code_actions(
         .and_then(|guard| guard.get(uri.as_str()).cloned())
         .unwrap_or_default();
     let mut actions = Vec::new();
-    let mut hash_diag_lines: Vec<u32> = Vec::new();
     let mut hash_diags_by_line: HashMap<u32, Vec<Diagnostic>> = HashMap::new();
-    let mut seen_hint_lines: HashSet<u32> = HashSet::new();
+    let mut hash_diag_lines = Vec::new();
+    let mut seen_hint_lines = HashSet::new();
 
     for item in &stored {
         if !ranges_overlap(item.diagnostic.range, range) {
             continue;
         }
-        for (idx, suggestion) in item.suggestions.iter().enumerate() {
-            #[allow(clippy::mutable_key_type)]
-            let mut changes = HashMap::new();
-            changes.insert(
-                uri.clone(),
-                vec![TextEdit {
-                    range: item.diagnostic.range,
-                    new_text: suggestion.clone(),
-                }],
-            );
-            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: format!("Replace with `{suggestion}`"),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![item.diagnostic.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..WorkspaceEdit::default()
-                }),
-                is_preferred: Some(idx == 0),
-                ..CodeAction::default()
-            }));
-        }
-
+        push_suggestion_actions(uri, item, &mut actions);
         if preprocessed && let Some(document) = doc {
-            let diag_line = item.diagnostic.range.start.line;
-            if is_hash_line(document, diag_line as usize) {
-                hash_diags_by_line
-                    .entry(diag_line)
-                    .or_insert_with(|| {
-                        hash_diag_lines.push(diag_line);
-                        Vec::new()
-                    })
-                    .push(item.diagnostic.clone());
-            }
-
-            for hint in &item.macro_def_hints {
-                if seen_hint_lines.insert(hint.def_line)
-                    && let Some(edit) = make_hash_to_slash_edit(document, hint.def_line as usize)
-                {
-                    #[allow(clippy::mutable_key_type)]
-                    let mut changes = HashMap::new();
-                    changes.insert(uri.clone(), vec![edit]);
-                    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                        title: format!(
-                            "Use `//` comment on line {} (defines `{}`)",
-                            hint.def_line + 1,
-                            hint.macro_name
-                        ),
-                        kind: Some(CodeActionKind::QUICKFIX),
-                        diagnostics: Some(vec![item.diagnostic.clone()]),
-                        edit: Some(WorkspaceEdit {
-                            changes: Some(changes),
-                            ..WorkspaceEdit::default()
-                        }),
-                        is_preferred: Some(false),
-                        ..CodeAction::default()
-                    }));
-                }
-            }
+            collect_hash_hints_for_item(
+                uri,
+                document,
+                item,
+                &mut hash_diags_by_line,
+                &mut hash_diag_lines,
+                &mut seen_hint_lines,
+                &mut actions,
+            );
         }
     }
 
     if preprocessed && let Some(document) = doc {
-        let mut quickfixed_lines: HashSet<u32> = HashSet::new();
-        for line in hash_diag_lines {
-            if let Some(edit) = make_hash_to_slash_edit(document, line as usize)
-                && let Some(diags) = hash_diags_by_line.remove(&line)
-            {
-                quickfixed_lines.insert(line);
-                #[allow(clippy::mutable_key_type)]
-                let mut changes = HashMap::new();
-                changes.insert(uri.clone(), vec![edit]);
-                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: "Use `//` comment".to_owned(),
-                    kind: Some(CodeActionKind::QUICKFIX),
-                    diagnostics: Some(diags),
-                    edit: Some(WorkspaceEdit {
-                        changes: Some(changes),
-                        ..WorkspaceEdit::default()
-                    }),
-                    is_preferred: Some(true),
-                    ..CodeAction::default()
-                }));
-            }
-        }
+        push_hash_comment_actions(
+            uri,
+            document,
+            range,
+            hash_diag_lines,
+            &mut hash_diags_by_line,
+            &mut actions,
+        );
+    }
 
-        let cursor_line = range.start.line;
-        if !quickfixed_lines.contains(&cursor_line)
-            && let Some(edit) = make_hash_to_slash_edit(document, cursor_line as usize)
+    (!actions.is_empty()).then_some(actions)
+}
+
+fn push_suggestion_actions(
+    uri: &Uri,
+    item: &StoredDiagnostic,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    for (idx, suggestion) in item.suggestions.iter().enumerate() {
+        let edit = TextEdit {
+            range: item.diagnostic.range,
+            new_text: suggestion.clone(),
+        };
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("Replace with `{suggestion}`"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: Some(vec![item.diagnostic.clone()]),
+            edit: Some(single_file_edit(uri, vec![edit])),
+            is_preferred: Some(idx == 0),
+            ..CodeAction::default()
+        }));
+    }
+}
+
+fn collect_hash_hints_for_item(
+    uri: &Uri,
+    document: &Document,
+    item: &StoredDiagnostic,
+    hash_diags_by_line: &mut HashMap<u32, Vec<Diagnostic>>,
+    hash_diag_lines: &mut Vec<u32>,
+    seen_hint_lines: &mut HashSet<u32>,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let diag_line = item.diagnostic.range.start.line;
+    if is_hash_line(document, diag_line as usize) {
+        hash_diags_by_line
+            .entry(diag_line)
+            .or_insert_with(|| {
+                hash_diag_lines.push(diag_line);
+                Vec::new()
+            })
+            .push(item.diagnostic.clone());
+    }
+
+    for hint in &item.macro_def_hints {
+        if seen_hint_lines.insert(hint.def_line)
+            && let Some(edit) = make_hash_to_slash_edit(document, hint.def_line as usize)
         {
-            #[allow(clippy::mutable_key_type)]
-            let mut changes = HashMap::new();
-            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!(
+                    "Use `//` comment on line {} (defines `{}`)",
+                    hint.def_line + 1,
+                    hint.macro_name
+                ),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(vec![item.diagnostic.clone()]),
+                edit: Some(single_file_edit(uri, vec![edit])),
+                is_preferred: Some(false),
+                ..CodeAction::default()
+            }));
+        }
+    }
+}
+
+fn push_hash_comment_actions(
+    uri: &Uri,
+    document: &Document,
+    range: Range,
+    hash_diag_lines: Vec<u32>,
+    hash_diags_by_line: &mut HashMap<u32, Vec<Diagnostic>>,
+    actions: &mut Vec<CodeActionOrCommand>,
+) {
+    let mut quickfixed_lines = HashSet::new();
+    for line in hash_diag_lines {
+        if let Some(edit) = make_hash_to_slash_edit(document, line as usize)
+            && let Some(diags) = hash_diags_by_line.remove(&line)
+        {
+            quickfixed_lines.insert(line);
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "Use `//` comment".to_owned(),
-                kind: Some(CodeActionKind::REFACTOR_REWRITE),
-                diagnostics: None,
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..WorkspaceEdit::default()
-                }),
+                kind: Some(CodeActionKind::QUICKFIX),
+                diagnostics: Some(diags),
+                edit: Some(single_file_edit(uri, vec![edit])),
+                is_preferred: Some(true),
                 ..CodeAction::default()
             }));
         }
     }
 
-    if actions.is_empty() {
-        None
-    } else {
-        Some(actions)
+    let cursor_line = range.start.line;
+    if !quickfixed_lines.contains(&cursor_line)
+        && let Some(edit) = make_hash_to_slash_edit(document, cursor_line as usize)
+    {
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Use `//` comment".to_owned(),
+            kind: Some(CodeActionKind::REFACTOR_REWRITE),
+            diagnostics: None,
+            edit: Some(single_file_edit(uri, vec![edit])),
+            ..CodeAction::default()
+        }));
     }
 }
 

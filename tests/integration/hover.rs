@@ -54,15 +54,13 @@ fn hover_include_layouts_base_isa_and_march_disabled() {
         "expected resolved regs.h path in hover: {inc_hover}"
     );
 
-    // Base ISA (`addi` -> `I`, `ld` -> `RV64I`) + E1 structured compact layout
+    // Base ISA (`addi` -> `I`, `ld` -> `RV64I`) + redesigned structured layout
     let addi_hover = hover_markdown(&mut client, &kernel_uri, 28, 4).expect("addi hover");
     assert!(
-        addi_hover.starts_with("```riscv\naddi rd, rs1, imm12"),
-        "expected syntax fence first: {addi_hover}"
-    );
-    assert!(
-        addi_hover.contains("**Add immediate**") && addi_hover.contains("`I` · RV32/RV64"),
-        "expected base ISA `I` and RV32/RV64: {addi_hover}"
+        addi_hover.contains("Instruction · Add immediate · `I` · RV32/RV64")
+            && addi_hover.contains("```riscv\naddi rd, rs1, imm12")
+            && addi_hover.contains("Operands:"),
+        "expected structured addi hover: {addi_hover}"
     );
     assert!(!addi_hover.contains("Spec syntax"));
     assert!(!addi_hover.contains("*Source:"));
@@ -73,38 +71,43 @@ fn hover_include_layouts_base_isa_and_march_disabled() {
         "expected RV64I base: {ld_hover}"
     );
     assert!(
-        !ld_hover.contains("alias of `ld`"),
+        !ld_hover.contains("Alias of: `ld`"),
         "unexpected self-alias in ld hover: {ld_hover}"
     );
 
-    // Alias, pseudo, CSR (bullet list), register (1-line), directive, and project symbol
+    // Alias, pseudo, CSR (bullet list), register, directive, and project symbol
     let csrw_hover = hover_markdown(&mut client, &kernel_uri, 16, 4).expect("csrw hover");
-    assert!(csrw_hover.contains("alias of `csrrw`"), "got: {csrw_hover}");
+    assert!(
+        csrw_hover.contains("Alias of: `csrrw`"),
+        "got: {csrw_hover}"
+    );
 
     let la_pseudo = hover_markdown(&mut client, &kernel_uri, 14, 4).expect("la pseudo");
-    assert!(la_pseudo.contains("pseudo-instruction"), "got: {la_pseudo}");
+    assert!(la_pseudo.contains("Pseudo-instruction"), "got: {la_pseudo}");
 
     let stvec_hover = hover_markdown(&mut client, &kernel_uri, 16, 10).expect("stvec hover");
-    assert!(stvec_hover.contains("`stvec` · 0x105 · S-mode"));
+    assert!(stvec_hover.contains("0x105 · S-mode") && stvec_hover.contains("stvec"));
     assert!(stvec_hover.contains("- `MODE` [1:0]"));
     assert!(!stvec_hover.contains("| Bits |"));
 
     let sp_hover = hover_markdown(&mut client, &kernel_uri, 14, 7).expect("sp hover");
     assert!(
-        !sp_hover.contains('\n'),
-        "register hover must be 1 line: {sp_hover}"
+        sp_hover.contains("Register · Integer · callee-saved") && sp_hover.contains("sp (x2)"),
+        "got: {sp_hover}"
     );
-    assert!(sp_hover.contains("`sp` (x2)") && sp_hover.contains("callee-saved"));
 
     let globl_hover = hover_markdown(&mut client, &kernel_uri, 10, 5).expect(".globl hover");
-    assert!(globl_hover.starts_with("```riscv\n.globl"));
+    assert!(
+        globl_hover.starts_with("Directive · GNU / LLVM\n\n```riscv\n.globl"),
+        "got: {globl_hover}"
+    );
     assert!(!globl_hover.contains("*Source:"));
 
     let sym_hover = hover_markdown(&mut client, &kernel_uri, 2, 6).expect("KERNEL_BASE hover");
     assert!(
-        sym_hover.contains("constant (.equ)")
+        sym_hover.contains("Constant (.equ)")
             && sym_hover.contains("kernel_entry.S:3")
-            && sym_hover.contains("0x80200000")
+            && sym_hover.contains("Value: `0x80200000`")
             && sym_hover.contains("```riscv"),
         "expected compact symbol hover: {sym_hover}"
     );
@@ -164,7 +167,7 @@ lbl_\\@:
 
     // Item 8: `.set` reassignment shows active value and multi-assignment notice
     let h_before = hover_markdown(&mut client, &uri, 1, 12).expect("CNT before");
-    assert!(h_before.contains("symbol (.set)"), "got: {h_before}");
+    assert!(h_before.contains("Symbol (.set)"), "got: {h_before}");
     assert!(h_before.contains("`1`"), "got: {h_before}");
     assert!(h_before.contains("Assigned 2 times"), "got: {h_before}");
 
@@ -173,19 +176,19 @@ lbl_\\@:
 
     let h_eq = hover_markdown(&mut client, &uri, 5, 12).expect("VAL =");
     assert!(
-        h_eq.contains("symbol (=)") && h_eq.contains("`10`"),
+        h_eq.contains("Symbol (=)") && h_eq.contains("`10`"),
         "got: {h_eq}"
     );
 
     // Item 9: numeric CSR operands resolve when in CSR operand position, not in `addi`
     let h_csr_hex = hover_markdown(&mut client, &uri, 6, 15).expect("0x105");
     assert!(
-        h_csr_hex.contains("`stvec`") && h_csr_hex.contains("0x105"),
+        h_csr_hex.contains("stvec") && h_csr_hex.contains("0x105"),
         "got: {h_csr_hex}"
     );
     let h_csr_dec = hover_markdown(&mut client, &uri, 7, 10).expect("261");
     assert!(
-        h_csr_dec.contains("`stvec`") && h_csr_dec.contains("0x105"),
+        h_csr_dec.contains("stvec") && h_csr_dec.contains("0x105"),
         "got: {h_csr_dec}"
     );
     assert!(hover_markdown(&mut client, &uri, 8, 21).is_none());
@@ -242,7 +245,7 @@ fn hover_llvm_mc_and_clang_expansions() {
     // Clean `la` expansion: filters `.Lpcrel_hi0:`, `.text`, `#   fixup`, uses `(relocated)`
     let la_hover = hover_markdown(&mut client, &kernel_uri, 14, 4).expect("la hover");
     let (_, exp_section) = la_hover
-        .split_once("**This line:**")
+        .split_once("This line:")
         .expect("this-line section");
     assert!(exp_section.contains("auipc"), "exp: {exp_section}");
     assert!(exp_section.contains("(relocated)"), "exp: {exp_section}");
@@ -266,7 +269,7 @@ fn hover_llvm_mc_and_clang_expansions() {
     // Compressed hex instruction word `0x1141`
     let addi_exp = hover_markdown(&mut client, &kernel_uri, 28, 4).expect("addi exp");
     assert!(
-        addi_exp.contains("**This line:** `c.addi sp, -16` · `0x1141`"),
+        addi_exp.contains("This line: `c.addi sp, -16` → `0x1141`"),
         "got: {addi_exp}"
     );
 
@@ -274,9 +277,7 @@ fn hover_llvm_mc_and_clang_expansions() {
     let opt_uri = path_to_uri(&fixtures.join("virtual_option_ret.S"));
     client.open_doc(&opt_uri, 1, ".option norvc\n.option rvc\n    ret\n");
     let ret_hover = hover_markdown(&mut client, &opt_uri, 2, 4).expect("ret hover");
-    let (_, ret_exp) = ret_hover
-        .split_once("**This line:**")
-        .expect("ret this-line");
+    let (_, ret_exp) = ret_hover.split_once("This line:").expect("ret this-line");
     assert!(
         ret_exp.contains("c.jr") || ret_exp.contains("jalr"),
         "got: {ret_exp}"
@@ -326,7 +327,7 @@ fn hover_llvm_mc_and_clang_expansions() {
     ] {
         let md = hover_markdown(&mut client, &exp_uri, line, 5).expect("hover");
         assert!(
-            md.contains("**This line:**") && md.contains(expected),
+            md.contains("This line:") && md.contains(expected),
             "line {line} missing {expected}: {md}"
         );
     }

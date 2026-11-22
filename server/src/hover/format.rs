@@ -3,62 +3,199 @@ use std::fmt::Write;
 
 use crate::context::MarchSpec;
 use crate::data::{
-    CsrEntry, DirectiveEntry, InstructionEntry, InstructionKind, RegisterEntry, Xlen,
+    CsrEntry, Database, DirectiveEntry, InstructionEntry, InstructionKind, InstructionVariant,
+    RegisterClass, RegisterEntry, Xlen,
 };
 use crate::index::{AssignKind, SymKind, SymbolHoverInfo};
 
-pub(super) fn format_instruction_hover(
+use super::operands::describe_operand_class;
+
+const MAX_SYNTAX_VARIANTS: usize = 3;
+const MAX_CSR_FIELDS: usize = 8;
+
+#[derive(Debug, Clone)]
+pub struct RenderedHoverParts {
+    pub context: String,
+    pub lang: &'static str,
+    pub code: String,
+    pub below_fence: Option<String>,
+    pub notices: Vec<String>,
+    pub facts: Vec<String>,
+    pub prose: Option<String>,
+}
+
+impl RenderedHoverParts {
+    pub fn render(&self) -> String {
+        let mut md = String::new();
+        let _ = write!(
+            md,
+            "{}\n\n```{}\n{}\n```",
+            self.context, self.lang, self.code
+        );
+        if let Some(below) = &self.below_fence {
+            let _ = write!(md, "\n{below}");
+        }
+        for notice in &self.notices {
+            let _ = write!(md, "\n\n> {notice}");
+        }
+        if !self.facts.is_empty() {
+            md.push_str("\n\n---\n\n");
+            for (idx, fact) in self.facts.iter().enumerate() {
+                if idx > 0 {
+                    let prev = &self.facts[idx - 1];
+                    if prev.contains('\n') || fact.contains('\n') {
+                        md.push_str("\n\n");
+                    } else {
+                        md.push_str("  \n");
+                    }
+                }
+                md.push_str(fact);
+            }
+        }
+        if let Some(prose) = &self.prose {
+            let trimmed = prose.trim();
+            if !trimmed.is_empty() {
+                let _ = write!(md, "\n\n---\n\n{trimmed}");
+            }
+        }
+        md.trim_end().to_owned()
+    }
+}
+
+pub(crate) fn build_instruction_hover_parts(
     inst: &InstructionEntry,
     effective_march: &MarchSpec,
     enabled_by_march: bool,
-) -> String {
-    let mut md = String::new();
+    db: &Database,
+    specific_syntax: Option<&str>,
+) -> RenderedHoverParts {
+    let variants_to_show = select_variants(inst, effective_march, specific_syntax);
+    let (code, below_fence) = collect_syntax_block(inst, &variants_to_show);
+    let context = format_instruction_context(inst, &variants_to_show);
 
+    let mut notices = Vec::new();
+    if !inst.llvm_supported {
+        notices.push("Not accepted by LLVM 19 (spec only).".to_owned());
+    } else if !enabled_by_march {
+        notices.push(format_march_disabled_notice(inst, effective_march));
+    }
+    if inst.deprecated {
+        if let Some(pref) = &inst.preferred_name {
+            notices.push(format!("Deprecated — prefer `{pref}`."));
+        } else {
+            notices.push("Deprecated.".to_owned());
+        }
+    }
+
+    let mut facts = Vec::new();
+    let aliases = collect_aliases(inst);
+    if !aliases.is_empty() {
+        let targets: Vec<String> = aliases.iter().map(|a| format!("`{a}`")).collect();
+        facts.push(format!("Alias of: {}", targets.join(", ")));
+    }
+    if let Some(op_fact) = format_operands_fact(&variants_to_show, db) {
+        facts.push(op_fact);
+    }
+
+    let prose = inst
+        .summary
+        .clone()
+        .or_else(|| {
+            inst.description
+                .as_deref()
+                .map(fallback_first_sentence)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            inst.llvm_supported
+                .then(|| "*No description in RISC-V specification.*".to_owned())
+        });
+
+    RenderedHoverParts {
+        context,
+        lang: "riscv",
+        code,
+        below_fence,
+        notices,
+        facts,
+        prose,
+    }
+}
+
+pub(crate) fn format_instruction_completion_doc(
+    inst: &InstructionEntry,
+    effective_march: &MarchSpec,
+    db: &Database,
+    specific_syntax: Option<&str>,
+) -> String {
+    build_instruction_hover_parts(inst, effective_march, true, db, specific_syntax).render()
+}
+
+fn select_variants<'a>(
+    inst: &'a InstructionEntry,
+    effective_march: &MarchSpec,
+    specific_syntax: Option<&str>,
+) -> Vec<&'a InstructionVariant> {
     let xlen_matching: Vec<_> = inst
         .variants
         .iter()
         .filter(|v| effective_march.supports_xlen(v.xlen))
         .collect();
-    let variants_to_show = if xlen_matching.is_empty() {
+    let pool: Vec<_> = if xlen_matching.is_empty() {
         inst.variants.iter().collect()
     } else {
         xlen_matching
     };
+    if let Some(target) = specific_syntax {
+        let norm_target = normalize_syntax(target);
+        let narrowed: Vec<_> = pool
+            .iter()
+            .copied()
+            .filter(|v| normalize_syntax(&v.syntax) == norm_target)
+            .collect();
+        if !narrowed.is_empty() {
+            return narrowed;
+        }
+    }
+    pool
+}
 
+fn collect_syntax_block(
+    inst: &InstructionEntry,
+    variants: &[&InstructionVariant],
+) -> (String, Option<String>) {
     let mut seen_syntax = HashSet::new();
     let mut unique_syntaxes = Vec::new();
-    for v in &variants_to_show {
+    for v in variants {
         let norm = normalize_syntax(&v.syntax);
         if seen_syntax.insert(norm) {
             unique_syntaxes.push(v.syntax.as_str());
         }
     }
     if unique_syntaxes.is_empty() {
-        let _ = writeln!(md, "```riscv\n{}\n```", inst.mnemonic);
-    } else {
-        let _ = writeln!(md, "```riscv");
-        for syn in &unique_syntaxes {
-            let _ = writeln!(md, "{syn}");
-        }
-        let _ = writeln!(md, "```");
+        return (inst.mnemonic.clone(), None);
     }
+    let total = unique_syntaxes.len();
+    let shown: Vec<&str> = unique_syntaxes
+        .into_iter()
+        .take(MAX_SYNTAX_VARIANTS)
+        .collect();
+    let below = (total > MAX_SYNTAX_VARIANTS)
+        .then(|| format!("*+{} more variants*", total - MAX_SYNTAX_VARIANTS));
+    (shown.join("\n"), below)
+}
 
-    // Filter out self-references (`ld` -> `ld`) and deduplicate targets.
-    let mut seen_aliases = HashSet::new();
-    let mut aliases = Vec::new();
-    for v in &inst.variants {
-        if let Some(alias) = v.alias_of.as_deref()
-            && !alias.eq_ignore_ascii_case(&inst.mnemonic)
-            && seen_aliases.insert(alias.to_ascii_lowercase())
-        {
-            aliases.push(alias);
-        }
-    }
+fn format_instruction_context(inst: &InstructionEntry, variants: &[&InstructionVariant]) -> String {
+    let kind_label = match inst.kind {
+        InstructionKind::Instruction => "Instruction",
+        InstructionKind::Alias => "Alias",
+        InstructionKind::Pseudo => "Pseudo-instruction",
+    };
 
     let mut exts = Vec::new();
     let mut has_rv32 = false;
     let mut has_rv64 = false;
-    for v in &variants_to_show {
+    for v in variants {
         for req in &v.required_extensions {
             let formatted = format_ext_req_inline(req);
             if !exts.contains(&formatted) {
@@ -75,87 +212,90 @@ pub(super) fn format_instruction_hover(
         }
     }
 
-    let mut meta = Vec::new();
-    if let Some(long_name) = &inst.long_name {
-        meta.push(format!("**{long_name}**"));
-    }
-    match inst.kind {
-        InstructionKind::Alias => {
-            if aliases.is_empty() {
-                meta.push("alias".to_owned());
-            } else {
-                let targets: Vec<String> = aliases.iter().map(|a| format!("`{a}`")).collect();
-                meta.push(format!("alias of {}", targets.join(", ")));
-            }
-        }
-        InstructionKind::Pseudo => {
-            if aliases.is_empty() {
-                meta.push("pseudo-instruction".to_owned());
-            } else {
-                let targets: Vec<String> = aliases.iter().map(|a| format!("`{a}`")).collect();
-                meta.push(format!(
-                    "pseudo-instruction · alias of {}",
-                    targets.join(", ")
-                ));
-            }
-        }
-        InstructionKind::Instruction => {
-            if inst.long_name.is_none() {
-                meta.push(format!("**`{}`**", inst.mnemonic));
-            }
-            if !aliases.is_empty() {
-                let targets: Vec<String> = aliases.iter().map(|a| format!("`{a}`")).collect();
-                meta.push(format!("alias of {}", targets.join(", ")));
-            }
-        }
-    }
-
     let xlen_label = match (has_rv32, has_rv64) {
         (true, false) => "RV32",
         (false, true) => "RV64",
         _ => "RV32/RV64",
     };
 
-    if exts.is_empty() {
+    let ext_part = if exts.is_empty() {
         let base_badge = match (has_rv32, has_rv64) {
             (true, false) => "RV32I",
             (false, true) => "RV64I",
             _ => "I",
         };
-        meta.push(format!("`{base_badge}`"));
+        format!("`{base_badge}`")
     } else {
-        let formatted: Vec<String> = exts.iter().map(|e| format!("`{e}`")).collect();
-        meta.push(formatted.join(", "));
+        exts.iter()
+            .map(|e| format!("`{e}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let mut meta = vec![kind_label.to_owned()];
+    if let Some(long_name) = &inst.long_name {
+        meta.push(long_name.clone());
     }
+    meta.push(ext_part);
     meta.push(xlen_label.to_owned());
-    let _ = writeln!(md, "{}", meta.join(" · "));
-
     if !inst.llvm_supported {
-        let _ = writeln!(md, "\n> Not accepted by LLVM 19 (spec only).");
-    } else if !enabled_by_march {
-        let notice = format_march_disabled_notice(inst, effective_march);
-        let _ = writeln!(md, "\n> {notice}");
+        meta.push("spec only".to_owned());
     }
+    meta.join(" · ")
+}
 
-    if inst.deprecated {
-        if let Some(pref) = &inst.preferred_name {
-            let _ = writeln!(md, "\n> Deprecated — prefer `{pref}`.");
-        } else {
-            let _ = writeln!(md, "\n> Deprecated.");
+fn collect_aliases(inst: &InstructionEntry) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    let mut aliases = Vec::new();
+    for v in &inst.variants {
+        if let Some(alias) = v.alias_of.as_deref()
+            && !alias.eq_ignore_ascii_case(&inst.mnemonic)
+            && seen.insert(alias.to_ascii_lowercase())
+        {
+            aliases.push(alias);
+        }
+    }
+    aliases
+}
+
+fn format_operands_fact(variants: &[&InstructionVariant], db: &Database) -> Option<String> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut seen_pair: HashSet<(String, String)> = HashSet::new();
+
+    for v in variants {
+        for op in &v.operands {
+            let Some(desc) = describe_operand_class(&op.class, db) else {
+                continue;
+            };
+            let pair_key = (op.name.clone(), desc.clone());
+            if !seen_pair.insert(pair_key) {
+                continue;
+            }
+            if let Some((_, names)) = groups.iter_mut().find(|(d, _)| *d == desc) {
+                names.push(op.name.clone());
+            } else {
+                groups.push((desc, vec![op.name.clone()]));
+            }
         }
     }
 
-    if let Some(desc) = &inst.description {
-        let first_para = desc.split("\n\n").next().unwrap_or(desc);
-        let flat = first_para.split_whitespace().collect::<Vec<_>>().join(" ");
-        if !flat.is_empty() {
-            let _ = writeln!(md, "\n{}", truncate_chars_ellipsis(&flat, 300));
-        }
-    } else if inst.llvm_supported {
-        let _ = writeln!(md, "\n*No description in RISC-V specification.*");
+    if groups.is_empty() {
+        return None;
     }
 
-    md.trim_end().to_owned()
+    let parts: Vec<String> = groups
+        .into_iter()
+        .take(5)
+        .map(|(desc, names)| {
+            let formatted_names = names
+                .into_iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{formatted_names} {desc}")
+        })
+        .collect();
+    Some(format!("Operands: {}", parts.join("; ")))
 }
 
 fn format_march_disabled_notice(inst: &InstructionEntry, effective_march: &MarchSpec) -> String {
@@ -229,132 +369,234 @@ fn normalize_syntax(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(super) fn format_csr_hover(csr: &CsrEntry) -> String {
-    let mut md = String::new();
-    let mut header = vec![format!("`{}`", csr.name), format!("0x{:03x}", csr.number)];
+pub(crate) fn format_csr_hover(csr: &CsrEntry) -> String {
+    let mut header = vec!["CSR".to_owned()];
+    if let Some(long_name) = csr
+        .description
+        .as_deref()
+        .and_then(extract_leading_bold_title)
+    {
+        header.push(long_name.to_owned());
+    }
+    header.push(format!("0x{:03x}", csr.number));
     if let Some(priv_label) = csr.privilege_label() {
         header.push(priv_label.to_owned());
     }
     if !csr.llvm_supported {
         header.push("spec only".to_owned());
     }
-    let _ = writeln!(md, "{}", header.join(" · "));
+    let context = header.join(" · ");
 
-    if let Some(desc) = &csr.description {
-        let summary = first_sentence_summary(desc);
-        if !summary.is_empty() {
-            let _ = writeln!(md, "\n{}", truncate_chars_ellipsis(&summary, 220));
-        }
-    } else if csr.llvm_supported {
-        let _ = writeln!(md, "\n*No description in RISC-V specification.*");
-    }
-
+    let mut facts = Vec::new();
     if !csr.fields.is_empty() {
-        md.push('\n');
-        for f in &csr.fields {
+        let mut list = String::from("Fields:\n");
+        let total = csr.fields.len();
+        for f in csr.fields.iter().take(MAX_CSR_FIELDS) {
             let bits = f.bits.replace('-', ":");
-            let summary = f
-                .description
+            let fsum = f
+                .summary
                 .as_deref()
-                .map(first_sentence_summary)
+                .map(str::to_owned)
+                .or_else(|| {
+                    f.description
+                        .as_deref()
+                        .map(fallback_first_sentence)
+                        .filter(|s| !s.is_empty())
+                })
                 .unwrap_or_default();
-            let truncated = truncate_chars_ellipsis(&summary, 80);
-            if truncated.is_empty() {
-                let _ = writeln!(md, "- `{}` [{bits}]", f.name);
+            if fsum.is_empty() {
+                let _ = writeln!(list, "- `{}` [{bits}]", f.name);
             } else {
-                let _ = writeln!(md, "- `{}` [{bits}] — {truncated}", f.name);
+                let _ = writeln!(list, "- `{}` [{bits}] — {fsum}", f.name);
             }
         }
+        if total > MAX_CSR_FIELDS {
+            let _ = writeln!(list, "- *+{} more fields*", total - MAX_CSR_FIELDS);
+        }
+        facts.push(list.trim_end().to_owned());
     }
 
-    md.trim_end().to_owned()
-}
-
-pub(super) fn format_register_hover(reg: &RegisterEntry) -> String {
-    let name_part = if reg.abi_names.is_empty() {
-        format!("`{}`", reg.name)
-    } else {
-        let abis = reg
-            .abi_names
-            .iter()
-            .map(|a| format!("`{a}`"))
-            .collect::<Vec<_>>()
-            .join(" / ");
-        format!("{abis} ({})", reg.name)
-    };
-
-    let role_part = reg
-        .description
-        .as_deref()
-        .map(first_sentence_summary)
-        .map(|s| s.trim_end_matches('.').to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            let cls = match reg.class {
-                crate::data::RegisterClass::Integer => "integer register",
-                crate::data::RegisterClass::Float => "floating-point register",
-                crate::data::RegisterClass::Vector => "vector register",
-            };
-            format!("{cls} #{}", reg.number)
+    let prose = csr
+        .summary
+        .clone()
+        .or_else(|| {
+            csr.description
+                .as_deref()
+                .map(fallback_first_sentence)
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            csr.llvm_supported
+                .then(|| "*No description in RISC-V specification.*".to_owned())
         });
 
-    let mut parts = vec![name_part, truncate_chars_ellipsis(&role_part, 100)];
+    RenderedHoverParts {
+        context,
+        lang: "riscv",
+        code: csr.name.clone(),
+        below_fence: None,
+        notices: Vec::new(),
+        facts,
+        prose,
+    }
+    .render()
+}
+
+pub(crate) fn format_register_hover(reg: &RegisterEntry) -> String {
+    let class_label = match reg.class {
+        RegisterClass::Integer => "Integer",
+        RegisterClass::Float => "Floating-point",
+        RegisterClass::Vector => "Vector",
+    };
+    let mut header = vec!["Register".to_owned(), class_label.to_owned()];
     if let Some(saver) = &reg.saver {
-        parts.push(saver.clone());
+        header.push(saver.clone());
     }
-    parts.join(" · ")
-}
+    let context = header.join(" · ");
 
-pub(super) fn format_directive_hover(dir: &DirectiveEntry) -> String {
-    let mut md = String::new();
-    if let Some(args) = &dir.arguments {
-        let _ = writeln!(md, "```riscv\n{} {args}\n```", dir.name);
+    let code = if reg.abi_names.is_empty() {
+        reg.name.clone()
     } else {
-        let _ = writeln!(md, "```riscv\n{}\n```", dir.name);
-    }
+        format!("{} ({})", reg.abi_names.join(" / "), reg.name)
+    };
 
+    let prose = reg
+        .summary
+        .clone()
+        .or_else(|| {
+            reg.description
+                .as_deref()
+                .map(fallback_first_sentence)
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "{} register #{}.",
+                class_label.to_ascii_lowercase(),
+                reg.number
+            )
+        });
+
+    RenderedHoverParts {
+        context,
+        lang: "riscv",
+        code,
+        below_fence: None,
+        notices: Vec::new(),
+        facts: Vec::new(),
+        prose: Some(prose),
+    }
+    .render()
+}
+
+pub(crate) fn format_directive_hover(dir: &DirectiveEntry) -> String {
+    let scope = if dir.llvm_supported {
+        "GNU / LLVM"
+    } else {
+        "GNU only"
+    };
+    let context = format!("Directive · {scope}");
+    let code = match &dir.arguments {
+        Some(args) => format!("{} {args}", dir.name),
+        None => dir.name.clone(),
+    };
+    let mut notices = Vec::new();
     if !dir.llvm_supported {
-        let _ = writeln!(
-            md,
-            "\n> Not accepted by LLVM 19 (GNU assembler / docs only)."
-        );
+        notices.push("Not accepted by LLVM 19 (GNU assembler / docs only).".to_owned());
     }
+    let prose = dir
+        .summary
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&dir.description);
 
-    let _ = writeln!(md, "\n{}", dir.description);
-    md.trim_end().to_owned()
+    RenderedHoverParts {
+        context,
+        lang: "riscv",
+        code,
+        below_fence: None,
+        notices,
+        facts: Vec::new(),
+        prose: Some(prose.to_owned()),
+    }
+    .render()
 }
 
-pub(super) fn format_cpp_directive_hover(name: &str) -> String {
-    let mut md = String::new();
-    let _ = writeln!(md, "```c\n#{name}\n```");
-    if let Some(desc) = crate::preprocessor::directive_description(name) {
-        let _ = writeln!(md, "\n{desc}");
+pub(crate) fn format_cpp_directive_hover(name: &str) -> String {
+    let code = format!("#{name}");
+    let desc = crate::preprocessor::directive_description(name).map(str::to_owned);
+    let notices = vec![
+        "In preprocessed assembly files, a `#` line starting with a directive name is handled by the C preprocessor, not treated as a comment. Use `//` for comments.".to_owned(),
+    ];
+    RenderedHoverParts {
+        context: "Preprocessor directive".to_owned(),
+        lang: "c",
+        code,
+        below_fence: None,
+        notices,
+        facts: Vec::new(),
+        prose: desc,
     }
-    let _ = writeln!(
-        md,
-        "\n> In preprocessed assembly files, a `#` line starting with a directive name is handled by the C preprocessor, not treated as a comment. Use `//` for comments."
-    );
-    md.trim_end().to_owned()
+    .render()
 }
 
-pub(super) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
-    let mut md = String::new();
+pub(crate) fn format_include_hover(target: &str, resolved: &str) -> String {
+    RenderedHoverParts {
+        context: "Include".to_owned(),
+        lang: "c",
+        code: format!("#include \"{target}\""),
+        below_fence: None,
+        notices: Vec::new(),
+        facts: vec![format!("Path: `{resolved}`")],
+        prose: None,
+    }
+    .render()
+}
+
+pub(crate) fn format_macro_counter_hover(db: &Database) -> String {
+    let mc = &db.texts.macro_counter;
+    let title = if mc.title.is_empty() {
+        "Macro invocation counter"
+    } else {
+        mc.title.as_str()
+    };
+    let sym = if mc.symbol.is_empty() {
+        "\\@"
+    } else {
+        mc.symbol.as_str()
+    };
+    RenderedHoverParts {
+        context: title.to_owned(),
+        lang: "riscv",
+        code: sym.to_owned(),
+        below_fence: None,
+        notices: Vec::new(),
+        facts: Vec::new(),
+        prose: (!mc.description.is_empty()).then(|| mc.description.clone()),
+    }
+    .render()
+}
+
+pub(crate) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
     let kind_label = match info.kind {
-        SymKind::Label => "label",
-        SymKind::LocalLabel => "local label",
-        SymKind::NumericLabel => "numeric label",
+        SymKind::Label => "Label",
+        SymKind::LocalLabel => "Local label",
+        SymKind::NumericLabel => "Numeric label",
         SymKind::Equ => match info.assign_kind {
-            Some(AssignKind::Set) => "symbol (.set)",
-            Some(AssignKind::Equals) => "symbol (=)",
-            Some(AssignKind::Equiv) => "constant (.equiv)",
-            Some(AssignKind::Equ) | None => "constant (.equ)",
+            Some(AssignKind::Set) => "Symbol (.set)",
+            Some(AssignKind::Equals) => "Symbol (=)",
+            Some(AssignKind::Equiv) => "Constant (.equiv)",
+            Some(AssignKind::Equ) | None => "Constant (.equ)",
         },
-        SymKind::Macro => "macro",
-        SymKind::MacroParam => info.param_label.as_deref().unwrap_or("macro parameter"),
+        SymKind::Macro => "Macro",
+        SymKind::MacroParam => match info.param_label.as_deref() {
+            Some("macro parameter") | None => "Macro parameter",
+            Some(other) => other,
+        },
         SymKind::Define => "#define",
     };
 
-    let mut header = vec![format!("`{}`", info.name), kind_label.to_owned()];
+    let mut header = vec![kind_label.to_owned()];
     if let Some(line) = info.target_line_1based {
         if let Some(uri) = &info.target_uri {
             let file_label = uri
@@ -367,24 +609,51 @@ pub(super) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
             header.push(format!("line {line}"));
         }
     }
-    if let Some(val) = &info.value {
-        header.push(format!("`{val}`"));
+    let context = header.join(" · ");
+
+    let mut notices = Vec::new();
+    if info.assignment_count > 1 {
+        notices.push(format!(
+            "Assigned {} times in scope; showing the assignment in effect here.",
+            info.assignment_count
+        ));
     }
 
-    let _ = writeln!(md, "{}", header.join(" · "));
-    let _ = writeln!(md, "\n```riscv\n{}\n```", info.def_line);
-    if info.assignment_count > 1 {
-        let _ = writeln!(
-            md,
-            "\n*Assigned {} times in scope; showing the assignment in effect here.*",
-            info.assignment_count
-        );
+    let mut facts = Vec::new();
+    if let Some(val) = &info.value {
+        facts.push(format!("Value: `{val}`"));
     }
-    md.trim_end().to_owned()
+
+    RenderedHoverParts {
+        context,
+        lang: "riscv",
+        code: info.def_line.clone(),
+        below_fence: None,
+        notices,
+        facts,
+        prose: None,
+    }
+    .render()
 }
 
-fn first_sentence_summary(desc: &str) -> String {
-    let first_para = desc.split("\n\n").next().unwrap_or(desc);
+fn extract_leading_bold_title(desc: &str) -> Option<&str> {
+    let first = desc.split("\n\n").next()?.trim();
+    let inner = first.strip_prefix("**")?.strip_suffix("**")?.trim();
+    if inner.is_empty() || inner.contains("**") || inner.contains('\n') {
+        None
+    } else {
+        Some(inner)
+    }
+}
+
+fn fallback_first_sentence(desc: &str) -> String {
+    let mut paragraphs = desc.split("\n\n").map(str::trim).filter(|p| !p.is_empty());
+    let mut first_para = paragraphs.next().unwrap_or(desc);
+    if extract_leading_bold_title(first_para).is_some()
+        && let Some(next) = paragraphs.next()
+    {
+        first_para = next;
+    }
     let flat = first_para.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut in_tick = false;
     for (idx, ch) in flat.char_indices() {
@@ -401,28 +670,4 @@ fn first_sentence_summary(desc: &str) -> String {
         }
     }
     flat
-}
-
-fn truncate_chars_ellipsis(s: &str, max_chars: usize) -> String {
-    let total = s.chars().count();
-    if total <= max_chars || max_chars == 0 {
-        return s.to_owned();
-    }
-    let cut_limit = max_chars.saturating_sub(1);
-    let mut end_idx = s.len();
-    for (count, (idx, _)) in s.char_indices().enumerate() {
-        if count >= cut_limit {
-            end_idx = idx;
-            break;
-        }
-    }
-    let slice = &s[..end_idx];
-    let trimmed = if let Some(ws) = slice.rfind(char::is_whitespace)
-        && ws > cut_limit / 2
-    {
-        &slice[..ws]
-    } else {
-        slice
-    };
-    format!("{}…", trimmed.trim_end())
 }

@@ -1,596 +1,300 @@
 # Design
 
-This document describes what riscv-asm-lsp is, how it is built, and the
-decisions behind it. It is the reference for implementation; when the code and
-this document disagree, fix one of them.
+This document describes what riscv-asm-lsp is, how it is structured, and the
+decisions behind it. It is the contributor reference for architecture and
+invariants; when code and documentation disagree, update one of them.
+
+See also:
+- [docs/features.md](features.md) for per-feature behaviour.
+- [docs/data.md](data.md) for instruction data sources and generation.
+- [docs/zed.md](zed.md) for the Zed extension.
 
 ## 1. Purpose
 
 riscv-asm-lsp (RISC-V Assembly Language Server) is a language server for
-RISC-V assembly written in the GNU assembler syntax, together with a Zed
-extension that uses it.
+RISC-V assembly written in the GNU assembler syntax, paired with a Zed editor
+extension.
 
-### 1.1 Background
+### 1.1 Motivation
 
-It replaces asm-lsp and its Zed extension (zed-asm) for RISC-V work. Testing
-them on a RISC-V kernel project showed problems that configuration cannot fix:
+Generic assembly language servers lack the RISC-V-specific knowledge needed in
+kernel, firmware and embedded projects:
 
-- Hover and completion know only base instructions and numbered registers:
-  nothing for ABI register names (`sp`, `a0`), pseudo-instructions (`la`,
-  `li`, `call`, `ret`), CSR instructions (`csrw`) or CSR names (`stvec`).
-- Go to definition finds only named labels in the current file: not numeric
-  labels (`1f`, `1b`), `.equ` symbols, macros, `#define`s or labels in other
-  files.
-- The server panics on positions inside multibyte characters (for example a
-  Japanese comment) or past the end of a line, because it treats UTF-16
-  columns as byte offsets.
-- Diagnostics run only on save, are one column off, and pull requests for
-  diagnostics are never answered.
-- The Zed extension has only a highlight query: no outline, bracket matching,
-  indentation rules or block comments.
-
-Both projects have had little maintenance activity recently, so fixes are not
-expected to arrive upstream soon.
+- Instruction sets vary by `-march` and `.option arch`; ABI register names
+  (`sp`, `a0`, ...), pseudo-instructions (`la`, `li`, `call`, `ret`), CSR
+  instructions (`csrw`, ...) and CSR names/fields (`stvec`, ...) need accurate,
+  architecture-aware lookup.
+- Assembly programs define labels, numeric labels (`1f`/`1b`), `.equ`/`.set`/`=`
+  constants, `.macro`/`.irp`/`.irpc` blocks and `#define`s across files and
+  included headers.
+- Clients send UTF-16 columns while assemblers report byte columns; handling
+  both cleanly without panicking on multibyte text or out-of-range positions is
+  essential.
+- Diagnostics belong on unsaved editor text as you type, aligned with what the
+  project's build toolchain actually accepts.
 
 ### 1.2 Goals
 
-- Accurate hover and completion for everything an assembler accepts: base and
-  extension instructions, aliases, pseudo-instructions, CSRs, registers by
-  number and ABI name, and directives.
-- Navigation for every kind of symbol an assembly program defines, across
-  files.
-- Diagnostics on unsaved text, at the right position.
-- Never crash, whatever the input or request.
-- A Zed extension with a RISC-V grammar and the usual editor features.
+- Accurate hover and completion for everything the LLVM RISC-V assembler
+  accepts: base and extension instructions, aliases, pseudo-instructions, CSRs,
+  registers by number and ABI name, and directives.
+- Cross-file navigation, rename and symbols for every kind of assembly symbol.
+- Unsaved-text diagnostics at the right line and UTF-16 range.
+- No panics on any input or LSP request.
+- A Zed extension with a RISC-V tree-sitter grammar and full editor support.
 
 ### 1.3 Non-goals
 
 - Architectures other than RISC-V.
-- Directives that only the GNU assembler supports (`.eqv`, `.func`,
-  `.float16`, listing directives). They are tolerated, not supported.
-- Full macro expansion or full C preprocessing (for example evaluating
-  `#ifdef`). Where real expansion matters, the server asks LLVM tools.
-- Protection against untrusted projects. The server runs commands built from
-  the project's compilation database, so it is meant for projects the user
-  trusts.
+- Directives that only GNU `as` accepts and LLVM rejects (for example `.eqv`,
+  `.func`, `.float16`, listing directives). They are tolerated in parsing but
+  are not treated as supported assembler directives.
+- Re-implementing full C preprocessing or conditional `#ifdef` evaluation; when
+  exact expansion or validation is needed, the server invokes LLVM tools.
+- Sandboxing against untrusted projects: the server builds `clang` and
+  `llvm-mc` invocations from `compile_commands.json` and is meant for trusted
+  workspaces.
 
 ### 1.4 Priorities
 
-1. Solve the problems above in the author's environment (Section 10).
-2. Later: run anywhere without that environment (Section 13.2), and possibly
-   publish the Zed extension to the Zed extension registry.
-
-Decisions that would make (2) hard are avoided from the start: external tool
-paths and the compilation database location are configurable, and neither the
-server nor the extension assumes Docker.
+1. Complete, reliable RISC-V assembly support matching LLVM 19.
+2. Clean, portable architecture: configurable tool paths and compilation
+   database lookup, without tying the server or extension to a particular container
+   or editor host setup.
 
 ## 2. Key decisions
 
 | Decision | Choice | Reason |
 | --- | --- | --- |
-| Scope | RISC-V only (RV32 and RV64) | A general assembly server needs data and grammars per architecture and is hard to maintain |
-| Syntax | GNU assembler syntax (`#` comments, `;` separators, `.` directives) | The syntax RISC-V code is written in; LLVM accepts the same syntax |
-| Reference implementation | The LLVM integrated assembler (clang, llvm-mc) | Results match the tools that build the code; diagnostics have columns; expansions and encodings are available; permissive license |
-| LLVM version | 19 (`llvmorg-19.1.7`) | Matches the author's toolchain (Debian trixie). Supporting several versions is left for later |
-| Language | Rust | Same language as the Zed extension; tree-sitter and LSP crates exist; ships as one binary |
-| Minimum Rust version | 1.90 (edition 2024) | Required by `tree-sitter` 0.27; checked by the `msrv` CI job |
-| Data generation | Rust (`xtask`) | One language in the repository |
-| Repository | Server, data and Zed extension in one repository | Versions stay in step; the Zed registry accepts extensions in a subdirectory |
-| License | MIT for the project's code; imported data keeps its own license | All dependencies and data are compatible with MIT distribution (Section 11) |
+| Scope | RISC-V only (RV32 and RV64) | Architecture-specific data, CSRs and grammar stay coherent and maintainable |
+| Syntax | GNU assembler syntax (`#` / `//` / `/* */` comments, `;` statements, `.` directives) | Standard syntax for RISC-V assembly; accepted by LLVM |
+| Reference implementation | LLVM integrated assembler (`clang`, `llvm-mc`) | Matches build diagnostics with column numbers, provides live expansions/encodings, permissive license |
+| Target LLVM version | 19 (`llvmorg-19.1.7`) | Pinned reference version; supporting multiple versions is future work |
+| Implementation language | Rust (edition 2024, MSRV 1.90) | Required by `tree-sitter` 0.27 (`msrv` CI check); shares ecosystem with `zed_extension_api` and ships one binary |
+| Data generation | Rust (`xtask`) | Single language in the repository |
+| Repository layout | Server, data, generator and Zed extension together | Versions and grammar queries stay in sync |
+| Licensing | MIT for project code; source licenses kept for embedded data | All dependencies and data sources permit distribution under `THIRD_PARTY_NOTICES.md` |
 
-Names:
+Canonical names:
 
-| Use | Name |
+| Role | Name |
 | --- | --- |
-| Repository, Cargo package, binary, server name in Zed settings | `riscv-asm-lsp` |
+| Repository, server crate, binary, Zed `lsp` key | `riscv-asm-lsp` |
 | Zed language name | `RISC-V Assembly` |
 | Zed extension ID | `riscv-assembly` |
 
 ## 3. Architecture
 
 ```text
-Zed ──LSP──> riscv-asm-lsp ──> embedded instruction data (data/riscv.json)
-                 │
-                 ├──> tree-sitter-riscv (parsing, symbol index)
-                 ├──> clang     (diagnostics, unsaved text via stdin)
-                 └──> llvm-mc   (expansion and encoding for hover)
+Editor ──LSP──> riscv-asm-lsp ──> embedded data (data/riscv.json, data/texts.json)
+                     │
+                     ├──> tree-sitter-riscv (parsing, AST traversal, symbol index)
+                     ├──> clang     (unsaved diagnostics via stdin)
+                     └──> llvm-mc   (hover expansion & encoding)
 ```
 
-The instruction data is generated ahead of time and embedded in the binary,
-so the server needs no network access and no data files at run time. clang
-and llvm-mc are optional: without them, diagnostics and expansions are off
-and everything else works.
+Instruction and reference text data is generated offline and embedded into the
+binary via `include_str!`, so runtime execution needs no network access or
+external data directory. `clang` and `llvm-mc` are optional: when either is
+missing or fails, only diagnostics or expansions degrade.
 
-Repository layout:
+### Repository layout
 
 | Path | Contents |
 | --- | --- |
-| `server/` | The language server crate (binary `riscv-asm-lsp`) |
-| `xtask/` | Data generation (`cargo xtask gen-data`) |
-| `data/` | Generated data, the difference report, hand-written directive descriptions, and `supplements.json` |
-| `zed/` | The Zed extension |
-| `tests/` | Integration tests and assembly fixtures |
-| `docs/` | This document |
-| `Dockerfile`, `compose.yaml` | The development container |
-| `THIRD_PARTY_NOTICES.md` | Attribution for imported data |
+| `server/` | Language server crate (`riscv-asm-lsp`) |
+| `xtask/` | Offline data generator (`cargo xtask gen-data`) |
+| `data/` | Generated `riscv.json` and `report.md`; hand-written `directives_gnu.json`, `supplements.json`, `texts.json` |
+| `zed/` | Zed extension (`wasm32-wasip2`, queries, `config.toml`) |
+| `tests/` | Integration tests, JSON-RPC client harness, fixtures, and `tests/snapshots/` |
+| `docs/` | Contributor and user documentation (`design.md`, `features.md`, `data.md`, `zed.md`) |
+| `Dockerfile`, `compose.yaml` | Optional development container with Rust and LLVM 19 |
+| `THIRD_PARTY_NOTICES.md` | Attribution and license notices |
 
-## 4. Instruction data
+### Crate module map
 
-### 4.1 Sources
+`server/src/`:
 
-The rule: **LLVM decides what exists; documentation supplies descriptions.**
-
-| Information | Source | License |
-| --- | --- | --- |
-| Instructions, aliases and pseudo-instructions the assembler accepts; their syntax, operand classes and required extensions | LLVM TableGen (`llvm-tblgen --dump-json`) | Apache-2.0 WITH LLVM-exception |
-| CSR names, numbers, required extensions, deprecated names | LLVM TableGen (`SysReg`) | same |
-| Registers and ABI names | LLVM TableGen (`Register`, `AltNames`) | same |
-| Extensions and their names in `-march` | LLVM TableGen (`SubtargetFeature`), checked against `clang --print-supported-extensions` | same |
-| Instruction names, descriptions and assembly formats | riscv-unified-db (`spec/std/isa/inst/`) | BSD-3-Clause-Clear |
-| Single-instruction aliases (`mv`, `csrw`, `ret`, ...) | riscv-unified-db (`pseudoinstructions`) | same |
-| CSR descriptions and fields | riscv-unified-db (`spec/std/isa/csr/`) | same |
-| Register descriptions and calling convention | riscv-unified-db (`register_file/`) | same |
-| Expanding pseudo-instructions (`la`, `li`, `call`, `tail`, ...) | riscv-asm-manual (pseudoinstruction table) | CC-BY-4.0 |
-| RISC-V directives (about 45) | riscv-asm-manual (directive table) | CC-BY-4.0 |
-| Common GNU assembler directives (about 40: `.rept`, `.if`, `.set`, `.include`, `.cfi_*`, ...) | Written for this project; the GNU as manual (GFDL) is not used | MIT |
-
-### 4.2 Pinned inputs
-
-| Input | Version |
+| Module | Responsibility |
 | --- | --- |
-| LLVM | Tag `llvmorg-19.1.7`; only the `.td` files under `llvm/include/llvm` and `llvm/lib/Target/RISCV` (about 4 MB, sparse checkout) |
-| riscv-unified-db | Commit `5d1ded1f93ab` (the project is under active development and its data format may change) |
-| riscv-asm-manual | Commit `27d6e9e67e6d` |
+| `main.rs`, `lib.rs` | Binary entrypoint and library exports |
+| `server.rs` | `ServerState`, LSP stdio lifecycle, typed request/notification dispatch and panic guard |
+| `config.rs` | `initializationOptions` parsing |
+| `data.rs` | Embedded `riscv.json` / `texts.json` structs and lookup indices |
+| `position.rs` | Incremental `LineIndex`, UTF-16 <-> UTF-8 byte offsets, `clang` column conversion |
+| `line.rs` | Shared line scanner for comments (`//`, `#`, `/* */`), strings, `;` statements and statement heads |
+| `preprocessor.rs` | Per-line C preprocessor directive classification and `#define`/`#include` parsing |
+| `ast.rs` | Shared `tree-sitter-riscv` AST visitor and classification helpers |
+| `document.rs` | Open document text store and incremental `tree-sitter` reparsing |
+| `context/` | `march.rs` (`MarchSpec`, `.option` tracking), `compile_db.rs` (`compile_commands.json`, linker-script filter), `uri.rs` (`url`-based symlink-preserving URIs) |
+| `index/` | Background workspace scanner (`mod.rs`), AST symbol extractor (`parse.rs`), lexical/macro/include scope resolver (`scope.rs`) |
+| `hover/` | Hover orchestration (`mod.rs`), `llvm-mc` expansion (`expand.rs`), operand-class decoder (`operands.rs`), shared Markdown renderer (`format.rs`) |
+| `completion/` | Position classification & text edits (`mod.rs`), candidate collection & lazy resolve (`candidates.rs`), snippet builder (`snippets.rs`) |
+| `navigation.rs` | Go to definition, find references, document highlight, prepare/execute rename |
+| `symbols.rs` | Document symbols (`DocumentSymbol`) and workspace symbols (`SymbolInformation`) |
+| `semantic_tokens.rs` | Full and range semantic token encoding (including `#` comment/preproc override) |
+| `diagnostics/` | Async debounced `DiagnosticsWorker` (`worker.rs`), `clang` runner (`clang.rs`), stderr/note/include parser (`parse.rs`), `#define` hints (`hints.rs`) |
+| `code_action.rs` | `did you mean` and `Use // comment` quick fixes and rewrite actions |
+| `tools.rs` | External process execution with timeouts and one-shot missing-tool warnings |
 
-Moving a pin means regenerating the data and reviewing the difference report.
+`xtask/src/`: `main.rs`, `pins.rs`, `fetch.rs`, `llvm.rs`, `udb.rs`, `asm_manual.rs`, `join.rs`, `report.rs`.
 
-### 4.3 Generation
+## 4. Server internals
 
-`cargo xtask gen-data` runs in the development container (it needs
-`llvm-tblgen`) and writes `data/riscv.json` and `data/report.md`. The output
-is committed, so building the server needs neither LLVM sources nor network
-access.
-
-1. Dump LLVM records to JSON (about 180 MB) and keep only what is needed:
-   - assembler-visible instructions: records with an `AsmString` that are not
-     `isCodeGenOnly` (pseudo records such as `la`, `li` and `call` count);
-   - `InstAlias`, `SysReg`, `Register` and `SubtargetFeature` records;
-   - drop records whose predicates mention a vendor extension
-     (`HasVendor...`).
-2. Read the riscv-unified-db YAML with `yaml_serde`. The files use no anchors,
-   merge keys or tags.
-   - Strip template markup (`<%- ... -%>`, in 34 instruction and 125 CSR
-     files) and AsciiDoc markup from descriptions.
-   - Decode HTML entities (`&ne;`, `&#8800;`, `&infin;`, `&pm;`, `&gt;`; 13
-     files).
-   - Ignore `$ref` (12 files, part of Zimop) until that extension matters.
-3. Parse the riscv-asm-manual tables (pseudo-instructions, directives).
-4. Read the hand-written directive and supplemental descriptions/corrections from `data/` (`directives_gnu.json`, `supplements.json`).
-5. Join by name, apply the rules in 4.5, and write the outputs.
-
-### 4.4 Data format
-
-`data/riscv.json` (about 1.8 MB compact JSON) holds:
-
-| Key | Entries |
+| Component | Key behaviour |
 | --- | --- |
-| `meta` | Versions of the pinned inputs |
-| `extensions` | Name as used in `-march`, LLVM feature name, description |
-| `instructions` | Mnemonic; kind (`instruction`, `alias`, `pseudo`); syntax with operand names and classes (for example `simm12`, `GPR`, `csr_sysreg`); required extensions; XLEN; long name; description; source of the description; for aliases, the instruction they stand for |
-| `csrs` | Name, number, privilege level, required extensions, fields, description, source of the description, deprecated names |
-| `registers` | Name, ABI names, class (integer, floating point, vector), description, who saves it in the calling convention |
-| `directives` | Name, arguments, description, source |
+| LSP layer | Synchronous `lsp-server` + `lsp-types`; advertises only implemented capabilities; typed dispatch via `ServerState::dispatch_typed` |
+| Documents | Incremental text sync updates text, `LineIndex`, and `tree-sitter` parse tree |
+| AST & Line Scanner | `line.rs` handles comments/statements uniformly across hover, completion, `.option` and code actions; `ast.rs` drives indexing and semantic tokens from one grammar walk |
+| Index | Background worker walks workspace via `ignore`, skipping hidden/ignored dirs, non-RISC-V assembly (e.g. Go Plan 9 prefix detection), and `*.lds.S`/`*.ld.S` linker script templates; prioritizes active project subtrees |
+| Tools | `ToolRunner` executes `clang` and `llvm-mc` via argument vectors (never through a shell) with timeouts |
 
-The exact schema is defined by the server's data types and may change freely
-while the project is young.
+### 4.1 Positions
 
-### 4.5 Differences between LLVM and the documentation
+Clients use UTF-16 code-unit columns while `clang` reports 1-based byte columns
+and internal Rust strings use UTF-8 byte offsets. `position.rs` converts at every
+boundary and clamps out-of-range lines/columns to valid UTF-8 character
+boundaries. `file://` URIs (including `file://localhost`, encoded characters,
+spaces/Unicode and symlinked workspaces) are converted using `url::Url`; paths are
+canonicalized only for internal map keys while LSP locations map back under the
+client's workspace root.
 
-Measured on 2026-11-22 (LLVM 19.1.7 against riscv-unified-db `5d1ded1f93ab`,
-vendor extensions excluded):
-
-| Comparison | Count | Main contents |
-| --- | --- | --- |
-| Mnemonics in both (including aliases and pseudo-instructions) | 1381 | |
-| Only in LLVM | 69 | `.insn` formats, hints such as `c.slli64`, aliases such as `fge`, `fgt`, `fabs.h`, and `call`, `frsr`, `fsflagsi` |
-| Only in riscv-unified-db | 99 | The Q extension (34; LLVM 19 does not support it), newer extensions (Zilx, Zvabd, ...), older names (`fmv.s.x`) |
-| rv64gc instructions in riscv-unified-db missing from LLVM | 0 | |
-| CSRs in both | 401 | |
-| CSRs only in LLVM | 26 | AIA (`stopi`, `stopei`, `mvien`, ...) |
-| CSRs only in riscv-unified-db | 16 | Smctr, Sdtrig (`tcontrol`), Smcntrpmf (`mcyclecfg`), ... |
-
-In everyday code (rv64gc, privileged instructions, common CSRs) the two
-agree. Mismatches are handled as follows:
-
-| Case | Behavior |
-| --- | --- |
-| In LLVM, with a description | Shown normally (UDB, manual, or MIT supplemental descriptions; upstream typos fixed in `xtask` and logged in `data/report.md`) |
-| Deprecated aliases (`frsr`, `vpopc.m`, ...) | Marked deprecated in hover (with preferred name) and completion (`DEPRECATED` tag, lower sort priority) |
-| Only in the documentation | Not offered in completion; hover says this LLVM version does not accept it |
-| Different names (deprecated, renamed) | Joined through LLVM's deprecated names; old names are marked |
-
-`data/report.md` lists every entry in each case (and applied corrections), so that a pin update shows
-what changed.
-
-## 5. Server internals
-
-| Component | Responsibility |
-| --- | --- |
-| LSP layer | `lsp-server` (synchronous, from rust-analyzer) and `lsp-types`. Only implemented features are advertised |
-| Documents | Text and version of open documents (incremental sync), with an incrementally updated UTF-16/byte line index |
-| Parser | tree-sitter-riscv; incremental reparse on edits |
-| Index | Project-wide symbol table (Section 5.2), scanned asynchronously on a background thread (via `ignore`), prioritizing open-document subtrees and skipping foreign assembly, with debounced rebuilds on `didChange` and updates on save/watched-file events |
-| Context | `url`-based `file://` URI/path conversion preserving client symlinks, per-file flags from the compilation database (`--target`, `-march`, `-mabi`, `-I`, `-iquote`, `-isystem`, `-D`, `-U`, `-include`, `-imacros`, `--sysroot`, `-isysroot`, `-nostdinc`, `-Wa,-I/-march/-mabi`, PIC flags, working directory), and `.option` state |
-| External tools | clang and llvm-mc processes, with delays, cancellation and time limits |
-
-### 5.1 Positions
-
-Zed accepts only UTF-16 positions (checked in Zed 1.29.3), and clang reports
-columns in bytes, counting from 1. The server converts every position at the
-boundary: UTF-16 from the client and bytes from tools are turned into byte
-offsets inside the server, and back when replying. Positions outside the text
-are clamped, never trusted. `file://` URIs (including `file://localhost`,
-spaces/Unicode, Windows drive paths, and symlinked workspace roots) are
-converted with `url::Url`, canonicalizing paths only for internal keys and
-comparisons while mapping returned locations back under the client's workspace
-root.
-
-### 5.2 Symbols and scope
+### 4.2 Symbols and scope
 
 | Kind | Scope |
 | --- | --- |
-| Labels and `.globl` symbols | The whole project; several definitions with one name are all returned |
-| Local symbols (`.L...`) | The file |
-| Numeric labels (`1:`) | `1b` is the nearest preceding `1:`, `1f` the nearest following one |
-| `.equ`, `.equiv`, `.set`, `=` | The file and the files it includes with `.include`; `.set`/`=` reassignments resolve to the value in effect at the cursor |
-| `.macro` | The file and the files it includes |
-| Macro parameters (`\reg`) & `.irp`/`.irpc` parameters | The enclosing macro or `.irp`/`.irpc` block |
-| `#define` in headers and preprocessed files (`.S`, `.sx`, or `-x assembler-with-cpp`) | The defining file and files that `#include` it; headers are loaded lazily when reached by an `#include` / `.include` (not extracted for non-preprocessed `.s` files) |
-| C functions (`call kernel_main`) | Out of scope (clangd's job); may be revisited |
+| Labels and `.globl` symbols | Whole workspace; multiple definitions are all returned |
+| Local labels (`.L...`) | Current file |
+| Numeric labels (`1:`) | `1b` binds to nearest preceding `1:`; `1f` binds to nearest following `1:` |
+| `.equ`, `.equiv`, `.set`, `=` | Current file and `.include`-linked files; `.set`/`=` resolves to the latest assignment active at the cursor line |
+| `.macro` | Current file and `.include`-linked files |
+| Macro parameters (`\param`) and `.irp`/`.irpc` parameters | Enclosing block |
+| `#define` constants/macros | Preprocessed files (`.S`, `.sx`, headers, `-x assembler-with-cpp`) and `#include`/`.include` graphs |
 
-The range of a label runs from the label to just before the next ordinary
-label. Numeric labels are children of the enclosing label.
+The location counter `.` (`. = ...`) is excluded from symbol definitions,
+references, workspace symbols and semantic tokens. Linker script templates
+(`*.lds.S`, `*.ld.S`) are skipped by workspace scanning and ignored in LSP
+document features. Open documents always respond directly from memory without
+waiting for background workspace indexing.
 
-Workspace scanning walks `.S`, `.s`, `.sx`, and `.inc` files on a background thread
-using `ignore` (skipping hidden and `.gitignore`/`.ignore` directories), skips
-binary or foreign-architecture files such as Go Plan 9 assembly (by reading a
-small prefix before invoking tree-sitter), prioritizes the nearest project root
-(`.git` or `compile_commands.json`) of newly opened documents, is capped at
-2,000 files, and reports progress with `$/progress` when supported by the
-client. Requests for open documents answer immediately from memory without
-waiting on the workspace scan.
+### 4.3 Compilation context
 
-### 5.3 Compilation context
+`CompileContext` searches `compileCommandsDirs` (`["", "build"]` by default) for
+`compile_commands.json` and extracts an allow-list of assembler/preprocessor flags
+(`--target`, `-march`, `-mabi`, `-I`, `-iquote`, `-isystem`, `-D`, `-U`,
+`-include`, `-imacros`, `--sysroot`, `-isysroot`, `-nostdinc`,
+`-Wa,-I/-march/-mabi`, `-x`, PIC flags) plus the working directory. When no entry
+matches, configured defaults (`defaultTarget`, `defaultMarch`) and workspace root
+apply. Per-file preprocessing defaults by suffix (`.S`, `.sx`, headers = on;
+`.s`, `.inc` = off) and is overridden by `-x assembler-with-cpp` or
+`-x assembler`. `.option push`/`pop`/`rvc`/`norvc`/`arch` directives refine the
+effective `MarchSpec` per line.
 
-For each file the server looks up its entry in `compile_commands.json`
-(default locations: the project root and `build/`) and keeps the allow-listed
-flags above plus the entry's `directory` (for `clang` working directory).
-Without an entry, it uses the configured defaults and workspace root. `-march`
-controls which instructions and CSRs are offered; `.option arch` and
-`.option rvc` refine this per line.
+### 4.4 Configuration
 
-Whether the C preprocessor runs is also decided per file: from `-x assembler-with-cpp`
-or `-x assembler` in `compile_commands.json` when present, otherwise by suffix
-(`.S`, `.sx`, headers: preprocessed; `.s`, `.inc`: not preprocessed). Index,
-hover, semantic tokens, diagnostics, and code actions all follow this per-file
-state.
+Options are read once from `initializationOptions` at startup and apply for the
+lifetime of the server process: `clang`, `llvmMc`, `compileCommandsDirs`,
+`defaultTarget`, `defaultMarch`, `diagnostics.enable`, and `diagnostics.delayMs`.
 
-## 6. Features
+## 5. Robustness rules
 
-### 6.1 Hover
+- **Never panic on client input or tool output**: no `.unwrap()`, `.expect()`,
+  or unchecked indexing outside tests in `server/src/`. Clamp positions, offsets
+  and slices; guard requests, notifications and worker threads with
+  `catch_unwind` (returning `InternalError` on requests and logging once per
+  method/worker).
+- **Convert positions at the boundary**: never index source strings directly
+  with a client UTF-16 column or a `clang` byte column.
+- **Degrade gracefully**: when `clang` or `llvm-mc` is missing or fails, disable
+  only the dependent feature and log once.
+- **Honour capabilities and lifecycle**: advertise only implemented features;
+  handle `shutdown` (draining pending client responses) and `exit` (status 0
+  after `shutdown`, status 1 otherwise).
+- **No `clippy::mutable_key_type` / `too_many_arguments` shortcuts**: keep keys
+  non-mutable (or pass iterators directly) and bundle cohesive parameters into
+  typed structs; any required `#[allow(deprecated)]` carries an explanatory
+  comment.
 
-| Target | Content |
-| --- | --- |
-| Instruction | LLVM syntax in a `riscv` fence, then compact metadata (long name, extensions or base ISA such as `I`/`RV64I`, XLEN), `-march` or deprecation status, first-paragraph description (~300 chars max), and `**This line:**` live expansion/encoding |
-| Alias or pseudo-instruction (`mv`, `csrw`, `li`, `la`, `call`, ...) | Same compact layout with `alias of ...` / `pseudo-instruction` (excluding self-aliases such as `ld` -> `ld`), plus the current line's expansion |
-| CSR (`stvec` or numeric `0x105` in CSR operand position) | Header line (`stvec · 0x105 · S-mode`), one-sentence description, and a bullet list of fields (`- NAME [bits] — summary`, no wide table) |
-| Register (`x2` or `sp`) | Single line with ABI name, architectural name, role, and saver convention |
-| Directive | Syntax in a `riscv` fence and description |
-| Preprocessor `#<directive>` (in preprocessed files) | Directive description plus a note that `#` lines starting with a directive name are handled by the C preprocessor rather than treated as comments |
-| Project symbol (label, `.equ`/`.set`/`=`, `.macro`, `.irp`/`.irpc` param, `#define`, `\@`) | Kind (`.set`/`=`/macro/`.irp`/`.irpc` distinguished; multi-assignment note when reassigned), `file:line`, active value at line, and the defining line in a `riscv` fence |
-| Numeric label reference (`1f`, `1b`) | Defining location and line |
-| Include directive (`#include`, `.include`) | Resolved filesystem path (mapped under client root) |
+## 6. Licensing
 
-Hover omits attribution trailers (`Source: ...`) and duplicate operand-naming
-sections so the popover stays compact and fits without horizontal scrolling.
-Extension alternatives are formatted readably (`V (or Zve32x)`), and instructions
-disabled under the active `-march` state which extension or XLEN is required
-without emitting `*expansion unavailable*`.
+The project's code is MIT ([LICENSE.md](../LICENSE.md), [zed/LICENSE](../zed/LICENSE)).
+Embedded data stays under its upstream licenses ([THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)):
 
-The expansion comes from `llvm-mc`, given the current line (and any `.option`
-lines that affect it, plus `.equ` / `#define` constant substitution and `clang
--E -P -x assembler-with-cpp` preprocessing when needed), cached off the main loop:
-
-```text
-llvm-mc -triple=riscv64 -mattr=<from -march> -show-encoding -M no-aliases
-```
-
-Directives, generated local labels (`.Lpcrel_hi0:`), and `# fixup` comment lines
-are stripped from the output. Instruction encodings are rendered as little-endian
-hex instruction words (`0x1141`, `0x10529073`) or `(relocated)` when relocations
-are present:
-
-```text
-li a0, 0x12345678   ->  lui a0, 74565  # 0x12345537 / addiw a0, a0, 1656  # 0x6785051b
-csrw stvec, t0      ->  `csrrw zero, stvec, t0` · `0x10529073`
-mv a0, a1           ->  `c.mv a0, a1` · `0x852e`   (when C is enabled)
-la t0, sym          ->  auipc t0, %pcrel_hi(sym)  # (relocated) / addi t0, t0, %pcrel_lo(.Lpcrel_hi0)  # (relocated)
-```
-
-### 6.2 Completion
-
-Trigger characters include `.`, `%`, `\`, `,`, and ` `.
-
-| Position | Candidates |
-| --- | --- |
-| Start of a statement | Instructions, aliases, pseudo-instructions, directives and macros, filtered by `-march` |
-| Operand | Depending on the operand class: integer or floating-point registers, CSRs, symbols, relocation functions (`%hi(`, `%lo(`, `%pcrel_hi(`, ...) |
-| After `.option` | `arch`, `rvc`, `norvc`, `push`, `pop`, `relax`, `norelax`, `pic`, `nopic`, `exact` |
-| Inside a `.macro` / `.irp` / `.irpc` block | The enclosing block's parameters |
-
-`textDocument/completion` returns a `CompletionList`. When the client declares
-`resolveSupport` for `documentation` (as Zed does), documentation is resolved
-lazily via `completionItem/resolve`; otherwise it is inlined. When symbol or
-macro counts exceed 200, the list filters by prefix, caps symbol candidates, and
-sets `isIncomplete: true` so the client re-queries on typing. Deprecated
-instructions carry `CompletionItemTag::DEPRECATED` and sort below active
-instructions, and CSR candidates include their privilege mode in `detail`
-(`0x105 · S-mode`).
-
-When the client supports snippets (`snippetSupport`), variants of one mnemonic
-sort with real instructions before aliases before special relocation/symbol
-forms (`tprel_add_symbol`, `.insn`, etc.), and register forms before immediate
-forms; memory operands expand as `ld ${1:rd}, ${2:0}(${3:rs1})$0`. Each item
-places its operand syntax in `label` (with the mnemonic in `filterText`, the
-long name in `detail`, and the variant's own syntax in a `riscv` fence at the
-top of resolved documentation) so overloaded variants are distinguishable in Zed;
-structured directives (`.macro`, `.rept`, `.irp`, `.if`, `.equ`, `.section`,
-`.option`) provide block snippets, and zero-operand mnemonics insert plain text.
-When snippet support is absent, plain completions append the required separator
-(` ` after mnemonics/directives taking arguments, `, ` after non-last operands
-and `.option arch`, and nothing after zero-operand mnemonics, final operands,
-or other `.option` subcommands).
-
-### 6.3 Navigation
-
-Go to definition, find references, document highlight and rename, following
-the scope rules in 5.2. Rename refuses numeric labels, names defined outside the
-project, invalid symbol identifiers (including leading digits), register/CSR/
-directive names, and names already defined in the symbol's scope (returning an
-LSP error message).
-
-### 6.4 Symbols
-
-Document symbols (outline and breadcrumbs, using the label ranges from 5.2;
-macros are listed too) and workspace symbols.
-
-### 6.5 Diagnostics
-
-1. Build the flags and working directory (`current_dir`) from the compilation context (5.3).
-2. Pass the unsaved text to clang on standard input:
-
-   ```text
-   clang <flags> -iquote <directory of the file> -x assembler-with-cpp -c -o /dev/null -
-   ```
-
-   (`-x assembler` when per-file preprocessing is off, such as `.s` without
-   `-x assembler-with-cpp`). `-iquote` makes `#include "..."` resolve
-   as it would for the file on disk.
-3. Parse `<stdin>:LINE:COLUMN: error|warning: MESSAGE`, `<instantiation>` macro
-   diagnostics (via the following `note: while in macro instantiation`), and
-   errors in included files (attaching them to the originating `.include` /
-   `#include` line with `relatedInformation`). When an error in a preprocessed
-   file falls on a line referencing a macro defined earlier by a `#define` line,
-   attach neutral `relatedInformation` pointing to that definition (`\`CZ\`
-   expands to \`ctz\` (defined on line N)`); only add the `"not a comment"`
-   explanation when the error reflects invalid expanded tokens inside the
-   macro usage and the `#define` body reads like prose (such as `# define X 5
-   is the size`). Convert byte columns to UTF-16 and extend ranges to the
-   token at that position; clang's SARIF output does not include assembler
-   errors, so text parsing is required.
-4. Run after typing pauses (about 300 ms); drop results that an edit has made
-   stale. One run takes 0.1 to 0.3 seconds, measured through
-   `docker compose exec`.
-5. Publish with `textDocument/publishDiagnostics`. Do not advertise pull
-   diagnostics unless they are answered.
-
-### 6.6 Code actions
-
-Quick fixes from clang's suggestions, for example `did you mean: mv?`. In
-preprocessed files, also offer `Use \`//\` comment` as a quick fix for diagnostics
-on `#` lines and on prose-like `#define` lines flagged via `relatedInformation`,
-and as a rewrite action on any `#` comment or directive line.
-
-### 6.7 Semantic tokens
-
-`textDocument/semanticTokens/full` and `textDocument/semanticTokens/range` emit
-delta-encoded UTF-16 tokens classifying architectural names vs. project symbols:
-
-| Token type | Modifier | Examples |
+| Material | License | Notes |
 | --- | --- | --- |
-| `register` | — | `t0`, `x5`, `fa0`, `sp` |
-| `csr` | — | `stvec`, `mstatus`, `scause` |
-| `label` | `declaration` (at def) | `_start:`, `1:`, `1f`, `1b`, `.Lloop` |
-| `constant` | `declaration` (at def) | `.equ`, `.set`, `=`, `#define` |
-| `macro` | `declaration` (at def) | `.macro SAVE`, `SAVE` invocations |
-| `parameter` | `declaration` (at def) | macro and `.irp`/`.irpc` parameter names and `\reg` references |
-| `preprocessor` | — | `#define`, `#include`, `# 100`, `#` in preprocessed files |
-| `comment` | — | `# ...` lines in non-preprocessed files (overriding suffix-blind `@preproc`) |
+| Generated LLVM instruction/CSR/register/extension data | `Apache-2.0 WITH LLVM-exception` | Generated from pinned `.td` sources |
+| riscv-unified-db descriptions & CSR metadata | `BSD-3-Clause-Clear` | Keep copyright and notice |
+| riscv-asm-manual tables | `CC-BY-4.0` | Credit source, authors and license |
+| `data/directives_gnu.json`, `data/supplements.json`, `data/texts.json` | `MIT` | Original project texts (no GPL/GFDL sources used) |
+| Rust dependencies (`lsp-server`, `lsp-types`, `serde*`, `tree-sitter*`, `ignore`, `url`, `yaml_serde`, `zed_extension_api`) | Permissive (`MIT` / `Apache-2.0` / `Unlicense`) | Verified via `cargo deny check licenses` against `deny.toml` |
 
-### 6.8 Later
+External `clang` and `llvm-mc` executables run strictly as child processes.
 
-Inlay hints (`.equ` values, CSR numbers, expansions), folding ranges (label
-ranges, macros, `.if` blocks), signature help (from the instruction syntax) and
-call hierarchy (`call`, `jal`, `tail`). Zed supports all of them; LSP folding
-needs a Zed setting.
+## 7. Testing
 
-## 7. Robustness
-
-Rules that come from the bugs found in asm-lsp:
-
-- No request or input makes the server panic. Out-of-range positions are
-  clamped, and request, notification, worker job, and background index thread
-  execution are wrapped in `std::panic::catch_unwind` (logging once per
-  method/worker and returning `InternalError` for requests) so an unexpected
-  panic does not terminate the server or silently stall indexing.
-- Positions are converted at the boundary (5.1); nothing inside the server
-  indexes text with a client column.
-- When an external tool is missing or fails, only the feature that needs it
-  stops, and the problem is logged once.
-- Every advertised capability is answered.
-- LSP lifecycle follows the specification: `shutdown` drains in-flight
-  client responses (such as `client/registerCapability`) cleanly until `exit`
-  and exits with 0, while `exit` without a prior `shutdown` exits with 1.
-
-## 8. Configuration
-
-Options are read once at startup from `initializationOptions` (in Zed:
-`lsp.riscv-asm-lsp.initialization_options`), so changing them requires
-restarting the language server (`editor: restart language server` in Zed). All
-are optional.
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `clang` | `"clang"` | Path to clang |
-| `llvmMc` | `"llvm-mc"` | Path to llvm-mc |
-| `compileCommandsDirs` | `["", "build"]` | Directories, relative to the project root, searched for `compile_commands.json` |
-| `defaultTarget` | `"riscv64-unknown-elf"` | Target when a file has no compilation database entry |
-| `defaultMarch` | `"rv64gc"` | `-march` when a file has no entry |
-| `diagnostics.enable` | `true` | Run clang for diagnostics |
-| `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
-
-Logs go to standard error.
-
-## 9. Zed extension
-
-| Item | Choice |
+| Suite | What it covers |
 | --- | --- |
-| Language | `RISC-V Assembly`, separate from zed-asm's `Assembly`. Both claim `.S` and `.s`: remove zed-asm, or map the files with `"file_types": { "RISC-V Assembly": ["S", "s", "sx"] }` in the project settings |
-| File suffixes | `S`, `s`, `sx`, and `riscv` (so ```` ```riscv ```` hover code fences highlight without colliding with zed-asm's `S`/`s`; `asm` is shared with other architectures) |
-| Grammar | tree-sitter-riscv (MIT), pinned at `c89b7c525d90`. It distinguishes numeric labels, macro parameters, registers and expressions |
-| Queries | `highlights.scm` (with `@preproc` rule for preprocessor directive comments), `injections.scm` (injecting `c` on preprocessor lines), `overrides.scm` (`@comment.inclusive` and `@string` scopes for comment continuation and bracket `not_in`), `brackets.scm`, `indents.scm`, `outline.scm`, `semantic_token_rules.json` (including `preprocessor` -> `["preproc", "keyword"]`, `comment` -> `["comment"]`, and theme fallback chains) |
-| `config.toml` | `line_comments = ["// ", "# "]` (putting `// ` first avoids creating `# ...` preprocessor directives when toggling comments in `.S` files; trade-off: GNU `as` does not accept `//` in `.s` without the preprocessor, whereas LLVM accepts it), table-form `block_comment` and `documentation_comment`, auto-closing `/*` pair, `brackets`, `word_characters`/`completion_query_characters`, indentation rules for labels and `.macro` |
-| Starting the server | If `lsp.riscv-asm-lsp.binary` is set for the opened worktree root, Zed starts that command without calling `language_server_command` (checked in Zed 1.29.3). Otherwise `zed/src/lib.rs` looks up `riscv-asm-lsp` on `PATH` and returns an error pointing to the README; it also implements `label_for_completion` so syntax-bearing completion labels highlight with the RISC-V grammar while filtering on the mnemonic |
-| License | `zed/LICENSE` (MIT): the registry checks the extension directory, not the repository root |
-| Recommended settings | `document_symbols` (`"on"`) and `semantic_tokens` (`"combined"`) documented in the README; `document_folding_ranges` comes later |
+| Unit tests | Position/UTF-16 math, line scanner, `-march`/`.option` state, preprocessor classification, scope resolution, operand class decoding (all classes in `data/riscv.json`), xtask cleaning/joining |
+| Integration tests | In-process JSON-RPC harness driving the real binary over stdio across navigation, completion, hover, symbols, semantic tokens, diagnostics, code actions and lifecycle |
+| Snapshot tests | Golden files under `tests/snapshots/` (`hover/*.md`, `completion/*.json`, etc.); rewritten intentionally via `UPDATE_SNAPSHOTS=1` and reviewed in diff |
+| Regression inputs | Multibyte UTF-8/UTF-16 characters, positions past line ends, empty lines, closed/open block comments |
+| Data validation | Generated RV64GC instructions assemble with `llvm-mc` (`#[ignore]` tool test) |
 
-Building a Zed development extension that contains Rust code requires Rust on
-the machine running Zed (Zed adds `wasm32-wasip2` automatically). Although local
-projects with `lsp.riscv-asm-lsp.binary` do not invoke
-`language_server_command`, remote projects (WSL, SSH) require `extension.wasm`
-on the remote host whenever `extension.toml` declares `[language_servers.*]`, so
-`zed/Cargo.toml` and `zed/src/lib.rs` are included.
+Tool-dependent tests are marked `#[ignore]` and run in CI/container with LLVM 19
+via `-- --include-ignored`. The non-ignored suite passes with `clang` and
+`llvm-mc` absent from `PATH`.
 
-## 10. The author's environment
+## 8. Roadmap
 
-Zed runs on Windows, projects live in WSL (Debian), and each project's tools
-run in its own container with clang and llvm 19. The server runs in the
-project's container, like clangd:
+Only unfinished work is listed here:
 
-```json
-"lsp": {
-  "riscv-asm-lsp": {
-    "binary": {
-      "path": "/usr/bin/docker",
-      "arguments": ["compose", "exec", "-T", "dev", "riscv-asm-lsp"]
-    }
-  }
-}
-```
+- **Environment independence**:
+  - Prebuilt release binaries for Linux (`x86_64`, `aarch64`), macOS (`aarch64`,
+    `x86_64`) and Windows (`x86_64`) with checksums and bundled license notices.
+  - Auto-download matching release binaries from `zed/src/lib.rs` when neither
+    `lsp.riscv-asm-lsp.binary` nor `PATH` provides `riscv-asm-lsp`.
+  - Cross-OS CI matrix (Linux/macOS/Windows for the tool-less suite; Linux with
+    LLVM for tool tests) and end-to-end Windows path testing (drive letters, UNC
+    paths, case handling).
+  - Multi-version LLVM awareness (`clang --version` detection or versioned data)
+    and native per-OS `clang`/`llvm-mc` install instructions.
+  - Evaluate publishing to the Zed extension registry.
+- **Additional LSP features**:
+  - Inlay hints (`.equ` values, CSR numbers), folding ranges, signature help,
+    call hierarchy, `compile_flags.txt` support.
+- **Corpus-driven improvements**:
+  - Inline labels defined inside C macro argument strings (e.g. Linux
+    `ALTERNATIVE(..., __stringify(... label:), ...)`).
+  - Section-name, flag (`"ax"`, `"aw"`) and type (`@progbits`, `@nobits`)
+    completion after `.section`.
+  - Informative hover message for unresolved `#include <...>` headers explaining
+    how to configure `-I` in `compile_commands.json`.
+  - Upstream reports / selective workarounds for `tree-sitter-riscv` grammar
+    edge cases (`SET_FAULT_HANDLER(x0, a1)`, multiline `\` macro calls, multi-arg
+    `.option arch`, `.dc.a`, start-of-line `sym = expr`).
+- **Zed extension polish**:
+  - Separate `.s` vs. `.S` language grammars or upstream `tree-sitter-riscv`
+    preprocessor improvements if real-world editing warrants it.
 
-The container mounts the project at the same path as in WSL, so paths match
-on both sides, and clang and llvm-mc are called directly. Project Dockerfiles
-download a pinned release binary into `/usr/local/bin`.
+## 9. Open questions
 
-Before the Zed extension exists, the server can be tried in Zed through
-zed-asm: setting `lsp.asm-lsp.binary` to the command above makes Zed start
-riscv-asm-lsp in place of asm-lsp.
-
-## 11. Licensing
-
-The project's code is MIT. Checked on 2026-11-22, nothing below prevents
-distribution under MIT.
-
-| Material | License | Obligations |
-| --- | --- | --- |
-| Data generated from LLVM TableGen | Apache-2.0 WITH LLVM-exception | Include the license; state that the material was changed |
-| riscv-unified-db data (all files used carry this license in their headers) | BSD-3-Clause-Clear | Keep the copyright notice and license in source and binary distributions; no endorsement; no patent grant |
-| riscv-asm-manual tables | CC-BY-4.0 | Credit the source, authors and license; state changes |
-| lsp-server, serde, serde_json, url, yaml_serde | MIT OR Apache-2.0 | Include the license |
-| ignore (file walking & `.gitignore` handling) | MIT OR Unlicense | Include the license |
-| lsp-types, tree-sitter, tree-sitter-riscv | MIT | Include the license |
-| zed_extension_api | Apache-2.0 | Include the license |
-| clang, llvm-mc | Only run as separate programs | None |
-
-- Imported data stays under its own license; `THIRD_PARTY_NOTICES.md` and the
-  files in `data/` say where it comes from.
-- The data is embedded in the binary, so release archives include the license
-  texts and notices.
-- The README states: code is MIT; `data/` is under the licenses of its
-  sources.
-- `cargo-deny` checks the licenses of all dependencies, including transitive
-  ones.
-- Code copied from asm-lsp (BSD-2-Clause) or zed-asm (MIT) keeps its
-  copyright notice; using them only as a reference needs nothing.
-
-## 12. Testing
-
-| Kind | What it covers |
+| Topic | Notes |
 | --- | --- |
-| Unit | Position conversion, symbol scope, `-march` parsing, data joining |
-| Integration | A test client starts the binary and talks JSON-RPC: initialization, every feature, shutdown |
-| Regression | Inputs that crashed asm-lsp: multibyte comments, positions past the end of a line, empty lines |
-| Data | A sample line built from each instruction's syntax assembles with llvm-mc |
-| Editor | A checklist of hover, completion, navigation, outline and diagnostics cases, tried in Zed |
-
-Fixtures include a small RISC-V kernel entry and trap vector (labels, numeric
-labels, `.equ`, `.macro`, `#include`, CSR instructions, pseudo-instructions),
-a file with deliberate errors, and a file with Japanese comments.
-
-## 13. Roadmap
-
-### 13.1 Milestones
-
-| Milestone | Contents | Done when | Status |
-| --- | --- | --- | --- |
-| M0 Foundation | Development container, data generation, server skeleton (document sync, positions, configuration, logging), integration test harness | Data counts match 4.5; initialization, shutdown and out-of-range positions pass the tests | Done |
-| M1 Hover and completion | 6.1 without expansions, 6.2 | Hover works for ABI register names, pseudo-instructions, CSR instructions and CSR names; completion follows `-march` | Done |
-| M2 Navigation and symbols | 5.2, 6.3, 6.4 | Definitions resolve for `1f`/`1b`, `.equ`, macros, labels in other files and `#define`; outline and breadcrumbs follow label ranges | Done |
-| M3 Diagnostics and expansions | 6.5, 6.6, expansions in 6.1 | Errors in unsaved text appear at the right column; files with Japanese comments work; stopping clang disables only diagnostics | Done |
-| M4 Zed extension | Section 9 | With zed-asm removed, highlighting, outline, brackets, indentation, comment toggling and the server all work | Done; final checks in Zed pending |
-| M5 Adoption | Release binary, project templates use it (Section 10) | A new project from the template needs no extra setup | Not started |
-
-### 13.2 Later
-
-- The features in 6.8.
-- Running anywhere: release binaries for Linux, macOS and Windows; the
-  extension downloads them; CI on all three; tests pass without clang.
-- Several LLVM versions, for example by recording the first version that
-  accepts each entry and filtering by the user's `clang --version`.
-- Talking to the asm-lsp and zed-asm maintainers, then deciding whether to
-  publish to the Zed registry. The registry asks extension authors to try
-  improving an existing extension first, and accepts a replacement only after
-  documented contact attempts.
-
-## 14. Open questions
-
-| Question | Notes |
-| --- | --- |
-| GNU toolchain | Whether to run gcc for diagnostics when the compilation database names gcc (not planned) |
-| `.asm` suffix | Whether to claim it despite other architectures using it |
-| Release notices | Release archives must carry the license texts of the bundled data and of the Rust dependencies compiled into the binary; decide how to collect them (for example `cargo about`) before the first release |
+| GNU toolchain | Whether to invoke `gcc` when `compile_commands.json` specifies GCC (not currently planned) |
+| `.asm` suffix | Shared across many architectures; currently left unclaimed |
+| Release license bundle | How to assemble dependency + embedded-data notices automatically (e.g. `cargo about`) before tagging releases |
 
 ## Appendix A. Directive support in LLVM 19
 
-Checked with llvm-mc 19.1.7.
+Checked against `llvm-mc` 19.1.7:
 
 | Status | Directives |
 | --- | --- |
 | Not supported | `.eqv`, `.func`/`.endfunc`, `.float16`, `.bfloat16`, `.base64`, `.dtprelword`, `.linkonce`, `.stabs`, listing directives (`.list`, `.nolist`, `.title`, `.sbttl`, `.psize`, `.mri`) |
-| Supported (main ones) | `.macro` (including `\@`), `.altmacro`, `.irp`, `.rept`, `.equ`, `.set`, `=`, `.equiv`, `.option` (`arch`, `push`, `pop`, `exact`), `.insn`, `.attribute`, `.variant_cc`, `.cfi_*`, `.pushsection`, `.incbin`, `.ifc`, `.ifb`, `.reloc`, `.print`, `.warning` |
+| Supported (representative) | `.macro` (including `\@`), `.altmacro`, `.irp`, `.rept`, `.equ`, `.set`, `=`, `.equiv`, `.option` (`arch`, `push`, `pop`, `exact`), `.insn`, `.attribute`, `.variant_cc`, `.cfi_*`, `.pushsection`, `.incbin`, `.ifc`, `.ifb`, `.reloc`, `.print`, `.warning`, `.int`, `.weakref`, `.line`, `.version`, `.dc`, `.dcb`, `.ds`, `.ifnotdef`, `.bundle_*` |
 
-The riscv-asm-manual table lists `.dtprelword`, which LLVM 19 rejects: an
-example of why the documentation is checked against LLVM.
+For example, `riscv-asm-manual` lists `.dtprelword` while LLVM 19 rejects it,
+so LLVM remains authoritative for directive acceptance.
 
 ## Appendix B. References
 
@@ -600,6 +304,4 @@ example of why the documentation is checked against LLVM.
 - tree-sitter-riscv: https://github.com/omeyenburg/tree-sitter-riscv
 - lsp-server: https://crates.io/crates/lsp-server
 - yaml_serde: https://crates.io/crates/yaml_serde
-- asm-lsp: https://github.com/bergercookie/asm-lsp
-- zed-asm: https://github.com/DevBlocky/zed-asm
 - Zed extension publishing: https://zed.dev/docs/extensions/publishing/prerequisites
