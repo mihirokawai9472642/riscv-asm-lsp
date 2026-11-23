@@ -99,9 +99,12 @@ effect if they open as `RISC-V Assembly` is incorrect syntax highlighting.
 
 ## Running the Server in a Development Container
 
-When your toolchain and `riscv-asm-lsp` live inside a Docker Compose container
-mounting the project at the same path inside the container as on the host,
-configure `lsp.riscv-asm-lsp.binary`:
+When your toolchain lives inside a Docker Compose container mounting the
+project at the same path inside the container as on the host, install a pinned
+`riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz` release into `/usr/local/bin`
+(verifying its `.sha256` checksum) in the container image (the static musl
+binary does not depend on the container's glibc version) and configure
+`lsp.riscv-asm-lsp.binary`:
 
 ```json
 {

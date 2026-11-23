@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -40,14 +40,16 @@ pub struct UdbData {
     pub csrs: Vec<UdbCsr>,
     pub registers: HashMap<String, UdbRegisterInfo>,
     pub cleaned_todos: Vec<String>,
+    pub copyrights: Vec<String>,
 }
 
 pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
     let isa_dir = udb_dir.join("spec/std/isa");
     let mut cleaned_todos = Vec::new();
-    let instructions = load_instructions(&isa_dir, &mut cleaned_todos)?;
-    let csrs = load_csrs(&isa_dir, &mut cleaned_todos)?;
-    let registers = load_registers(&isa_dir)?;
+    let mut copyrights = BTreeSet::new();
+    let instructions = load_instructions(&isa_dir, &mut cleaned_todos, &mut copyrights)?;
+    let csrs = load_csrs(&isa_dir, &mut cleaned_todos, &mut copyrights)?;
+    let registers = load_registers(&isa_dir, &mut copyrights)?;
 
     cleaned_todos.sort();
     cleaned_todos.dedup();
@@ -56,12 +58,14 @@ pub fn load(udb_dir: &Path) -> Result<UdbData, Box<dyn std::error::Error>> {
         csrs,
         registers,
         cleaned_todos,
+        copyrights: copyrights.into_iter().collect(),
     })
 }
 
 fn load_instructions(
     isa_dir: &Path,
     cleaned_todos: &mut Vec<String>,
+    copyrights: &mut BTreeSet<String>,
 ) -> Result<Vec<UdbInstruction>, Box<dyn std::error::Error>> {
     let mut inst_files = Vec::new();
     collect_yaml_files(&isa_dir.join("inst"), &mut inst_files)?;
@@ -72,6 +76,7 @@ fn load_instructions(
 
     for path in inst_files {
         let content = fs::read_to_string(&path)?;
+        collect_license_headers(&path, &content, copyrights)?;
         let doc: Value = match yaml_serde::from_str(&content) {
             Ok(v) => v,
             Err(_) => continue,
@@ -165,6 +170,7 @@ fn load_instructions(
 fn load_csrs(
     isa_dir: &Path,
     cleaned_todos: &mut Vec<String>,
+    copyrights: &mut BTreeSet<String>,
 ) -> Result<Vec<UdbCsr>, Box<dyn std::error::Error>> {
     let mut csr_files = Vec::new();
     collect_yaml_files(&isa_dir.join("csr"), &mut csr_files)?;
@@ -173,6 +179,7 @@ fn load_csrs(
     let mut csrs = Vec::new();
     for path in csr_files {
         let content = fs::read_to_string(&path)?;
+        collect_license_headers(&path, &content, copyrights)?;
         let doc: Value = match yaml_serde::from_str(&content) {
             Ok(v) => v,
             Err(_) => continue,
@@ -254,6 +261,7 @@ fn load_csrs(
 
 fn load_registers(
     isa_dir: &Path,
+    copyrights: &mut BTreeSet<String>,
 ) -> Result<HashMap<String, UdbRegisterInfo>, Box<dyn std::error::Error>> {
     let mut reg_files = Vec::new();
     collect_yaml_files(&isa_dir.join("register_file"), &mut reg_files)?;
@@ -261,6 +269,7 @@ fn load_registers(
     let mut registers = HashMap::new();
     for path in reg_files {
         let content = fs::read_to_string(&path)?;
+        collect_license_headers(&path, &content, copyrights)?;
         let doc: Value = match yaml_serde::from_str(&content) {
             Ok(v) => v,
             Err(_) => continue,
@@ -291,6 +300,45 @@ fn load_registers(
         }
     }
     Ok(registers)
+}
+
+fn collect_license_headers(
+    path: &Path,
+    content: &str,
+    copyrights: &mut BTreeSet<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut spdx_license: Option<&str> = None;
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some(comment) = trimmed.strip_prefix('#') else {
+            break;
+        };
+        let comment_trimmed = comment.trim();
+        if let Some(spdx) = comment_trimmed.strip_prefix("SPDX-License-Identifier:") {
+            spdx_license = Some(spdx.trim());
+        } else if comment_trimmed
+            .to_ascii_lowercase()
+            .starts_with("copyright")
+        {
+            copyrights.insert(comment_trimmed.to_owned());
+        }
+    }
+    match spdx_license {
+        Some("BSD-3-Clause-Clear") => Ok(()),
+        Some(other) => Err(format!(
+            "unexpected SPDX-License-Identifier `{other}` in {} (expected BSD-3-Clause-Clear)",
+            path.display()
+        )
+        .into()),
+        None => Err(format!(
+            "missing `# SPDX-License-Identifier:` header in {}",
+            path.display()
+        )
+        .into()),
+    }
 }
 
 fn csr_hpm_num(csr_name: &str) -> Option<String> {
@@ -900,5 +948,31 @@ Computes `latexmath:[$x \\times y$]` with `xref:insns-add[ADD]` and <<#sec-mul, 
 
         let dropped = strip_todo_sentences("mncause.CODE", Some("TODO".to_owned()), &mut todos);
         assert!(dropped.is_none());
+    }
+
+    #[test]
+    fn collects_udb_copyrights_and_rejects_unexpected_spdx() {
+        let ok_yaml = "\
+# Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+# SPDX-License-Identifier: BSD-3-Clause-Clear
+
+name: add
+";
+        let mut holders = BTreeSet::new();
+        collect_license_headers(Path::new("add.yaml"), ok_yaml, &mut holders)
+            .expect("BSD-3-Clause-Clear passes");
+        assert!(
+            holders.contains("Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.")
+        );
+
+        let wrong_spdx = "# SPDX-License-Identifier: MIT\nname: foo\n";
+        let err = collect_license_headers(Path::new("foo.yaml"), wrong_spdx, &mut holders)
+            .expect_err("non-BSD-3-Clause-Clear should fail");
+        assert!(err.to_string().contains("foo.yaml"));
+
+        let missing_spdx = "# Copyright (c) Example\nname: bar\n";
+        let err2 = collect_license_headers(Path::new("bar.yaml"), missing_spdx, &mut holders)
+            .expect_err("missing SPDX should fail");
+        assert!(err2.to_string().contains("bar.yaml"));
     }
 }

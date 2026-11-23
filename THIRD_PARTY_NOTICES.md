@@ -224,12 +224,27 @@ Software.
 - **Material used**: Instruction, CSR, extension, and register file YAML
   specifications under `spec/std/isa/`.
 - **License**: BSD-3-Clause-Clear
+- **Modifications**: Cleaned AsciiDoc markup, tables, and template variables;
+  removed upstream `TODO` sentences; derived concise summaries; and applied
+  typo corrections and supplemental/preferred-name metadata from
+  `data/supplements.json`.
 
 ```text
 SPDX-License-Identifier: BSD-3-Clause-Clear
 
-Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+Copyright (c) 2026 Qualcomm Technologies, Inc. and/or its subsidiaries.
+Copyright (c) Abhijit Das(Sukuna0007Abhi)
+Copyright (c) Alibaba Damo Academy
 Copyright (c) Animesh Agarwal
+Copyright (c) Jordan Carlin
+Copyright (c) Katherine Hsu
+Copyright (c) Maanvi Chetwani
+Copyright (c) Muhammad Abdullah — 10xEngineers
+Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+Copyright (c) RISC-V International
+Copyright (c) Salil Mittal
+Copyright (c) Syed Owais Ali Shah
+Copyright (c) Ventana Micro Systems
 
 Redistribution and use in source and binary forms, with or without modification, are permitted
 (subject to the limitations in the disclaimer below) provided that the following conditions are
@@ -269,12 +284,20 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   <https://creativecommons.org/licenses/by/4.0/>
 - **Modifications**: Directive and pseudoinstruction rows were extracted from
   AsciiDoc tables, checked against LLVM 19 support, expanded where shorthands
-  were used, and stored in `data/riscv.json`.
+  were used, 30 directive descriptions were replaced by project-authored MIT
+  summaries in `data/supplements.json` (preserving the manual's argument syntax),
+  and stored in `data/riscv.json`.
 
 ---
 
 ## 4. Rust Crate Dependencies
 
-Runtime and build dependencies are verified with `cargo deny check licenses`.
-Direct and transitive crates use permissive licenses (MIT, Apache-2.0,
-BSD-2-Clause, BSD-3-Clause, Zlib, Unicode-3.0).
+Dependency licenses are verified with `cargo deny check licenses`. After
+selecting `MIT` for dual-licensed crates, the `riscv-asm-lsp` binary uses
+`MIT` and `Unicode-3.0` third-party crates.
+
+Prebuilt binary release archives also bundle `THIRD_PARTY_LICENSES.md`
+(full license texts and copyright notices of third-party crates via
+`cargo-about` plus `/usr/share/doc/musl/copyright` for `x86_64-unknown-linux-musl`
+builds) and `COPYRIGHT-library.html` (notices for the Rust standard library
+and its dependencies).

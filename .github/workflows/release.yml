@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      TARGET: x86_64-unknown-linux-musl
+      ASSET: riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches workspace version
+        run: |
+          python3 - <<'PY'
+          import os, sys, tomllib
+
+          with open("Cargo.toml", "rb") as f:
+              version = tomllib.load(f)["workspace"]["package"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          expected = f"v{version}"
+          if tag != expected:
+              print(f"error: tag {tag!r} does not match Cargo.toml workspace.package.version {version!r} (expected {expected!r})", file=sys.stderr)
+              sys.exit(1)
+          print(f"Verified tag {tag} matches Cargo.toml version {version}")
+          PY
+
+      - name: Install build and packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools file
+
+      - name: Install Rust 1.100 and musl target
+        run: |
+          rustup toolchain install 1.100 --profile minimal --target "${{ env.TARGET }}" --no-self-update
+          rustup default 1.100
+
+      - name: Run non-tool tests
+        run: env PATH="$HOME/.cargo/bin:/usr/bin:/bin" cargo test --locked
+
+      - name: Build static musl release binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked -p riscv-asm-lsp --target "${{ env.TARGET }}"
+
+      - name: Verify static linking and LSP lifecycle
+        run: |
+          bin="target/${{ env.TARGET }}/release/riscv-asm-lsp"
+          file_out="$(file "$bin")"
+          echo "$file_out"
+          echo "$file_out" | grep -qE "statically linked|static-pie linked"
+          if echo "$file_out" | grep -q "dynamically linked"; then
+            echo "error: binary is dynamically linked" >&2
+            exit 1
+          fi
+          BIN="$bin" python3 - <<'PY'
+          import json, os, subprocess
+
+          def frame(msg):
+              body = json.dumps(msg).encode("utf-8")
+              return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
+
+          def read_msg(stream):
+              headers = {}
+              while True:
+                  line = stream.readline().decode("ascii")
+                  if line in ("\r\n", "\n", ""):
+                      break
+                  key, val = line.split(":", 1)
+                  headers[key.strip().lower()] = val.strip()
+              return json.loads(stream.read(int(headers["content-length"])))
+
+          proc = subprocess.Popen(
+              [os.environ["BIN"]],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+          )
+          proc.stdin.write(frame({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "initialize",
+              "params": {"capabilities": {}},
+          }))
+          proc.stdin.flush()
+          init_resp = read_msg(proc.stdout)
+          assert "capabilities" in init_resp.get("result", {}), init_resp
+
+          proc.stdin.write(frame({
+              "jsonrpc": "2.0",
+              "method": "initialized",
+              "params": {},
+          }))
+          proc.stdin.write(frame({
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "shutdown",
+              "params": None,
+          }))
+          proc.stdin.flush()
+          shut_resp = read_msg(proc.stdout)
+          assert shut_resp.get("id") == 2 and "error" not in shut_resp, shut_resp
+
+          proc.stdin.write(frame({
+              "jsonrpc": "2.0",
+              "method": "exit",
+              "params": None,
+          }))
+          proc.stdin.flush()
+          rc = proc.wait(timeout=10)
+          assert rc == 0, f"expected exit code 0, got {rc}"
+          PY
+
+      - name: Generate third-party license bundle
+        run: |
+          cargo install --locked --version 0.9.3 --features cli cargo-about
+          mkdir -p dist/pkg
+          cargo about generate --locked -c about.toml -m server/Cargo.toml about.hbs -o dist/pkg/THIRD_PARTY_LICENSES.md
+          grep -q "Copyright (c) 2025 Oskar Meyenburg" dist/pkg/THIRD_PARTY_LICENSES.md
+          if grep -qE '<year>|<copyright holders>' dist/pkg/THIRD_PARTY_LICENSES.md; then
+            echo "error: placeholder text left in THIRD_PARTY_LICENSES.md" >&2
+            exit 1
+          fi
+          if grep -q 'riscv-asm-lsp ' dist/pkg/THIRD_PARTY_LICENSES.md; then
+            echo "error: project crate should not appear in THIRD_PARTY_LICENSES.md" >&2
+            exit 1
+          fi
+
+          test -f /usr/share/doc/musl/copyright
+          musl_ver="$(dpkg-query -W -f='${Version}' musl)"
+          {
+            echo "## musl libc (${musl_ver})"
+            echo
+            echo 'Static binaries for `x86_64-unknown-linux-musl` statically link musl libc:'
+            echo
+            echo '````text'
+            cat /usr/share/doc/musl/copyright
+            echo '````'
+          } >> dist/pkg/THIRD_PARTY_LICENSES.md
+
+          rust_copyright="$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
+          test -f "$rust_copyright"
+          cp "$rust_copyright" dist/pkg/COPYRIGHT-library.html
+
+      - name: Package release archive and SHA-256 checksum
+        run: |
+          install -m 0755 "target/${{ env.TARGET }}/release/riscv-asm-lsp" dist/pkg/riscv-asm-lsp
+          cp LICENSE.md THIRD_PARTY_NOTICES.md dist/pkg/
+          tar --owner=0 --group=0 --numeric-owner -C dist/pkg -czf "dist/${{ env.ASSET }}" \
+            riscv-asm-lsp \
+            LICENSE.md \
+            THIRD_PARTY_NOTICES.md \
+            THIRD_PARTY_LICENSES.md \
+            COPYRIGHT-library.html
+          (cd dist && sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256" && sha256sum -c "${{ env.ASSET }}.sha256")
+          tar -tzvf "dist/${{ env.ASSET }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            "dist/${{ env.ASSET }}" \
+            "dist/${{ env.ASSET }}.sha256"

@@ -1,0 +1,27 @@
+# License bundling configuration for cargo-about (aligned with deny.toml).
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSD-3-Clause-Clear",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+]
+
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+targets = ["x86_64-unknown-linux-musl"]
+private = { ignore = true }
+
+# tree-sitter-riscv 0.3.1 omits its LICENSE file from the published crate archive;
+# pull the exact LICENSE from its pinned git commit (c89b7c525d90).
+[tree-sitter-riscv.clarify]
+license = "MIT"
+
+[[tree-sitter-riscv.clarify.git]]
+path = "LICENSE"
+checksum = "0ab35e7060ea9bae728b2285ed36a2aeddc872bef09b8461fc99de046816f49b"

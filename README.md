@@ -3,8 +3,9 @@
 riscv-asm-lsp is a language server for RISC-V assembly in the GNU assembler
 syntax, with an extension for the Zed editor.
 
-**Status: early development.** There are no releases yet; build the server
-from source. It targets LLVM 19 (`llvmorg-19.1.7`).
+**Status: early development.** Prebuilt static `x86_64-unknown-linux-musl` binaries
+are published on [GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases),
+or you can build from source. It targets LLVM 19 (`llvmorg-19.1.7`).
 
 The LLVM integrated assembler is the reference: instruction data is generated
 from LLVM's own definitions with descriptions from the RISC-V specifications,
@@ -38,6 +39,25 @@ and diagnostics and expansions come from running `clang` and `llvm-mc`.
 are off and everything else works.
 
 See [docs/features.md](docs/features.md) for detailed feature behaviour.
+
+## Installing a release
+
+Download the release archive and its checksum from
+[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases)
+(for example `v0.1.0`):
+
+```bash
+curl -fsSLO https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.1.0/riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
+curl -fsSLO https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.1.0/riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz.sha256
+sha256sum -c riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz.sha256
+tar -xzf riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz riscv-asm-lsp
+install -m 0755 riscv-asm-lsp ~/.local/bin/riscv-asm-lsp
+```
+
+The archive contains `riscv-asm-lsp` together with `LICENSE.md`,
+`THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.md`, and
+`COPYRIGHT-library.html`. Make sure the destination directory is on `PATH`,
+alongside `clang` and `llvm-mc` if you want diagnostics and expansions.
 
 ## Building
 
@@ -107,4 +127,6 @@ carries its own copy in [zed/LICENSE](zed/LICENSE). The instruction data in
 riscv-unified-db (`BSD-3-Clause-Clear`) and riscv-asm-manual (`CC-BY-4.0`) and
 stays under their licenses; hand-written files in `data/` (`directives_gnu.json`,
 `supplements.json`, `texts.json`) are MIT. See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); binary release archives
+also include `THIRD_PARTY_LICENSES.md` and `COPYRIGHT-library.html` for
+third-party crates, musl, and the Rust standard library.

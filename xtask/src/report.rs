@@ -202,6 +202,19 @@ fn render_lists(out: &mut String, report: &JoinReportData) {
         );
     }
 
+    if !report.udb_copyrights.is_empty() {
+        let _ = writeln!(
+            out,
+            "## riscv-unified-db Copyright Holders ({})",
+            report.udb_copyrights.len()
+        );
+        let _ = writeln!(out);
+        for holder in &report.udb_copyrights {
+            let _ = writeln!(out, "- {holder}");
+        }
+        let _ = writeln!(out);
+    }
+
     if !report.deprecated_joined.is_empty() {
         let _ = writeln!(out, "## CSRs Joined via Deprecated Name");
         let _ = writeln!(out);

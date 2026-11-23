@@ -20,3 +20,6 @@ ignore = "0.4"
 url = "2"
 tree-sitter = "0.27"
 tree-sitter-riscv = "0.3.1"
+
+[profile.release]
+strip = true

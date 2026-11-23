@@ -258,3 +258,19 @@
 - `mncause.CODE`
 - `mtinst`
 
+## riscv-unified-db Copyright Holders (13)
+
+- Copyright (c) 2026 Qualcomm Technologies, Inc. and/or its subsidiaries.
+- Copyright (c) Abhijit Das(Sukuna0007Abhi)
+- Copyright (c) Alibaba Damo Academy
+- Copyright (c) Animesh Agarwal
+- Copyright (c) Jordan Carlin
+- Copyright (c) Katherine Hsu
+- Copyright (c) Maanvi Chetwani
+- Copyright (c) Muhammad Abdullah — 10xEngineers
+- Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+- Copyright (c) RISC-V International
+- Copyright (c) Salil Mittal
+- Copyright (c) Syed Owais Ali Shah
+- Copyright (c) Ventana Micro Systems
+

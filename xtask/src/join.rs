@@ -28,6 +28,7 @@ pub struct JoinReportData {
     pub deprecated_joined: Vec<(String, String)>,
     pub description_corrections: Vec<(String, String, String)>,
     pub cleaned_todos: Vec<String>,
+    pub udb_copyrights: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -137,6 +138,7 @@ pub fn build(
         deprecated_joined: csr_report.deprecated_joined,
         description_corrections,
         cleaned_todos: udb.cleaned_todos,
+        udb_copyrights: udb.copyrights,
     };
 
     Ok((data, report))
@@ -996,6 +998,7 @@ mod tests {
             csrs: Vec::new(),
             registers: HashMap::new(),
             cleaned_todos: Vec::new(),
+            copyrights: Vec::new(),
         };
         let manual = AsmManualData {
             pseudos: vec![ManualPseudo {
@@ -1081,6 +1084,7 @@ mod tests {
             csrs: Vec::new(),
             registers: HashMap::new(),
             cleaned_todos: Vec::new(),
+            copyrights: Vec::new(),
         };
         let manual = AsmManualData {
             pseudos: Vec::new(),

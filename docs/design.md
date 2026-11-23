@@ -226,9 +226,13 @@ Embedded data stays under its upstream licenses ([THIRD_PARTY_NOTICES.md](../THI
 | riscv-unified-db descriptions & CSR metadata | `BSD-3-Clause-Clear` | Keep copyright and notice |
 | riscv-asm-manual tables | `CC-BY-4.0` | Credit source, authors and license |
 | `data/directives_gnu.json`, `data/supplements.json`, `data/texts.json` | `MIT` | Original project texts (no GPL/GFDL sources used) |
-| Rust dependencies (`lsp-server`, `lsp-types`, `serde*`, `tree-sitter*`, `ignore`, `url`, `yaml_serde`, `zed_extension_api`) | Permissive (`MIT` / `Apache-2.0` / `Unlicense`) | Verified via `cargo deny check licenses` against `deny.toml` |
+| Rust dependencies (`lsp-server`, `lsp-types`, `serde*`, `tree-sitter*`, `ignore`, `url`, `yaml_serde`, `zed_extension_api`) | `MIT` and `Unicode-3.0` (`riscv-asm-lsp` binary after MIT choice; full `deny.toml` allow-list verified) | Verified via `cargo deny check licenses` against `deny.toml` |
 
 External `clang` and `llvm-mc` executables run strictly as child processes.
+Binary release archives bundle `THIRD_PARTY_LICENSES.md` (generated with
+`cargo-about` using `about.toml` and `about.hbs`, plus `/usr/share/doc/musl/copyright`
+for Linux musl builds) and `COPYRIGHT-library.html` (Rust standard library
+notices) alongside `LICENSE.md` and `THIRD_PARTY_NOTICES.md`.
 
 ## 7. Testing
 
@@ -249,8 +253,9 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 Only unfinished work is listed here:
 
 - **Environment independence**:
-  - Prebuilt release binaries for Linux (`x86_64`, `aarch64`), macOS (`aarch64`,
-    `x86_64`) and Windows (`x86_64`) with checksums and bundled license notices.
+  - Prebuilt release binaries: `x86_64-unknown-linux-musl` is published on
+    GitHub Releases with checksums and bundled license notices; `aarch64`
+    Linux, macOS (`aarch64`, `x86_64`), and Windows (`x86_64`) are planned.
   - Auto-download matching release binaries from `zed/src/lib.rs` when neither
     `lsp.riscv-asm-lsp.binary` nor `PATH` provides `riscv-asm-lsp`.
   - Cross-OS CI matrix (Linux/macOS/Windows for the tool-less suite; Linux with
@@ -282,7 +287,6 @@ Only unfinished work is listed here:
 | --- | --- |
 | GNU toolchain | Whether to invoke `gcc` when `compile_commands.json` specifies GCC (not currently planned) |
 | `.asm` suffix | Shared across many architectures; currently left unclaimed |
-| Release license bundle | How to assemble dependency + embedded-data notices automatically (e.g. `cargo about`) before tagging releases |
 
 ## Appendix A. Directive support in LLVM 19
 
