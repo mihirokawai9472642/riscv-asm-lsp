@@ -34,7 +34,7 @@ pub struct LlvmData {
 }
 
 pub fn extract(llvm_dir: &Path, cache_dir: &Path) -> Result<LlvmData, Box<dyn std::error::Error>> {
-    let json_path = cache_dir.join("riscv-tblgen.json");
+    let json_path = cache_dir.join(format!("riscv-tblgen-{}.json", crate::pins::LLVM_TAG));
     if !json_path.exists() {
         eprintln!("xtask: running llvm-tblgen --dump-json...");
         let include_top = llvm_dir.join("llvm/include");
@@ -80,18 +80,37 @@ pub fn extract(llvm_dir: &Path, cache_dir: &Path) -> Result<LlvmData, Box<dyn st
     })
 }
 
-fn query_clang_extensions() -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClangExtInfo {
+    version: String,
+    description: String,
+    experimental: bool,
+}
+
+fn query_clang_extensions() -> Result<HashMap<String, ClangExtInfo>, Box<dyn std::error::Error>> {
     let out = Command::new("clang")
         .args(["--target=riscv64", "--print-supported-extensions"])
         .output()?;
     let text = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_clang_supported_extensions(&text))
+}
+
+fn parse_clang_supported_extensions(text: &str) -> HashMap<String, ClangExtInfo> {
     let mut map = HashMap::new();
+    let mut in_experimental = false;
     for line in text.lines() {
         let trimmed = line.trim();
+        if trimmed == "Experimental extensions" {
+            in_experimental = true;
+            continue;
+        }
+        if trimmed.starts_with("Supported Profiles") || trimmed.starts_with("Experimental Profiles")
+        {
+            break;
+        }
         if trimmed.is_empty()
             || trimmed.starts_with("All available")
             || trimmed.starts_with("Name ")
-            || trimmed.starts_with("Experimental")
             || trimmed.starts_with("Supported")
             || trimmed.starts_with("Use ")
             || trimmed.starts_with("For ")
@@ -109,7 +128,9 @@ fn query_clang_extensions() -> Result<HashMap<String, String>, Box<dyn std::erro
         if !ver.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             continue;
         }
-        if name.starts_with('x') {
+        let lower = name.to_ascii_lowercase();
+        let canonical = lower.strip_prefix("experimental-").unwrap_or(&lower);
+        if canonical.starts_with('x') {
             // Skip vendor extensions per Design 4.3
             continue;
         }
@@ -118,17 +139,26 @@ fn query_clang_extensions() -> Result<HashMap<String, String>, Box<dyn std::erro
             .map(|i| i + ver.len())
             .unwrap_or(trimmed.len());
         let desc = trimmed[rest_start..].trim().to_owned();
-        map.insert(name.to_ascii_lowercase(), desc);
+        map.insert(
+            canonical.to_owned(),
+            ClangExtInfo {
+                version: ver.to_owned(),
+                description: desc,
+                experimental: in_experimental || lower.starts_with("experimental-"),
+            },
+        );
     }
-    Ok(map)
+    map
 }
 
 fn extract_extensions(
     root: &serde_json::Map<String, Value>,
     instanceof: &serde_json::Map<String, Value>,
-    clang_exts: &HashMap<String, String>,
+    clang_exts: &HashMap<String, ClangExtInfo>,
 ) -> Vec<ExtensionEntry> {
-    let mut by_march: BTreeMap<String, ExtensionEntry> = BTreeMap::new();
+    let mut def_to_march: HashMap<String, String> = HashMap::new();
+    let mut candidates: Vec<(&str, &serde_json::Map<String, Value>, String, bool)> = Vec::new();
+
     if let Some(names) = instanceof.get("SubtargetFeature").and_then(Value::as_array) {
         for def_name_val in names {
             let Some(def_name) = def_name_val.as_str() else {
@@ -145,42 +175,82 @@ fn extract_extensions(
             if !superclasses.contains(&"RISCVExtension") {
                 continue;
             }
-            let Some(march_name) = rec.get("Name").and_then(Value::as_str) else {
+            let Some(raw_name) = rec.get("Name").and_then(Value::as_str) else {
                 continue;
             };
-            let lower = march_name.to_ascii_lowercase();
-            if lower.starts_with('x') || def_name.contains("Vendor") {
+            let lower_raw = raw_name.to_ascii_lowercase();
+            let is_experimental = rec.get("Experimental").and_then(Value::as_i64).unwrap_or(0) != 0
+                || lower_raw.starts_with("experimental-")
+                || superclasses.contains(&"RISCVExperimentalExtension");
+            let canonical = lower_raw
+                .strip_prefix("experimental-")
+                .unwrap_or(&lower_raw)
+                .to_owned();
+            if canonical.starts_with('x') || def_name.contains("Vendor") {
                 continue;
             }
-            let tblgen_desc = rec
-                .get("Desc")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
-            let desc = clang_exts
-                .get(&lower)
-                .filter(|s| !s.is_empty())
-                .cloned()
-                .or(tblgen_desc);
-            by_march.entry(lower.clone()).or_insert(ExtensionEntry {
-                march_name: lower,
-                llvm_feature: def_name.to_owned(),
-                description: desc,
-            });
+            def_to_march.insert(def_name.to_owned(), canonical.clone());
+            candidates.push((def_name, rec, canonical, is_experimental));
         }
     }
 
+    let mut by_march: BTreeMap<String, ExtensionEntry> = BTreeMap::new();
+    for (def_name, rec, canonical, exp_from_td) in candidates {
+        let tblgen_desc = rec
+            .get("Desc")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let clang_info = clang_exts.get(&canonical);
+        let desc = clang_info
+            .map(|c| c.description.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or(tblgen_desc);
+
+        let tblgen_version = rec
+            .get("MajorVersion")
+            .and_then(Value::as_i64)
+            .zip(rec.get("MinorVersion").and_then(Value::as_i64))
+            .map(|(maj, min)| format!("{maj}.{min}"));
+        let version = clang_info
+            .map(|c| c.version.clone())
+            .filter(|v| !v.is_empty())
+            .or(tblgen_version);
+
+        let mut implies_set = BTreeSet::new();
+        if let Some(arr) = rec.get("Implies").and_then(Value::as_array) {
+            for item in arr {
+                if let Some(imp_def) = item.get("def").and_then(Value::as_str)
+                    && let Some(imp_march) = def_to_march.get(imp_def)
+                {
+                    implies_set.insert(imp_march.clone());
+                }
+            }
+        }
+        let implies: Vec<String> = implies_set.into_iter().collect();
+        let experimental = exp_from_td || clang_info.is_some_and(|c| c.experimental);
+
+        by_march.entry(canonical.clone()).or_insert(ExtensionEntry {
+            march_name: canonical,
+            llvm_feature: def_name.to_owned(),
+            version,
+            implies,
+            experimental,
+            description: desc,
+        });
+    }
+
     // Ensure clang-reported standard extensions are all represented
-    for (name, desc) in clang_exts {
+    for (name, info) in clang_exts {
         by_march.entry(name.clone()).or_insert(ExtensionEntry {
             march_name: name.clone(),
             llvm_feature: String::new(),
-            description: if desc.is_empty() {
-                None
-            } else {
-                Some(desc.clone())
-            },
+            version: (!info.version.is_empty()).then(|| info.version.clone()),
+            implies: Vec::new(),
+            experimental: info.experimental,
+            description: (!info.description.is_empty()).then(|| info.description.clone()),
         });
     }
 
@@ -721,6 +791,95 @@ fn parse_numbered_reg(name: &str, prefix: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_clang_supported_extensions_captures_versions_and_experimental() {
+        let sample = "\
+All available -march extensions for RISC-V
+
+    Name                 Version   Description
+    i                    2.1       'I' (Base Integer Instruction Set)
+    xtheadba             1.0       Vendor extension
+
+Experimental extensions
+    zicfilp              1.0       'Zicfilp' (Landing pad)
+
+Supported Profiles
+    rvi20u64
+";
+        let parsed = parse_clang_supported_extensions(sample);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            parsed.get("i"),
+            Some(&ClangExtInfo {
+                version: "2.1".to_owned(),
+                description: "'I' (Base Integer Instruction Set)".to_owned(),
+                experimental: false,
+            })
+        );
+        assert_eq!(
+            parsed.get("zicfilp"),
+            Some(&ClangExtInfo {
+                version: "1.0".to_owned(),
+                description: "'Zicfilp' (Landing pad)".to_owned(),
+                experimental: true,
+            })
+        );
+    }
+
+    #[test]
+    fn extract_extensions_resolves_implies_and_strips_experimental_prefix() {
+        let doc = json!({
+            "!instanceof": {
+                "SubtargetFeature": ["FeatureStdExtZicsr", "FeatureStdExtZicfilp"]
+            },
+            "FeatureStdExtZicsr": {
+                "!superclasses": ["SubtargetFeature", "RISCVExtension"],
+                "Name": "zicsr",
+                "Implies": [],
+                "Experimental": 0,
+                "MajorVersion": 2,
+                "MinorVersion": 0,
+                "Desc": "'zicsr'"
+            },
+            "FeatureStdExtZicfilp": {
+                "!superclasses": ["SubtargetFeature", "RISCVExtension", "RISCVExperimentalExtension"],
+                "Name": "experimental-zicfilp",
+                "Implies": [{"def": "FeatureStdExtZicsr"}],
+                "Experimental": 1,
+                "MajorVersion": 1,
+                "MinorVersion": 0,
+                "Desc": "'Zicfilp'"
+            }
+        });
+        let root = doc.as_object().unwrap();
+        let instanceof = root["!instanceof"].as_object().unwrap();
+        let clang_exts = HashMap::from([
+            (
+                "zicsr".to_owned(),
+                ClangExtInfo {
+                    version: "2.0".to_owned(),
+                    description: "'zicsr' (CSRs)".to_owned(),
+                    experimental: false,
+                },
+            ),
+            (
+                "zicfilp".to_owned(),
+                ClangExtInfo {
+                    version: "1.0".to_owned(),
+                    description: "'Zicfilp' (Landing pad)".to_owned(),
+                    experimental: true,
+                },
+            ),
+        ]);
+        let exts = extract_extensions(root, instanceof, &clang_exts);
+        assert_eq!(exts.len(), 2);
+        let zicfilp = exts.iter().find(|e| e.march_name == "zicfilp").unwrap();
+        assert!(zicfilp.experimental);
+        assert_eq!(zicfilp.version.as_deref(), Some("1.0"));
+        assert_eq!(zicfilp.implies, vec!["zicsr"]);
+    }
 
     #[test]
     fn cond_to_ext_reqs_distinguishes_vector_subextensions_and_splits_and() {
