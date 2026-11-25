@@ -265,10 +265,9 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 
 Only unfinished work is listed here:
 
-- **Environment independence**:
-  - End-to-end Windows path testing (drive letters, UNC paths, case handling) on Windows CI runners.
-  - Native per-OS `clang`/`llvm-mc` install instructions and optional versioned LLVM data sets.
-  - Evaluate publishing to the Zed extension registry.
+- **Distribution & ecosystem**:
+  - Publish to the Zed extension registry (`zed-industries/extensions`).
+  - Optional versioned LLVM data sets and additional install channels (`crates.io` / `cargo-binstall` / editor configurations for Neovim and Helix).
 - **Additional LSP features**:
   - Call hierarchy (`textDocument/prepareCallHierarchy`, incoming/outgoing calls).
 - **Corpus-driven improvements**:
