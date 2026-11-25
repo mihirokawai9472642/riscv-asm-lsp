@@ -18,8 +18,8 @@ impl Default for DiagnosticsConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    pub clang: String,
-    pub llvm_mc: String,
+    pub clang: Option<String>,
+    pub llvm_mc: Option<String>,
     pub compile_commands_dirs: Vec<String>,
     pub default_target: String,
     pub default_march: String,
@@ -29,8 +29,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            clang: "clang".to_owned(),
-            llvm_mc: "llvm-mc".to_owned(),
+            clang: None,
+            llvm_mc: None,
             compile_commands_dirs: vec![String::new(), "build".to_owned()],
             default_target: "riscv64-unknown-elf".to_owned(),
             default_march: "rv64gc".to_owned(),
@@ -76,11 +76,19 @@ impl Config {
         };
 
         let mut cfg = Self::default();
-        if let Some(clang) = raw.clang.filter(|s| !s.trim().is_empty()) {
-            cfg.clang = clang;
+        if let Some(clang) = raw
+            .clang
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+        {
+            cfg.clang = Some(clang);
         }
-        if let Some(llvm_mc) = raw.llvm_mc.filter(|s| !s.trim().is_empty()) {
-            cfg.llvm_mc = llvm_mc;
+        if let Some(llvm_mc) = raw
+            .llvm_mc
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+        {
+            cfg.llvm_mc = Some(llvm_mc);
         }
         if let Some(dirs) = raw.compile_commands_dirs {
             cfg.compile_commands_dirs = dirs;
@@ -126,8 +134,8 @@ mod tests {
                 "delayMs": 150
             }
         })));
-        assert_eq!(cfg.clang, "/usr/bin/clang-19");
-        assert_eq!(cfg.llvm_mc, "llvm-mc");
+        assert_eq!(cfg.clang.as_deref(), Some("/usr/bin/clang-19"));
+        assert_eq!(cfg.llvm_mc, None);
         assert_eq!(cfg.default_march, "rv32imac");
         assert!(cfg.diagnostics.enable);
         assert_eq!(cfg.diagnostics.delay_ms, 150);

@@ -124,6 +124,7 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
     let tools = Arc::new(ToolRunner::new(
         config.clang.clone(),
         config.llvm_mc.clone(),
+        Some(make_message_sink(&connection)),
     ));
     let diag_worker = DiagnosticsWorker::new(
         config.diagnostics.enable,
@@ -164,11 +165,13 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         mut index,
         diag_worker,
         hover_worker,
+        tools,
         ..
     } = state;
     index.shutdown();
     diag_worker.shutdown();
     hover_worker.shutdown();
+    drop(tools);
     drop(connection);
 
     let (shutdown_received, exit_code) = match loop_res {
