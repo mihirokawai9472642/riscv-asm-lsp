@@ -344,7 +344,7 @@ fn snapshot_clang_diagnostics() {
     let err_src = std::fs::read_to_string(&err_path).expect("read errors.S");
 
     let mut client = LspClient::start(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 10 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 10, "external": "on" } })),
         Some(&root_uri),
     );
     client.open_doc(&err_uri, 1, &err_src);
