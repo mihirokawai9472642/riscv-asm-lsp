@@ -46,30 +46,42 @@ kernel, firmware and embedded projects:
 ### 1.3 Non-goals
 
 - Architectures other than RISC-V.
+- Matching each workspace's exact GNU `as` or local LLVM version dynamically.
+  Following `clangd`, behaviour is defined by the server's own bundled reference
+  generated from one pinned LLVM release, updated with each server release;
+  multiple per-version datasets or binaries (`zls`/`HLS` style) are not
+  maintained.
+- Executing compiler drivers discovered inside `compile_commands.json` (never run
+  by default, matching `clangd`'s security model).
 - Directives that only GNU `as` accepts and LLVM rejects (for example `.eqv`,
-  `.func`, `.float16`, listing directives). They are tolerated in parsing but
-  are not treated as supported assembler directives.
-- Re-implementing full C preprocessing or conditional `#ifdef` evaluation; when
-  exact expansion or validation is needed, the server invokes LLVM tools.
-- Sandboxing against untrusted projects: the server builds `clang` and
-  `llvm-mc` invocations from `compile_commands.json` and is meant for trusted
-  workspaces.
+  `.func`, `.float16`, listing directives). They are tolerated in parsing and
+  treated as non-LLVM advice/warnings rather than supported assembler directives.
 
 ### 1.4 Priorities
 
-1. Complete, reliable RISC-V assembly support matching LLVM 19.
-2. Clean, portable architecture: configurable tool paths and compilation
-   database lookup, without tying the server or extension to a particular container
-   or editor host setup.
+1. Environment independence: installing the extension works out of the box with
+   bundled reference data and zero required external tools, while keeping
+   explicit `binary` overrides (`docker compose exec ...`) and `PATH` servers
+   working seamlessly.
+2. Clean, portable `clangd`-style architecture: bundled single-version reference
+   engine supplemented optionally by explicit or `PATH`-discovered LLVM tools,
+   with safe compile-database handling and zero panics.
 
 ## 2. Key decisions
+
+`clangd` is the main architecture and distribution reference (compile-database
+handling, configuration layering and safety rules, workspace indexing,
+robustness, and single pinned upstream reference updated once per LLVM major
+release).
 
 | Decision | Choice | Reason |
 | --- | --- | --- |
 | Scope | RISC-V only (RV32 and RV64) | Architecture-specific data, CSRs and grammar stay coherent and maintainable |
 | Syntax | GNU assembler syntax (`#` / `//` / `/* */` comments, `;` statements, `.` directives) | Standard syntax for RISC-V assembly; accepted by LLVM |
-| Reference implementation | LLVM integrated assembler (`clang`, `llvm-mc`) | Matches build diagnostics with column numbers, provides live expansions/encodings, permissive license |
-| Target LLVM version | 19 (`llvmorg-19.1.7`) | Pinned reference version; supporting multiple versions is future work |
+| Reference implementation | Bundled data generated from one pinned LLVM release (currently `19` / `llvmorg-19.1.7`, moving to latest stable LLVM), supplemented optionally by external `clang`/`llvm-mc` | Matches `clangd`'s single-reference model without per-version data maintenance; reference LLVM acts as CI oracle |
+| External tools | Optional, any recent LLVM version with `riscv32`/`riscv64` targets; never run compilers from `compile_commands.json` | Avoids brittle host-version coupling and security risks; transitions to opt-in once the built-in validator is complete |
+| Built-in engine (planned) | Pure-Rust preprocessor + approximate validator + `RISCVMatInt` / tblgen encoding in the server | Avoids C++ LLVM MC bindings and 5-target LLVM C++ builds; keeps binary small and static |
+| Built-in diagnostics rule (planned) | Report only when certain (skip unexpanded macros, `.macro`/`.irp`/`.rept` bodies, unresolved expressions); GNU-only constructs warn with stable codes | Avoids false positives that erode trust while providing stable suppressible diagnostic codes |
 | Implementation language | Rust (edition 2024, MSRV 1.90) | Required by `tree-sitter` 0.27 (`msrv` CI check); shares ecosystem with `zed_extension_api` and ships one binary |
 | Data generation | Rust (`xtask`) | Single language in the repository |
 | Repository layout | Server, data, generator and Zed extension together | Versions and grammar queries stay in sync |
@@ -138,7 +150,7 @@ missing or fails, only diagnostics or expansions degrade.
 | `semantic_tokens.rs` | Full and range semantic token encoding (including `#` comment/preproc override) |
 | `diagnostics/` | Async debounced `DiagnosticsWorker` (`worker.rs`), `clang` runner (`clang.rs`), stderr/note/include parser (`parse.rs`), `#define` hints (`hints.rs`) |
 | `code_action.rs` | `did you mean` and `Use // comment` quick fixes and rewrite actions |
-| `tools.rs` | External process execution with timeouts, Clang major-version warning, and one-shot permanent-failure disable |
+| `tools.rs` | Version-independent external process discovery, RISC-V target verification, configured-tool warnings, timeouts, and one-shot permanent-failure disable |
 
 `xtask/src/`: `main.rs`, `pins.rs`, `fetch.rs`, `llvm.rs`, `udb.rs`, `asm_manual.rs`, `join.rs`, `report.rs`.
 
@@ -199,7 +211,11 @@ effective `MarchSpec` per line.
 Options are read from `initializationOptions` at startup and updated live via
 `workspace/didChangeConfiguration` and `workspace/didChangeWorkspaceFolders`:
 `clang`, `llvmMc`, `compileCommandsDirs`, `defaultTarget`, `defaultMarch`,
-`diagnostics.enable`, and `diagnostics.delayMs`.
+`diagnostics.enable`, and `diagnostics.delayMs`. External tool paths (`clang`,
+`llvmMc`) come strictly from user/client configuration, `PATH`, or standard
+system install directories — never from compilers named inside
+`compile_commands.json` (which is inspected solely for allow-listed assembler and
+preprocessor flags).
 
 ## 5. Robustness rules
 
@@ -265,12 +281,19 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 
 Only unfinished work is listed here:
 
-- **Distribution & ecosystem**:
-  - Publish to the Zed extension registry (`zed-industries/extensions`).
-  - Optional versioned LLVM data sets and additional install channels (`crates.io` / `cargo-binstall` / editor configurations for Neovim and Helix).
-- **Additional LSP features**:
+- **Distribution verification & publishing**:
+  - Verify multi-platform `release.yml` dry-run archives, test clean Zed GUI installation/settings/features, tag `v0.2.0`, and publish to the Zed extension registry (`zed-industries/extensions`).
+  - Additional optional install channels (`crates.io` after moving embedded `data/` into `server/`, `cargo-binstall`, Neovim/Helix configs).
+- **Built-in `clangd`-style engine**:
+  - Generate extension implications, versions, and experimental markers from tblgen `Implies` in `xtask`, replacing hand-written tables in `march.rs`.
+  - Advance the bundled reference data and container from LLVM 19 straight to the latest stable LLVM release.
+  - Implement a built-in C preprocessor in `preprocessor.rs` (`#define`/`#undef`, predefined `__riscv*` macros, `#if` expression evaluator, active/inactive/uncertain classification, UTF-16 source mapping).
+  - Implement a built-in instruction/directive validator (`diagnostics/builtin.rs`) with stable suppressible codes and CI oracle validation against reference `llvm-mc`, then switch external `clang`/`llvm-mc` to opt-in (`off` by default) while avoiding duplicate mixed diagnostics.
+  - Port LLVM `RISCVMatInt` for `li`, add fixed pseudo expansions, and generate tblgen `Inst` encoding templates for hover `This line:` without `llvm-mc`.
+- **clangd-style project ergonomics**:
+  - Compile-database command interpolation from nearest known sibling file; `.clangd`-style project configuration file (excluding unsafe tool-path settings).
+- **Additional LSP features & corpus items**:
   - Call hierarchy (`textDocument/prepareCallHierarchy`, incoming/outgoing calls).
-- **Corpus-driven improvements**:
   - Inline labels defined inside C macro argument strings (e.g. Linux
     `ALTERNATIVE(..., __stringify(... label:), ...)`).
   - Upstream reports / selective workarounds for `tree-sitter-riscv` grammar
@@ -284,7 +307,6 @@ Only unfinished work is listed here:
 
 | Topic | Notes |
 | --- | --- |
-| GNU toolchain | Whether to invoke `gcc` when `compile_commands.json` specifies GCC (not currently planned) |
 | `.asm` suffix | Shared across many architectures; currently left unclaimed |
 
 ## Appendix A. Directive support in LLVM 19

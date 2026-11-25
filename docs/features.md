@@ -50,13 +50,12 @@ For valid instructions under active `-march`/`.option` state, hover invokes
 llvm-mc -triple=<riscv32|riscv64> -mattr=<attrs> -show-encoding -M no-aliases
 ```
 
-- When `llvmMc` is not explicitly configured, the server searches `llvm-mc-19`
-  on `PATH`, then `llvm-mc` on `PATH`, then standard LLVM 19 install
-  directories (`/usr/lib/llvm-19/bin` on Linux,
-  `/opt/homebrew/opt/llvm@19/bin` and `/usr/local/opt/llvm@19/bin` on macOS,
-  `C:\Program Files\LLVM\bin` on Windows), verifying the LLVM major version and
-  RISC-V target support via `llvm-mc --version` (see [Diagnostics and code
-  actions](#diagnostics-and-code-actions) for warning behaviour).
+- When `llvmMc` is not explicitly configured, the server searches `llvm-mc` on
+  `PATH`, then the highest versioned `llvm-mc-<N>` on `PATH`, then standard
+  LLVM install directories (`/usr/lib/llvm-*/bin` on Linux, Homebrew
+  `llvm`/`llvm@*` on macOS, `C:\Program Files\LLVM\bin` on Windows), verifying
+  RISC-V (`riscv32`/`riscv64`) target support via `llvm-mc --version` without
+  requiring a specific LLVM version.
 - Preceding `.option` directives, visible `.equ`/`#define` constants, and
   `clang -E -P -x assembler-with-cpp` preprocessing are applied before invoking
   `llvm-mc`.
@@ -132,21 +131,23 @@ Supports `textDocument/definition`, `textDocument/references`,
 
 ## Diagnostics and code actions
 
-- **Toolchain discovery & compatibility checks**: when `clang` or `llvmMc` is
-  omitted, the server looks up `clang-19`/`llvm-mc-19` on `PATH`, then
-  `clang`/`llvm-mc` on `PATH`, and finally standard LLVM 19 install paths
-  (`/usr/lib/llvm-19/bin` on Linux, `/opt/homebrew/opt/llvm@19/bin` and
-  `/usr/local/opt/llvm@19/bin` on macOS, `C:\Program Files\LLVM\bin` on
-  Windows). Explicit paths configured via `clang` / `llvmMc` are used directly
-  without fallback. On first use per configuration, each tool runs a one-shot
-  `--version` and RISC-V target check (`clang -print-targets` /
-  `llvm-mc --version`):
-  - If the LLVM major version is not 19, diagnostics/expansions keep running and
-    a single `window/showMessage` warning is sent.
-  - If a tool is missing or lacks a RISC-V target (such as Apple's system
-    `clang`), only the feature that needs it is disabled, and at most one
-    `window/showMessage` warning per tool per configuration is sent naming the
-    setting and linking to `README.md#installing-llvm-19`.
+- **Toolchain discovery**: when `clang` or `llvmMc` is omitted, the server
+  searches in order:
+  1. `clang` / `llvm-mc` on `PATH`;
+  2. the highest versioned `clang-<N>` / `llvm-mc-<N>` found on `PATH`;
+  3. standard LLVM install paths (`/usr/lib/llvm-*/bin` on Linux, Homebrew
+     `llvm` and `llvm@*` on macOS, `C:\Program Files\LLVM\bin` on Windows,
+     newest version first).
+
+  Any LLVM version with `riscv32` or `riscv64` target support (`clang
+  -print-targets` / `llvm-mc --version`) is accepted without version warnings.
+  During auto-discovery, candidates that lack RISC-V targets (such as Apple's
+  system `clang`) are skipped; if no usable binary is found, only that
+  feature is disabled and logged once to stderr without a `window/showMessage`
+  popup. When an explicitly configured `clang` / `llvmMc` path fails to run or
+  lacks RISC-V targets, a single `window/showMessage` warning is sent naming the
+  setting and linking to
+  `README.md#optional-llvm-for-clang-based-diagnostics-and-expansions`.
 - `DiagnosticsWorker` debounces unsaved edits (`diagnostics.delayMs`, default
   300 ms), discards stale runs when document version advances, and runs:
 
