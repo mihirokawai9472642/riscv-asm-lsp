@@ -703,8 +703,9 @@ mod tests {
         );
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
-            "/nonexistent/clang".to_owned(),
-            "/nonexistent/llvm-mc".to_owned(),
+            Some("/nonexistent/clang".to_owned()),
+            Some("/nonexistent/llvm-mc".to_owned()),
+            None,
         );
         index.upsert_open_document(doc);
 
@@ -785,8 +786,9 @@ mod tests {
         );
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
-            "/nonexistent/clang".to_owned(),
-            "/nonexistent/llvm-mc".to_owned(),
+            Some("/nonexistent/clang".to_owned()),
+            Some("/nonexistent/llvm-mc".to_owned()),
+            None,
         );
         index.upsert_open_document(doc);
 
@@ -833,8 +835,9 @@ mod tests {
         );
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
-            "/nonexistent/clang".to_owned(),
-            "/nonexistent/llvm-mc".to_owned(),
+            Some("/nonexistent/clang".to_owned()),
+            Some("/nonexistent/llvm-mc".to_owned()),
+            None,
         );
         index.upsert_open_document(doc);
 
@@ -861,8 +864,9 @@ mod tests {
         let doc = store.open(uri, 1, "    fadd.q f0, f1, f2\n".to_owned());
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
-            "/nonexistent/clang".to_owned(),
-            "/nonexistent/llvm-mc".to_owned(),
+            Some("/nonexistent/clang".to_owned()),
+            Some("/nonexistent/llvm-mc".to_owned()),
+            None,
         );
         index.upsert_open_document(doc);
         let h = provide_hover(doc, Position::new(0, 5), &db, &mut ctx, &mut index, &tools)
@@ -931,8 +935,9 @@ loop_\\@:
         let doc = store.open(uri, 1, src.to_owned());
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
-            "/nonexistent/clang".to_owned(),
-            "/nonexistent/llvm-mc".to_owned(),
+            Some("/nonexistent/clang".to_owned()),
+            Some("/nonexistent/llvm-mc".to_owned()),
+            None,
         );
         index.upsert_open_document(doc);
 
@@ -986,7 +991,11 @@ loop_\\@:
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let started_tx = Mutex::new(Some(started_tx));
         let release_rx = Mutex::new(Some(release_rx));
-        let tools = Arc::new(ToolRunner::new("clang".to_owned(), "llvm-mc".to_owned()));
+        let tools = Arc::new(ToolRunner::new(
+            Some("clang".to_owned()),
+            Some("llvm-mc".to_owned()),
+            None,
+        ));
         let worker = HoverWorker::new(
             tools,
             Arc::new(move |msg| {

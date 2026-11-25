@@ -2,14 +2,44 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use lsp_server::{Message, Notification};
+use lsp_types::{MessageType, ShowMessageParams};
+
+use crate::diagnostics::MessageSink;
+
+const LLVM_INSTALL_URL: &str =
+    "https://github.com/mihirokawai9472642/riscv-asm-lsp#installing-llvm-19";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
     Clang,
     LlvmMc,
+}
+
+impl ToolKind {
+    fn default_name(self) -> &'static str {
+        match self {
+            Self::Clang => "clang",
+            Self::LlvmMc => "llvm-mc",
+        }
+    }
+
+    fn setting_name(self) -> &'static str {
+        match self {
+            Self::Clang => "clang",
+            Self::LlvmMc => "llvmMc",
+        }
+    }
+
+    fn feature_name(self) -> &'static str {
+        match self {
+            Self::Clang => "diagnostics",
+            Self::LlvmMc => "hover expansions",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -19,50 +49,58 @@ pub struct ToolOutput {
     pub stderr: String,
 }
 
-pub struct ToolRunner {
-    clang_bin: Mutex<String>,
-    llvm_mc_bin: Mutex<String>,
-    clang_disabled: AtomicBool,
-    llvm_mc_disabled: AtomicBool,
-    clang_logged: AtomicBool,
-    llvm_mc_logged: AtomicBool,
-    clang_timeout_logged: AtomicBool,
-    llvm_mc_timeout_logged: AtomicBool,
-    clang_version_checked: AtomicBool,
+#[derive(Debug, Default)]
+struct ToolSlot {
+    explicit: Option<String>,
+    probed: bool,
+    resolved_bin: Option<String>,
+    disabled: bool,
+    runtime_logged: bool,
+    timeout_logged: bool,
 }
 
-impl ToolRunner {
-    pub fn new(clang_bin: String, llvm_mc_bin: String) -> Self {
+impl ToolSlot {
+    fn new(explicit: Option<String>) -> Self {
         Self {
-            clang_bin: Mutex::new(clang_bin),
-            llvm_mc_bin: Mutex::new(llvm_mc_bin),
-            clang_disabled: AtomicBool::new(false),
-            llvm_mc_disabled: AtomicBool::new(false),
-            clang_logged: AtomicBool::new(false),
-            llvm_mc_logged: AtomicBool::new(false),
-            clang_timeout_logged: AtomicBool::new(false),
-            llvm_mc_timeout_logged: AtomicBool::new(false),
-            clang_version_checked: AtomicBool::new(false),
+            explicit,
+            ..Self::default()
         }
     }
 
-    pub fn update_bins(&self, clang_bin: String, llvm_mc_bin: String) {
-        if let Ok(mut g) = self.clang_bin.lock()
-            && *g != clang_bin
-        {
-            *g = clang_bin;
-            self.clang_disabled.store(false, Ordering::Relaxed);
-            self.clang_logged.store(false, Ordering::Relaxed);
-            self.clang_timeout_logged.store(false, Ordering::Relaxed);
-            self.clang_version_checked.store(false, Ordering::Relaxed);
+    fn reset(&mut self, explicit: Option<String>) {
+        *self = Self::new(explicit);
+    }
+}
+
+pub struct ToolRunner {
+    clang: Mutex<ToolSlot>,
+    llvm_mc: Mutex<ToolSlot>,
+    message_sink: Option<MessageSink>,
+}
+
+impl ToolRunner {
+    pub fn new(
+        clang_bin: Option<String>,
+        llvm_mc_bin: Option<String>,
+        message_sink: Option<MessageSink>,
+    ) -> Self {
+        Self {
+            clang: Mutex::new(ToolSlot::new(clang_bin)),
+            llvm_mc: Mutex::new(ToolSlot::new(llvm_mc_bin)),
+            message_sink,
         }
-        if let Ok(mut g) = self.llvm_mc_bin.lock()
-            && *g != llvm_mc_bin
+    }
+
+    pub fn update_bins(&self, clang_bin: Option<String>, llvm_mc_bin: Option<String>) {
+        if let Ok(mut slot) = self.clang.lock()
+            && slot.explicit != clang_bin
         {
-            *g = llvm_mc_bin;
-            self.llvm_mc_disabled.store(false, Ordering::Relaxed);
-            self.llvm_mc_logged.store(false, Ordering::Relaxed);
-            self.llvm_mc_timeout_logged.store(false, Ordering::Relaxed);
+            slot.reset(clang_bin);
+        }
+        if let Ok(mut slot) = self.llvm_mc.lock()
+            && slot.explicit != llvm_mc_bin
+        {
+            slot.reset(llvm_mc_bin);
         }
     }
 
@@ -72,12 +110,7 @@ impl ToolRunner {
         stdin_text: &str,
         working_dir: Option<&Path>,
     ) -> Option<ToolOutput> {
-        let bin = self
-            .clang_bin
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| "clang".to_owned());
-        self.check_clang_version_once(&bin);
+        let bin = self.resolve_bin(ToolKind::Clang)?;
         self.run(
             ToolKind::Clang,
             &bin,
@@ -89,11 +122,7 @@ impl ToolRunner {
     }
 
     pub fn run_llvm_mc(&self, args: &[String], stdin_text: &str) -> Option<ToolOutput> {
-        let bin = self
-            .llvm_mc_bin
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| "llvm-mc".to_owned());
+        let bin = self.resolve_bin(ToolKind::LlvmMc)?;
         self.run(
             ToolKind::LlvmMc,
             &bin,
@@ -105,29 +134,115 @@ impl ToolRunner {
     }
 
     pub fn is_disabled(&self, kind: ToolKind) -> bool {
+        self.slot(kind).lock().map(|s| s.disabled).unwrap_or(false)
+    }
+
+    fn slot(&self, kind: ToolKind) -> &Mutex<ToolSlot> {
         match kind {
-            ToolKind::Clang => self.clang_disabled.load(Ordering::Relaxed),
-            ToolKind::LlvmMc => self.llvm_mc_disabled.load(Ordering::Relaxed),
+            ToolKind::Clang => &self.clang,
+            ToolKind::LlvmMc => &self.llvm_mc,
         }
     }
 
-    fn check_clang_version_once(&self, bin: &str) {
-        if self.clang_version_checked.swap(true, Ordering::Relaxed) {
-            return;
+    fn resolve_bin(&self, kind: ToolKind) -> Option<String> {
+        let mut slot = self.slot(kind).lock().ok()?;
+        if !slot.probed {
+            self.probe_slot(kind, &mut slot);
         }
-        let Ok(out) = Command::new(bin).arg("--version").output() else {
+        if slot.disabled {
+            return None;
+        }
+        slot.resolved_bin.clone()
+    }
+
+    fn probe_slot(&self, kind: ToolKind, slot: &mut ToolSlot) {
+        slot.probed = true;
+        let candidates = candidate_bins(kind, slot.explicit.as_deref());
+        let is_explicit = slot.explicit.is_some();
+
+        let mut chosen: Option<(String, String)> = None;
+        let mut last_err: Option<String> = None;
+
+        for cand in &candidates {
+            if !is_explicit && looks_like_path(cand) && !Path::new(cand).is_file() {
+                continue;
+            }
+            match Command::new(cand).arg("--version").output() {
+                Ok(out) if out.status.success() => {
+                    let combined = combine_output(&out.stdout, &out.stderr);
+                    chosen = Some((cand.clone(), combined));
+                    break;
+                }
+                Ok(out) => {
+                    last_err = Some(format!("`{cand} --version` exited with {}", out.status));
+                }
+                Err(err) => {
+                    last_err = Some(format!("failed to execute `{cand}`: {err}"));
+                }
+            }
+        }
+
+        let Some((bin, version_out)) = chosen else {
+            slot.disabled = true;
+            let requested = slot
+                .explicit
+                .as_deref()
+                .unwrap_or_else(|| kind.default_name());
+            let detail = last_err.unwrap_or_else(|| "executable not found".to_owned());
+            let msg = format!(
+                "RISC-V Assembly: {} disabled — `{requested}` not found ({detail}). Configure `lsp.riscv-asm-lsp.settings.{}` or install LLVM 19: {LLVM_INSTALL_URL}",
+                kind.feature_name(),
+                kind.setting_name(),
+            );
+            eprintln!(
+                "riscv-asm-lsp: disabling {} ({requested}): {detail}",
+                kind.feature_name()
+            );
+            self.notify_warning(&msg);
             return;
         };
-        if !out.status.success() {
+
+        let major = parse_llvm_major_version(&version_out);
+        let targets_ok = match kind {
+            ToolKind::LlvmMc => has_riscv_target(&version_out),
+            ToolKind::Clang => Command::new(&bin)
+                .arg("-print-targets")
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .is_some_and(|out| has_riscv_target(&combine_output(&out.stdout, &out.stderr))),
+        };
+
+        if !targets_ok {
+            slot.disabled = true;
+            let ver_note = major
+                .map(|m| format!(" (LLVM {m}; expected LLVM 19)"))
+                .unwrap_or_default();
+            let msg = format!(
+                "RISC-V Assembly: {} disabled — `{bin}`{ver_note} does not include riscv32/riscv64 targets. Configure `lsp.riscv-asm-lsp.settings.{}` or install LLVM 19: {LLVM_INSTALL_URL}",
+                kind.feature_name(),
+                kind.setting_name(),
+            );
+            eprintln!(
+                "riscv-asm-lsp: disabling {} ({bin}): missing riscv32/riscv64 target support{ver_note}",
+                kind.feature_name()
+            );
+            self.notify_warning(&msg);
             return;
         }
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        if let Some(major) = parse_clang_major_version(&stdout)
-            && major != 19
+
+        slot.resolved_bin = Some(bin.clone());
+        if let Some(m) = major
+            && m != 19
         {
-            eprintln!(
-                "riscv-asm-lsp: warning: `{bin}` reports Clang major version {major}; expected LLVM/Clang 19 (diagnostics or extension behavior may differ)"
+            let msg = format!(
+                "RISC-V Assembly: `{bin}` reports LLVM major version {m}; expected LLVM 19 (diagnostics or expansions may differ). Configure `lsp.riscv-asm-lsp.settings.{}` or see {LLVM_INSTALL_URL}",
+                kind.setting_name(),
             );
+            eprintln!(
+                "riscv-asm-lsp: warning: `{bin}` reports LLVM major version {m}; expected LLVM 19"
+            );
+            self.notify_warning(&msg);
         }
     }
 
@@ -244,47 +359,124 @@ impl ToolRunner {
     }
 
     fn log_transient_once(&self, kind: ToolKind, bin: &str, reason: &str) {
-        let logged = match kind {
-            ToolKind::Clang => &self.clang_logged,
-            ToolKind::LlvmMc => &self.llvm_mc_logged,
-        };
-        if !logged.swap(true, Ordering::Relaxed) {
+        if let Ok(mut slot) = self.slot(kind).lock()
+            && !slot.runtime_logged
+        {
+            slot.runtime_logged = true;
             eprintln!("riscv-asm-lsp: {bin}: {reason}");
         }
     }
 
     fn log_timeout_once(&self, kind: ToolKind, bin: &str, timeout: Duration) {
-        let (logged, feature) = match kind {
-            ToolKind::Clang => (&self.clang_timeout_logged, "diagnostics"),
-            ToolKind::LlvmMc => (&self.llvm_mc_timeout_logged, "hover expansion"),
-        };
-        if !logged.swap(true, Ordering::Relaxed) {
+        if let Ok(mut slot) = self.slot(kind).lock()
+            && !slot.timeout_logged
+        {
+            slot.timeout_logged = true;
             eprintln!(
-                "riscv-asm-lsp: `{bin}` timed out after {}s during {feature}",
-                timeout.as_secs()
+                "riscv-asm-lsp: `{bin}` timed out after {}s during {}",
+                timeout.as_secs(),
+                kind.feature_name()
             );
         }
     }
 
     fn disable_once(&self, kind: ToolKind, bin: &str, reason: &str) {
-        let (disabled, logged, feature) = match kind {
-            ToolKind::Clang => (&self.clang_disabled, &self.clang_logged, "diagnostics"),
-            ToolKind::LlvmMc => (
-                &self.llvm_mc_disabled,
-                &self.llvm_mc_logged,
-                "hover expansions",
-            ),
+        let should_log = if let Ok(mut slot) = self.slot(kind).lock() {
+            slot.disabled = true;
+            let first = !slot.runtime_logged;
+            slot.runtime_logged = true;
+            first
+        } else {
+            false
         };
-        disabled.store(true, Ordering::Relaxed);
-        if !logged.swap(true, Ordering::Relaxed) {
-            eprintln!("riscv-asm-lsp: disabling {feature} ({bin}): {reason}");
+        if should_log {
+            eprintln!(
+                "riscv-asm-lsp: disabling {} ({bin}): {reason}",
+                kind.feature_name()
+            );
+        }
+    }
+
+    fn notify_warning(&self, message: &str) {
+        let Some(sink) = &self.message_sink else {
+            return;
+        };
+        let params = ShowMessageParams {
+            typ: MessageType::WARNING,
+            message: message.to_owned(),
+        };
+        if let Ok(val) = serde_json::to_value(params) {
+            sink(Message::Notification(Notification::new(
+                "window/showMessage".to_owned(),
+                val,
+            )));
         }
     }
 }
 
-fn parse_clang_major_version(output: &str) -> Option<u32> {
+pub fn candidate_bins(kind: ToolKind, explicit: Option<&str>) -> Vec<String> {
+    candidate_bins_for_os(kind, explicit, cfg!(windows))
+}
+
+pub(crate) fn candidate_bins_for_os(
+    kind: ToolKind,
+    explicit: Option<&str>,
+    is_windows: bool,
+) -> Vec<String> {
+    if let Some(p) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return vec![p.to_owned()];
+    }
+    let (v19, bare, exe) = match kind {
+        ToolKind::Clang => ("clang-19", "clang", "clang.exe"),
+        ToolKind::LlvmMc => ("llvm-mc-19", "llvm-mc", "llvm-mc.exe"),
+    };
+    let mut out = vec![
+        v19.to_owned(),
+        bare.to_owned(),
+        format!("/usr/lib/llvm-19/bin/{bare}"),
+        format!("/opt/homebrew/opt/llvm@19/bin/{bare}"),
+        format!("/usr/local/opt/llvm@19/bin/{bare}"),
+    ];
+    if is_windows {
+        out.push(format!(r"C:\Program Files\LLVM\bin\{exe}"));
+    }
+    out
+}
+
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/') || s.contains('\\')
+}
+
+fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let mut out = String::from_utf8_lossy(stdout).into_owned();
+    if !stderr.is_empty() {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&String::from_utf8_lossy(stderr));
+    }
+    out
+}
+
+pub(crate) fn parse_llvm_major_version(output: &str) -> Option<u32> {
     let idx = output.find("version ")?;
     let after = &output[idx + "version ".len()..];
     let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse().ok()
+}
+
+pub(crate) fn has_riscv_target(output: &str) -> bool {
+    let Some(pos) = output.find("Registered Targets:") else {
+        return false;
+    };
+    let after = &output[pos + "Registered Targets:".len()..];
+    for line in after.lines() {
+        let Some(first) = line.split_whitespace().next() else {
+            continue;
+        };
+        if matches!(first, "riscv32" | "riscv64") {
+            return true;
+        }
+    }
+    false
 }
