@@ -122,7 +122,7 @@ Example `.zed/settings.json`:
 | `defaultMarch` | `"rv64gc"` | `-march` for files without an entry |
 | `diagnostics.enable` | `true` | Enable diagnostics |
 | `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
-| `diagnostics.external` | `"auto"` | External `clang` diagnostics mode (`"auto"`, `"on"`, or `"off"`) |
+| `diagnostics.external` | `"off"` | External `clang` diagnostics mode (`"off"`, `"auto"`, or `"on"`; opt-in) |
 | `diagnostics.suppress` | `[]` | Built-in diagnostic codes to suppress (e.g. `["gnu-only-directive"]`) |
 
 ## Installing a release

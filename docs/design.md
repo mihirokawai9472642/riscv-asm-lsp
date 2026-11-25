@@ -211,7 +211,7 @@ effective `MarchSpec` per line.
 Options are read from `initializationOptions` at startup and updated live via
 `workspace/didChangeConfiguration` and `workspace/didChangeWorkspaceFolders`:
 `clang`, `llvmMc`, `compileCommandsDirs`, `defaultTarget`, `defaultMarch`,
-`diagnostics.enable`, `diagnostics.delayMs`, `diagnostics.external`, and `diagnostics.suppress`. External tool paths (`clang`,
+`diagnostics.enable`, `diagnostics.delayMs`, `diagnostics.external` (default `"off"`), and `diagnostics.suppress`. External tool paths (`clang`,
 `llvmMc`) come strictly from user/client configuration, `PATH`, or standard
 system install directories — never from compilers named inside
 `compile_commands.json` (which is inspected solely for allow-listed assembler and
