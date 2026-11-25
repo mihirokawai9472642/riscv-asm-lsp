@@ -32,13 +32,14 @@ Representative outputs live under `tests/snapshots/hover/`:
 | Target | Context Header & Code Block | Notices, Facts & Prose | Example |
 | --- | --- | --- | --- |
 | Instruction / Alias / Pseudo | `<Instruction\|Alias\|Pseudo-instruction> · [<long name> · ]<extensions/base ISA> · <RV32\|RV64\|RV32/RV64>[ · spec only]`; up to 3 active-XLEN syntax variants in a `riscv` fence (plus `*(+N more)*` if truncated) | `>` notices if spec-only (not in LLVM 19), disabled by `-march`/`.option`, or deprecated (`prefer \`...\``); `Alias of:`, decoded `Operands:` constraints across all 77 LLVM operand classes, `This line:` live expansion & encoding from `llvm-mc`, and concise `summary` | [instruction.md](../tests/snapshots/hover/instruction.md), [instruction_with_expansion.md](../tests/snapshots/hover/instruction_with_expansion.md), [alias.md](../tests/snapshots/hover/alias.md), [pseudo.md](../tests/snapshots/hover/pseudo.md), [macro_expansion.md](../tests/snapshots/hover/macro_expansion.md) |
-| CSR (`stvec` or numeric `0x105` in CSR position) | `CSR · [<long name> · ]0x<hex> · <privilege>-mode[ · spec only]` (e.g. `CSR · Supervisor Trap Vector · 0x105 · S-mode`); CSR name in `riscv` fence | `Fields:` bullet list (up to 8 fields as ``- `NAME` [bits] — summary``, plus `- *+N more fields*` if more) and concise summary prose | [csr.md](../tests/snapshots/hover/csr.md) |
+| CSR (`stvec` or numeric `0x105` in CSR position) | `CSR · [<long name> · ]0x<hex> · <privilege>-mode[ · spec only]` (e.g. `CSR · Supervisor Trap Vector · 0x105 · S-mode`); CSR name in `riscv` fence | `>` notices if spec-only or disabled by active `-march` XLEN/extensions; `Fields:` bullet list (up to 8 fields using RV32 bit ranges under RV32 `-march`, as ``- `NAME` [bits] — summary``, plus `- *+N more fields*` if more) and concise summary prose | [csr.md](../tests/snapshots/hover/csr.md) |
+| Operand keyword (`%hi`, `rne`, `iorw`, `v0.t`) | `Relocation modifier`, `Rounding mode`, `Fence ordering`, or `Vector mask`; token in `riscv` fence | Explanation matching active instruction operand role or `%` modifier | — |
 | Register (`x10` / `a0`) | `Register · <Integer\|Floating-point\|Vector>[ · <saver>]` (e.g. `Register · Integer · caller-saved`); `<abi> (<arch>)` in `riscv` fence | Concise register summary prose | [register.md](../tests/snapshots/hover/register.md) |
 | Directive (`.globl`, `.macro`, `.cfi_sections`, ...) | `Directive · <GNU / LLVM\|GNU only>`; `<name>[ <arguments>]` in `riscv` fence | `>` notice for GNU-only directives not accepted by LLVM 19; concise description | [directive.md](../tests/snapshots/hover/directive.md) |
 | Preprocessor `#<directive>` (in preprocessed files) | `Preprocessor directive`; `#<name>` in `c` fence | `>` notice that `#<name>` is handled by the C preprocessor rather than treated as a comment; directive description | [preprocessor_directive.md](../tests/snapshots/hover/preprocessor_directive.md) |
 | Project symbols (`label`, `.equ`, `.set`, `=`, `.macro`, `.irp`/`.irpc` param, `#define`, `1f`/`1b`) | ``<Kind> · `<file>:<line>` `` (`Label`, `Local label`, `Numeric label`, `Constant (.equ)` / `Constant (.equiv)` / `Symbol (.set)` / `Symbol (=)`, `Macro`, `Macro parameter`, `#define`); defining line in `riscv` fence | `>` notice when reassigned multiple times in scope; ``Value: `<val>` `` fact for constants/defines | [label.md](../tests/snapshots/hover/label.md), [equ.md](../tests/snapshots/hover/equ.md), [macro.md](../tests/snapshots/hover/macro.md), [macro_param.md](../tests/snapshots/hover/macro_param.md), [define.md](../tests/snapshots/hover/define.md) |
 | Macro invocation counter (`\@`) | `Macro invocation counter`; `\@` in `riscv` fence | Explanation from `data/texts.json` | — |
-| Include directive (`#include`, `.include`) | `Include`; `#include "<target>"` in `c` fence | ``Path: `<resolved>` `` mapped under client root | — |
+| Include directive (`#include`, `.include`) | `Include` (or `Include · unresolved`); `#include "<target>"` in `c` fence | ``Path: `<resolved>` `` when found on disk; search-path configuration hint when unresolved | — |
 
 ### Live `llvm-mc` expansion & encoding
 
@@ -80,7 +81,8 @@ Trigger characters: `.`, `%`, `\`, `,`, and ` `.
     relocations from `data/texts.json`, and enclosing macro/`.irp`/`.irpc`
     parameters).
   - After `.option`: `arch`, `rvc`, `norvc`, `push`, `pop`, `relax`, `norelax`,
-    `pic`, `nopic`, `exact`.
+    `pic`, `nopic`, `exact`, plus extension names (`+ext`/`-ext`) after `.option arch, `.
+  - After `.section` / `.pushsection`: standard ELF section names (`.text`, `.data`, `.rodata`, `.bss`, ...), section flags (`"ax"`, `"aw"`, ...), and ELF section types (`@progbits`, `@nobits`, ...).
 - **Snippets and variant labels**:
   - When `snippetSupport` is enabled, overloaded instruction variants sort real
     instructions -> aliases -> special relocation/symbol forms, and register forms
@@ -110,8 +112,9 @@ Supports `textDocument/definition`, `textDocument/references`,
   labels (`1:` <-> `1f`/`1b`), `.equ`/`.equiv`/`.set`/`=` (respecting reassignment
   at cursor line), `.macro`, macro/`\.irp`/`\.irpc` parameters (`\p`), and
   `#define`s across `#include`/`.include` graphs are indexed.
-- Document outline nests numeric labels under enclosing ordinary labels and
-  lists macros.
+- Document outline nests both numeric labels (`1:`) and file-local labels
+  (`.L...`) under enclosing ordinary labels and lists macros; `workspace/symbol`
+  ranks matches cleanly and omits file-local/numeric/parameter symbols.
 - **Rename guards**: refuses numeric labels, symbols defined outside the
   workspace, invalid identifiers (including leading digits or `.`), architectural
   register/CSR/instruction/directive names, and names that collide within the
@@ -137,8 +140,22 @@ Supports `textDocument/definition`, `textDocument/references`,
   an un-commented `# ...` line expanded into invalid syntax) for `Use // comment`
   quick fixes.
 - **Code actions** (`textDocument/codeAction`): replacement quick fixes from
-  `clang` `"did you mean: ..."` suggestions and `Use // comment` quick fixes /
-  manual rewrites on `#` lines in preprocessed files.
+  `clang` `"did you mean: ..."` suggestions and `Use // comment` quick fixes on
+  diagnosed `#` lines (plus `REFACTOR_REWRITE` on `#` comment lines in
+  preprocessed files).
+
+## Signature help, folding ranges, and inlay hints
+
+- **Signature help** (`textDocument/signatureHelp`, triggers ` ` and `,`):
+  shows active instruction syntax variants matching `-march`/`.option` and
+  highlights the current operand parameter with decoded LLVM operand
+  constraints.
+- **Folding ranges** (`textDocument/foldingRange`): folds multi-line `/* ... */`
+  block comments (`Comment`), `.macro`/`.endm`, `.if*`/`.endif`, `.rept`/`.irp`/`.irpc`/`.endr`,
+  `#if*`/`#endif` blocks (in preprocessed files), and multi-line label scopes.
+- **Inlay hints** (`textDocument/inlayHint`): displays CSR hex addresses / names
+  next to CSR operands and resolved `.equ` / `#define` values next to constant
+  references.
 
 ## Semantic tokens
 

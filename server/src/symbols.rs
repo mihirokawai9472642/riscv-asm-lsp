@@ -2,6 +2,8 @@ use lsp_types::{DocumentSymbol, DocumentSymbolResponse, SymbolInformation, Symbo
 
 use crate::index::{SymKind, WorkspaceIndex};
 
+const MAX_WORKSPACE_SYMBOLS: usize = 200;
+
 // `lsp_types::DocumentSymbol` has a deprecated `deprecated` field that must still be initialized in struct literals.
 #[allow(deprecated)]
 pub fn document_symbols(index: &WorkspaceIndex, uri: &Uri) -> Option<DocumentSymbolResponse> {
@@ -10,14 +12,19 @@ pub fn document_symbols(index: &WorkspaceIndex, uri: &Uri) -> Option<DocumentSym
     let mut label_children: Vec<Vec<DocumentSymbol>> = vec![Vec::new(); file.definitions.len()];
 
     for def in &file.definitions {
-        if def.kind == SymKind::NumericLabel
+        if matches!(def.kind, SymKind::NumericLabel | SymKind::LocalLabel)
             && let Some(parent_idx) = def.enclosing_label_idx
         {
             let name_range = file.range(def.name_span);
+            let (name, detail, kind) = if def.kind == SymKind::NumericLabel {
+                (format!("{}:", def.name), None, SymbolKind::NUMBER)
+            } else {
+                (def.name.clone(), Some("local".to_owned()), SymbolKind::KEY)
+            };
             let sym = DocumentSymbol {
-                name: format!("{}:", def.name),
-                detail: None,
-                kind: SymbolKind::NUMBER,
+                name,
+                detail,
+                kind,
                 tags: None,
                 deprecated: None,
                 range: file.range(def.full_span),
@@ -42,7 +49,12 @@ pub fn document_symbols(index: &WorkspaceIndex, uri: &Uri) -> Option<DocumentSym
                     if ch.is_empty() { None } else { Some(ch) }
                 },
             ),
-            SymKind::LocalLabel => (SymbolKind::KEY, Some("local".to_owned()), None),
+            SymKind::LocalLabel => {
+                if def.enclosing_label_idx.is_some() {
+                    continue;
+                }
+                (SymbolKind::KEY, Some("local".to_owned()), None)
+            }
             SymKind::NumericLabel => {
                 if def.enclosing_label_idx.is_some() {
                     continue;
@@ -100,38 +112,53 @@ pub fn document_symbols(index: &WorkspaceIndex, uri: &Uri) -> Option<DocumentSym
 #[allow(deprecated)]
 pub fn workspace_symbols(index: &WorkspaceIndex, query: &str) -> Vec<SymbolInformation> {
     let q = query.trim().to_ascii_lowercase();
-    let mut out = Vec::new();
+    let mut ranked: Vec<(u8, SymbolInformation)> = Vec::new();
 
     for file in index.files() {
         for def in &file.definitions {
-            if matches!(def.kind, SymKind::NumericLabel | SymKind::MacroParam) {
+            if matches!(
+                def.kind,
+                SymKind::NumericLabel | SymKind::LocalLabel | SymKind::MacroParam
+            ) {
                 continue;
             }
-            if !q.is_empty() && !def.name.to_ascii_lowercase().contains(&q) {
+            let name_lower = def.name.to_ascii_lowercase();
+            let rank = if q.is_empty() {
+                1
+            } else if name_lower == q {
+                0
+            } else if name_lower.starts_with(&q) {
+                1
+            } else if name_lower.contains(&q) {
+                2
+            } else {
                 continue;
-            }
+            };
             let kind = match def.kind {
                 SymKind::Label => SymbolKind::FUNCTION,
-                SymKind::LocalLabel => SymbolKind::KEY,
                 SymKind::Equ | SymKind::Define => SymbolKind::CONSTANT,
                 SymKind::Macro => SymbolKind::METHOD,
-                SymKind::NumericLabel | SymKind::MacroParam => continue,
+                SymKind::NumericLabel | SymKind::LocalLabel | SymKind::MacroParam => continue,
             };
-            out.push(SymbolInformation {
-                name: def.name.clone(),
-                kind,
-                tags: None,
-                deprecated: None,
-                location: file.location(def.name_span),
-                container_name: file
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(str::to_owned),
-            });
+            ranked.push((
+                rank,
+                SymbolInformation {
+                    name: def.name.clone(),
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: file.location(def.name_span),
+                    container_name: file
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(str::to_owned),
+                },
+            ));
         }
     }
 
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    ranked.sort_by(|(ra, a), (rb, b)| ra.cmp(rb).then_with(|| a.name.cmp(&b.name)));
+    ranked.truncate(MAX_WORKSPACE_SYMBOLS);
+    ranked.into_iter().map(|(_, s)| s).collect()
 }

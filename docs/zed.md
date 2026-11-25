@@ -148,5 +148,5 @@ settings.
 | Grammar | `tree-sitter-riscv` (MIT, pinned at `c89b7c525d90c7375129f888e4a37b4485927c75`) |
 | Queries (`zed/languages/riscv_assembly/`) | `highlights.scm` (with `@preproc` support), `injections.scm` (C preprocessor injection), `overrides.scm`, `brackets.scm`, `indents.scm`, `outline.scm`, `semantic_token_rules.json` |
 | Editor config (`config.toml`) | `line_comments = ["// ", "# "]` (`// ` first so toggling comments in `.S` avoids creating `#` preprocessor directives), table-form block/doc comments, `/* */` auto-close, bracket/quote pairs, label and `.macro`/`.if`/`.rept`/`.irp`/`.irpc` indent rules |
-| WebAssembly entry (`zed/src/lib.rs`) | Looks up `riscv-asm-lsp` on `PATH` when no `binary` override applies, and implements `label_for_completion` to keep syntax-bearing completion labels highlighted while filtering on mnemonics |
+| WebAssembly entry (`zed/src/lib.rs`) | Looks up `riscv-asm-lsp` on `PATH` when no `binary` override applies, otherwise auto-downloads the matching GitHub Release archive, and implements `label_for_completion` to keep syntax-bearing completion labels highlighted while filtering on mnemonics |
 | License | MIT copy at `zed/LICENSE` |

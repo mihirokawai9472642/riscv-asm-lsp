@@ -3,19 +3,22 @@ use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
     CodeActionParams, CodeActionProviderCapability, CompletionItem, CompletionOptions,
-    CompletionParams, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
-    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, DocumentHighlightParams,
-    DocumentSymbolParams, FileChangeType, FileSystemWatcher, GlobPattern, GotoDefinitionParams,
-    HoverParams, HoverProviderCapability, InitializeParams, OneOf, ReferenceParams, Registration,
-    RegistrationParams, RenameOptions, RenameParams, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensRangeParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentPositionParams,
+    CompletionParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
+    DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentHighlightParams, DocumentSymbolParams, FileChangeType,
+    FileSystemWatcher, FoldingRangeParams, FoldingRangeProviderCapability, GlobPattern,
+    GotoDefinitionParams, HoverParams, HoverProviderCapability, InitializeParams, InlayHintParams,
+    OneOf, ReferenceParams, Registration, RegistrationParams, RenameOptions, RenameParams,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensRangeParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, SignatureHelpOptions, SignatureHelpParams, TextDocumentPositionParams,
     TextDocumentSyncCapability, TextDocumentSyncKind, Uri, WatchKind, WorkspaceSymbolParams,
 };
 use serde::Serialize;
@@ -28,12 +31,15 @@ use crate::context::{CompileContext, is_linker_script_uri, uri_to_path};
 use crate::data::Database;
 use crate::diagnostics::{DiagnosticsWorker, MessageSink};
 use crate::document::DocumentStore;
+use crate::folding::provide_folding_ranges;
 use crate::hover::{HoverResolution, HoverWorker, prepare_hover};
 use crate::index::WorkspaceIndex;
+use crate::inlay_hint::provide_inlay_hints;
 use crate::navigation::{
     document_highlight, find_references, goto_definition, prepare_rename, rename_symbol,
 };
 use crate::semantic_tokens::{legend, provide_semantic_tokens_full, provide_semantic_tokens_range};
+use crate::signature_help::provide_signature_help;
 use crate::symbols::{document_symbols, workspace_symbols};
 use crate::tools::ToolRunner;
 
@@ -74,6 +80,13 @@ pub fn server_capabilities() -> ServerCapabilities {
                 ..SemanticTokensOptions::default()
             },
         )),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec![" ".to_owned(), ",".to_owned()]),
+            retrigger_characters: Some(vec![",".to_owned()]),
+            work_done_progress_options: Default::default(),
+        }),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -86,7 +99,10 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
     let init_params_json = connection.initialize(caps_json)?;
     let init_params: InitializeParams = serde_json::from_value(init_params_json)?;
 
-    register_watched_files_if_supported(&connection, &init_params);
+    let next_req_id = AtomicI32::new(1);
+    let alloc_req_id = || RequestId::from(next_req_id.fetch_add(1, Ordering::Relaxed));
+
+    register_watched_files_if_supported(&connection, &init_params, &alloc_req_id);
 
     let completion_caps = extract_completion_caps(&init_params);
     let progress_ok = init_params
@@ -95,12 +111,16 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         .as_ref()
         .and_then(|w| w.work_done_progress)
         == Some(true);
-    let workspace_root = extract_workspace_root(&init_params);
+    let workspace_roots = extract_workspace_roots(&init_params);
     let config = Config::from_init_options(init_params.initialization_options);
-    let ctx = CompileContext::new(workspace_root.clone(), config.clone());
+    let ctx = CompileContext::new_multi(workspace_roots.clone(), config.clone());
     let store = DocumentStore::new().map_err(std::io::Error::other)?;
-    let mut index = WorkspaceIndex::new(workspace_root).map_err(std::io::Error::other)?;
-    index.start_background_scan(progress_ok.then(|| make_message_sink(&connection)));
+    let mut index = WorkspaceIndex::new_multi(workspace_roots).map_err(std::io::Error::other)?;
+    index.set_excluded_paths(ctx.non_riscv_paths());
+    index.start_background_scan_with_id(
+        progress_ok.then(|| make_message_sink(&connection)),
+        alloc_req_id(),
+    );
     let tools = Arc::new(ToolRunner::new(
         config.clang.clone(),
         config.llvm_mc.clone(),
@@ -131,8 +151,11 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         diag_worker,
         hover_worker,
         completion_caps,
+        progress_ok,
+        next_req_id,
         dirty_docs: HashMap::new(),
         logged_panics: HashSet::new(),
+        logged_non_riscv: HashSet::new(),
     };
 
     let loop_res = state.main_loop();
@@ -177,8 +200,11 @@ struct ServerState<'a> {
     diag_worker: DiagnosticsWorker,
     hover_worker: HoverWorker,
     completion_caps: CompletionClientCaps,
+    progress_ok: bool,
+    next_req_id: AtomicI32,
     dirty_docs: HashMap<String, (Uri, Instant)>,
     logged_panics: HashSet<String>,
+    logged_non_riscv: HashSet<String>,
 }
 
 enum NextMsg {
@@ -266,7 +292,7 @@ impl ServerState<'_> {
         match catch_unwind(AssertUnwindSafe(|| {
             if !matches!(
                 method.as_str(),
-                "completionItem/resolve" | "textDocument/codeAction"
+                "completionItem/resolve" | "textDocument/codeAction" | "textDocument/signatureHelp"
             ) {
                 self.flush_all_dirty_docs();
             }
@@ -322,7 +348,7 @@ impl ServerState<'_> {
                 .and_then(|td| td.get("uri"))
                 .and_then(|u| u.as_str())
             && let Ok(td_uri) = uri_str.parse::<Uri>()
-            && is_linker_script_uri(&td_uri)
+            && (is_linker_script_uri(&td_uri) || self.is_unsupported_target_uri(&td_uri))
         {
             return reply_ok(self.connection, id, serde_json::Value::Null);
         }
@@ -350,6 +376,15 @@ impl ServerState<'_> {
                     Ok(resolve_completion_item(item, s.db))
                 })
             }
+            "textDocument/signatureHelp" => {
+                self.dispatch_typed(id, params, |s, p: SignatureHelpParams| {
+                    let uri = &p.text_document_position_params.text_document.uri;
+                    let pos = p.text_document_position_params.position;
+                    Ok(s.store
+                        .get(uri)
+                        .and_then(|doc| provide_signature_help(doc, pos, s.db, &mut s.ctx)))
+                })
+            }
             "textDocument/definition"
             | "textDocument/references"
             | "textDocument/documentHighlight"
@@ -360,6 +395,8 @@ impl ServerState<'_> {
             "textDocument/documentSymbol"
             | "workspace/symbol"
             | "textDocument/codeAction"
+            | "textDocument/foldingRange"
+            | "textDocument/inlayHint"
             | "textDocument/semanticTokens/full"
             | "textDocument/semanticTokens/range" => {
                 self.handle_analysis_request(req.method.as_str(), id, params)
@@ -455,6 +492,19 @@ impl ServerState<'_> {
                     ))
                 })
             }
+            "textDocument/foldingRange" => {
+                self.dispatch_typed(id, params, |s, p: FoldingRangeParams| {
+                    let doc = s.store.get(&p.text_document.uri);
+                    let preprocessed = s.ctx.for_uri(&p.text_document.uri).preprocessed;
+                    Ok(doc.and_then(|d| provide_folding_ranges(d, &s.index, preprocessed)))
+                })
+            }
+            "textDocument/inlayHint" => self.dispatch_typed(id, params, |s, p: InlayHintParams| {
+                let uri = &p.text_document.uri;
+                Ok(s.store.get(uri).and_then(|doc| {
+                    provide_inlay_hints(doc, p.range, s.db, &mut s.ctx, &mut s.index)
+                }))
+            }),
             "textDocument/semanticTokens/full" => {
                 self.dispatch_typed(id, params, |s, p: SemanticTokensParams| {
                     Ok(s.store
@@ -551,13 +601,37 @@ impl ServerState<'_> {
         }
     }
 
+    fn is_unsupported_target_uri(&mut self, uri: &Uri) -> bool {
+        let file_ctx = self.ctx.for_uri(uri);
+        if file_ctx.is_riscv {
+            return false;
+        }
+        if self.logged_non_riscv.insert(file_ctx.target.clone()) {
+            eprintln!(
+                "riscv-asm-lsp: ignoring files with non-RISC-V target `{}`",
+                file_ctx.target
+            );
+        }
+        true
+    }
+
     fn handle_notification(&mut self, method: &str, params: serde_json::Value) {
         match method {
+            "$/cancelRequest" => {
+                if let Some(id_val) = params.get("id") {
+                    if let Some(n) = id_val.as_i64().and_then(|n| i32::try_from(n).ok()) {
+                        self.hover_worker.cancel(&RequestId::from(n));
+                    } else if let Some(s) = id_val.as_str() {
+                        self.hover_worker.cancel(&RequestId::from(s.to_owned()));
+                    }
+                }
+            }
             "textDocument/didOpen" => {
                 if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
                     let uri = p.text_document.uri;
-                    if is_linker_script_uri(&uri) {
+                    if is_linker_script_uri(&uri) || self.is_unsupported_target_uri(&uri) {
                         self.diag_worker.clear(&uri);
+                        self.index.remove_path(&uri);
                         return;
                     }
                     let version = p.text_document.version;
@@ -568,13 +642,14 @@ impl ServerState<'_> {
                     self.index
                         .upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
                     self.index.prioritize_open_document(&uri);
-                    self.diag_worker.schedule(uri, version, text, file_ctx);
+                    self.diag_worker
+                        .schedule_immediate(uri, version, text, file_ctx);
                 }
             }
             "textDocument/didChange" => {
                 if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(params) {
                     let uri = p.text_document.uri;
-                    if is_linker_script_uri(&uri) {
+                    if is_linker_script_uri(&uri) || self.is_unsupported_target_uri(&uri) {
                         return;
                     }
                     let version = p.text_document.version;
@@ -592,19 +667,33 @@ impl ServerState<'_> {
             "textDocument/didSave" => {
                 if let Ok(p) = serde_json::from_value::<DidSaveTextDocumentParams>(params) {
                     let uri = p.text_document.uri;
-                    if is_linker_script_uri(&uri) {
+                    if is_linker_script_uri(&uri) || self.is_unsupported_target_uri(&uri) {
                         return;
                     }
                     self.dirty_docs.remove(uri.as_str());
+                    let is_header_or_inc = uri_to_path(&uri).is_some_and(|path| {
+                        matches!(
+                            path.extension().and_then(|e| e.to_str()),
+                            Some("h" | "H" | "hpp" | "inc")
+                        )
+                    });
+                    if is_header_or_inc {
+                        self.hover_worker.clear_cache();
+                        self.diag_worker.invalidate_all();
+                    }
                     if let Some(doc) = self.store.get(&uri) {
                         let file_ctx = self.ctx.for_uri(&uri);
                         self.index
                             .upsert_open_document_with_preprocessed(doc, file_ctx.preprocessed);
                         let version = doc.version;
                         let text = doc.text.clone();
-                        self.diag_worker.schedule(uri, version, text, file_ctx);
+                        self.diag_worker
+                            .schedule_immediate(uri, version, text, file_ctx);
                     } else {
-                        self.index.reload_path(&uri);
+                        self.hover_worker.clear_cache();
+                        self.diag_worker.invalidate_all();
+                        let pre = self.ctx.for_uri(&uri).preprocessed;
+                        self.index.reload_path_with_preprocessed(&uri, Some(pre));
                     }
                 }
             }
@@ -612,7 +701,13 @@ impl ServerState<'_> {
                 if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
                     self.dirty_docs.remove(p.text_document.uri.as_str());
                     self.store.close(&p.text_document.uri);
-                    self.index.reload_path(&p.text_document.uri);
+                    if !is_linker_script_uri(&p.text_document.uri)
+                        && !self.is_unsupported_target_uri(&p.text_document.uri)
+                    {
+                        let pre = self.ctx.for_uri(&p.text_document.uri).preprocessed;
+                        self.index
+                            .reload_path_with_preprocessed(&p.text_document.uri, Some(pre));
+                    }
                     self.diag_worker.clear(&p.text_document.uri);
                 }
             }
@@ -621,7 +716,86 @@ impl ServerState<'_> {
                     self.handle_watched_files(p);
                 }
             }
+            "workspace/didChangeConfiguration" => {
+                if let Ok(p) = serde_json::from_value::<DidChangeConfigurationParams>(params) {
+                    self.handle_did_change_configuration(p);
+                }
+            }
+            "workspace/didChangeWorkspaceFolders" => {
+                if let Ok(p) = serde_json::from_value::<DidChangeWorkspaceFoldersParams>(params) {
+                    self.handle_did_change_workspace_folders(p);
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn handle_did_change_configuration(&mut self, params: DidChangeConfigurationParams) {
+        let settings_val = params
+            .settings
+            .get("riscv-asm-lsp")
+            .or_else(|| params.settings.get("riscvAsmLsp"))
+            .cloned()
+            .unwrap_or(params.settings);
+        let new_cfg = Config::from_init_options(Some(settings_val));
+        self.tools
+            .update_bins(new_cfg.clang.clone(), new_cfg.llvm_mc.clone());
+        self.diag_worker
+            .update_config(new_cfg.diagnostics.enable, new_cfg.diagnostics.delay_ms);
+        self.ctx.update_config(new_cfg);
+        self.hover_worker.clear_cache();
+        self.diag_worker.invalidate_all();
+        self.refresh_open_docs_after_context_change();
+    }
+
+    fn handle_did_change_workspace_folders(&mut self, params: DidChangeWorkspaceFoldersParams) {
+        let removed: HashSet<PathBuf> = params
+            .event
+            .removed
+            .iter()
+            .filter_map(|f| uri_to_path(&f.uri))
+            .collect();
+        let mut roots: Vec<PathBuf> = self
+            .ctx
+            .workspace_roots()
+            .iter()
+            .filter(|r| !removed.contains(*r))
+            .cloned()
+            .collect();
+        for folder in params.event.added {
+            if let Some(p) = uri_to_path(&folder.uri)
+                && !roots.contains(&p)
+            {
+                roots.push(p);
+            }
+        }
+        self.ctx.set_workspace_roots(roots.clone());
+        let req_id = RequestId::from(self.next_req_id.fetch_add(1, Ordering::Relaxed));
+        let store = &self.store;
+        self.index.update_workspace_roots(
+            roots,
+            &|p| store.is_open_path(p),
+            self.progress_ok.then(|| make_message_sink(self.connection)),
+            req_id,
+        );
+        self.hover_worker.clear_cache();
+        self.diag_worker.invalidate_all();
+        self.refresh_open_docs_after_context_change();
+    }
+
+    fn refresh_open_docs_after_context_change(&mut self) {
+        self.index.set_excluded_paths(self.ctx.non_riscv_paths());
+        for (open_uri, version, text) in self.store.all_open_snapshots() {
+            let file_ctx = self.ctx.for_uri(&open_uri);
+            if !file_ctx.is_riscv {
+                self.index.remove_path(&open_uri);
+                self.diag_worker.clear(&open_uri);
+            } else {
+                self.index
+                    .sync_preprocessed(&open_uri, file_ctx.preprocessed);
+                self.diag_worker
+                    .schedule_immediate(open_uri, version, text, file_ctx);
+            }
         }
     }
 
@@ -630,23 +804,26 @@ impl ServerState<'_> {
             if is_linker_script_uri(&change.uri) {
                 continue;
             }
-            if change.uri.as_str().ends_with("compile_commands.json") {
+            if change.uri.as_str().ends_with("compile_commands.json")
+                || change.uri.as_str().ends_with("compile_flags.txt")
+            {
                 self.ctx.reload_if_needed();
-                for (open_uri, version, text) in self.store.all_open_snapshots() {
-                    let file_ctx = self.ctx.for_uri(&open_uri);
-                    self.index
-                        .sync_preprocessed(&open_uri, file_ctx.preprocessed);
-                    self.diag_worker.schedule(open_uri, version, text, file_ctx);
-                }
+                self.hover_worker.clear_cache();
+                self.diag_worker.invalidate_all();
+                self.refresh_open_docs_after_context_change();
                 continue;
             }
+            self.hover_worker.clear_cache();
+            self.diag_worker.invalidate_all();
             if self.store.get(&change.uri).is_some() {
                 continue;
             }
             if change.typ == FileChangeType::DELETED {
                 self.index.remove_path(&change.uri);
             } else {
-                self.index.reload_path(&change.uri);
+                let pre = self.ctx.for_uri(&change.uri).preprocessed;
+                self.index
+                    .reload_path_with_preprocessed(&change.uri, Some(pre));
             }
         }
     }
@@ -685,7 +862,11 @@ fn make_message_sink(connection: &Connection) -> MessageSink {
     })
 }
 
-fn register_watched_files_if_supported(connection: &Connection, init_params: &InitializeParams) {
+fn register_watched_files_if_supported(
+    connection: &Connection,
+    init_params: &InitializeParams,
+    alloc_req_id: &impl Fn() -> RequestId,
+) {
     let dynamic_ok = init_params
         .capabilities
         .workspace
@@ -707,6 +888,10 @@ fn register_watched_files_if_supported(connection: &Connection, init_params: &In
                 glob_pattern: GlobPattern::String("**/compile_commands.json".to_owned()),
                 kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
             },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/compile_flags.txt".to_owned()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            },
         ],
     };
     let Ok(register_options) = serde_json::to_value(reg_options) else {
@@ -721,7 +906,7 @@ fn register_watched_files_if_supported(connection: &Connection, init_params: &In
     };
     if let Ok(params_val) = serde_json::to_value(params) {
         let req = Request::new(
-            RequestId::from(1),
+            alloc_req_id(),
             "client/registerCapability".to_owned(),
             params_val,
         );
@@ -748,19 +933,24 @@ fn extract_completion_caps(params: &InitializeParams) -> CompletionClientCaps {
 
 // Legacy clients may still send deprecated `root_uri` or `root_path` instead of `workspace_folders`.
 #[allow(deprecated)]
-fn extract_workspace_root(params: &InitializeParams) -> Option<PathBuf> {
-    if let Some(folders) = &params.workspace_folders
-        && let Some(first) = folders.first()
-        && let Some(path) = uri_to_path(&first.uri)
-    {
-        return Some(path);
+fn extract_workspace_roots(params: &InitializeParams) -> Vec<PathBuf> {
+    if let Some(folders) = &params.workspace_folders {
+        let roots: Vec<PathBuf> = folders.iter().filter_map(|f| uri_to_path(&f.uri)).collect();
+        if !roots.is_empty() {
+            return roots;
+        }
     }
     if let Some(root_uri) = &params.root_uri
         && let Some(path) = uri_to_path(root_uri)
     {
-        return Some(path);
+        return vec![path];
     }
-    params.root_path.as_deref().map(PathBuf::from)
+    params
+        .root_path
+        .as_deref()
+        .map(PathBuf::from)
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn panic_payload_message(payload: &(dyn Any + Send)) -> String {

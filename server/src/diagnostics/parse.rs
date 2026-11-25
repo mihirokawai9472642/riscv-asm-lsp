@@ -260,13 +260,16 @@ fn build_included_file_diagnostic(
         "in included file `{display_name}:{}:{}`: {}",
         req.err_line, req.err_col, req.err_msg
     );
-    let related = resolve_related_uri(req.err_file, ctx.doc_path, ctx.file_ctx).map(|rel_uri| {
-        let pos = Position::new(
-            req.err_line.saturating_sub(1),
-            req.err_col.saturating_sub(1),
-        );
+    let related = resolve_related_location(
+        req.err_file,
+        req.err_line,
+        req.err_col,
+        ctx.doc_path,
+        ctx.file_ctx,
+    )
+    .map(|location| {
         vec![DiagnosticRelatedInformation {
-            location: Location::new(rel_uri, Range::new(pos, pos)),
+            location,
             message: req.err_msg.to_owned(),
         }]
     });
@@ -421,8 +424,14 @@ fn find_include_line_in_source(text: &str, target_file: &str, preprocessed: bool
         .unwrap_or(&target_norm);
 
     let mut fallback = None;
+    let mut in_block = false;
     for (idx, line) in text.lines().enumerate() {
-        let Some(inc_target) = extract_include_target(line, preprocessed) else {
+        let started_in_block = in_block;
+        let stripped = crate::line::strip_comments_with_state(line, &mut in_block, preprocessed);
+        if started_in_block {
+            continue;
+        }
+        let Some(inc_target) = extract_include_target(&stripped, preprocessed) else {
             continue;
         };
         let inc_norm = inc_target.replace('\\', "/");
@@ -455,11 +464,16 @@ fn extract_include_target(line: &str, preprocessed: bool) -> Option<String> {
     None
 }
 
-fn resolve_related_uri(
+fn resolve_related_location(
     err_file: &str,
+    err_line: u32,
+    err_col: u32,
     doc_path: Option<&Path>,
     file_ctx: Option<&FileContext>,
-) -> Option<Uri> {
+) -> Option<Location> {
+    if err_file.starts_with('<') && err_file.ends_with('>') {
+        return None;
+    }
     let raw = Path::new(err_file);
     let resolved: PathBuf = if raw.is_absolute() {
         raw.to_path_buf()
@@ -476,7 +490,18 @@ fn resolve_related_uri(
             ctx.canon_root.as_deref(),
         )
     } else {
-        resolved
+        resolved.clone()
     };
-    path_to_uri(&display)
+    let uri = path_to_uri(&display)?;
+    let pos = if std::fs::metadata(&resolved)
+        .is_ok_and(|m| m.is_file() && m.len() <= 2 * 1024 * 1024)
+        && let Ok(inc_text) = std::fs::read_to_string(&resolved)
+    {
+        let idx = LineIndex::new(&inc_text);
+        let offset = idx.clang_pos_to_offset(&inc_text, err_line, err_col);
+        idx.offset_to_position(&inc_text, offset)
+    } else {
+        Position::new(err_line.saturating_sub(1), err_col.saturating_sub(1))
+    };
+    Some(Location::new(uri, Range::new(pos, pos)))
 }

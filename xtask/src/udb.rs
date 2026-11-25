@@ -226,7 +226,7 @@ fn load_csrs(
                 if v.get("$ref").is_some() {
                     continue;
                 }
-                let bits = field_bits_str(v);
+                let (bits, bits_rv32) = field_bits(v);
                 let field_owner = format!("{csr_name}.{fname}");
                 let fdesc = strip_todo_sentences(
                     &field_owner,
@@ -239,6 +239,7 @@ fn load_csrs(
                 fields.push(CsrField {
                     name: fname.to_owned(),
                     bits,
+                    bits_rv32,
                     summary: None,
                     description: fdesc,
                 });
@@ -412,16 +413,32 @@ fn collect_ext_names(val: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn field_bits_str(v: &Value) -> String {
-    for key in ["location", "location_rv64", "location_rv32"] {
-        if let Some(s) = v.get(key).and_then(Value::as_str) {
-            return s.to_owned();
-        }
-        if let Some(n) = v.get(key).and_then(Value::as_u64) {
-            return n.to_string();
-        }
+fn value_bits_str(v: &Value, key: &str) -> Option<String> {
+    if let Some(s) = v.get(key).and_then(Value::as_str) {
+        return Some(s.to_owned());
     }
-    String::new()
+    if let Some(n) = v.get(key).and_then(Value::as_u64) {
+        return Some(n.to_string());
+    }
+    None
+}
+
+fn field_bits(v: &Value) -> (String, Option<String>) {
+    if let Some(shared) = value_bits_str(v, "location") {
+        let rv32 = value_bits_str(v, "location_rv32").filter(|r| r != &shared);
+        return (shared, rv32);
+    }
+    let rv64 = value_bits_str(v, "location_rv64");
+    let rv32 = value_bits_str(v, "location_rv32");
+    match (rv64, rv32) {
+        (Some(b64), Some(b32)) => {
+            let opt32 = (b32 != b64).then_some(b32);
+            (b64, opt32)
+        }
+        (Some(b64), None) => (b64, None),
+        (None, Some(b32)) => (b32, None),
+        (None, None) => (String::new(), None),
+    }
 }
 
 pub fn clean_text(raw: &str) -> String {
@@ -667,11 +684,39 @@ fn clean_asciidoc(input: &str) -> String {
         line = replace_latexmath(&line);
         line = replace_xrefs(&line);
         line = replace_adoc_crossrefs(&line);
-        line = line.replace("[.rotate]#", "").replace('#', "");
+        line = strip_asciidoc_role_spans(&line);
         lines.push(line);
     }
 
     lines.join("\n")
+}
+
+fn strip_asciidoc_role_spans(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(pos) = rest.find("[.") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos..];
+        if let Some(rb) = after.find("]#") {
+            let role_and_open = &after[..rb + 2];
+            if !role_and_open.contains('\n') && !role_and_open.contains(' ') {
+                let inner_start = &after[rb + 2..];
+                if let Some(close_hash) = inner_start.find('#')
+                    && !inner_start[..close_hash].contains('\n')
+                {
+                    out.push_str(&inner_start[..close_hash]);
+                    rest = &inner_start[close_hash + 1..];
+                    continue;
+                }
+                rest = inner_start;
+                continue;
+            }
+        }
+        out.push_str("[.");
+        rest = &rest[pos + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn process_asciidoc_tables(input: &str) -> String {
@@ -974,5 +1019,22 @@ name: add
         let err2 = collect_license_headers(Path::new("bar.yaml"), missing_spdx, &mut holders)
             .expect_err("missing SPDX should fail");
         assert!(err2.to_string().contains("bar.yaml"));
+    }
+
+    #[test]
+    fn field_bits_captures_rv32_diff_and_clean_text_preserves_hash() {
+        let v: Value = yaml_serde::from_str("location_rv64: \"63-2\"\nlocation_rv32: \"31-2\"\n")
+            .expect("yaml");
+        assert_eq!(field_bits(&v), ("63-2".to_owned(), Some("31-2".to_owned())));
+
+        let v_same: Value =
+            yaml_serde::from_str("location_rv64: \"1-0\"\nlocation_rv32: \"1-0\"\n").expect("yaml");
+        assert_eq!(field_bits(&v_same), ("1-0".to_owned(), None));
+
+        let cleaned = clean_text("Register #3 [.rotate]#XS# and #ifdef tag.");
+        assert!(cleaned.contains("#3"), "lost #3: {cleaned}");
+        assert!(cleaned.contains("#ifdef"), "lost #ifdef: {cleaned}");
+        assert!(cleaned.contains("XS"), "lost XS: {cleaned}");
+        assert!(!cleaned.contains("[.rotate]"));
     }
 }

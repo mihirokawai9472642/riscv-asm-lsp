@@ -193,7 +193,46 @@ fn macro_and_included_file_diagnostics_and_compile_working_dir() {
         json!({ "line": 0, "character": 28 })
     );
 
+    // Case 4: multibyte prefix in included file converts `relatedInformation` column to UTF-16
+    // and `-include-pch` flag in compile_commands.json is ignored rather than mangled.
+    std::fs::write(sub_dir.join("mb.inc"), "/* 日本語 */ mov a0, a1\n").unwrap();
+    let mb_main = tmp.join("mb_test.S");
+    let mb_src = "    .include \"mb.inc\"\n";
+    std::fs::write(&mb_main, mb_src).unwrap();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        serde_json::to_string_pretty(&json!([
+            {
+                "directory": sub_dir.to_string_lossy(),
+                "arguments": ["clang", "--target=riscv64-unknown-elf", "-march=rv64gc", "-include-pch", "unused.pch", "-c", mb_main.to_string_lossy()],
+                "file": mb_main.to_string_lossy()
+            }
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
     client2.shutdown_and_exit();
+
+    let mut client3 = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+    let mb_uri = path_to_uri(&mb_main);
+    client3.open_doc(&mb_uri, 1, mb_src);
+    let notif4 = client3
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("expected publishDiagnostics for mb_test");
+    let diags4 = notif4.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags4.len(), 1, "diags4: {diags4:?}");
+    assert_eq!(
+        diags4[0]["relatedInformation"][0]["location"]["range"]["start"],
+        json!({ "line": 0, "character": 10 })
+    );
+
+    client3.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -404,35 +443,57 @@ _start:
     client.open_doc(&forced_uri, 1, src);
 
     for uri in [&pre_uri, &forced_uri] {
-        for (line, expected_new_text, expected_col) in
-            [(0u32, "//", 0u32), (1u32, "//", 4u32), (2u32, "//", 0u32)]
-        {
+        // Line 0 (`# just a comment`) is a pure comment -> non-diagnostic refactor offer.
+        let ca0 = client.send_request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": uri.as_str() },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 }
+                },
+                "context": { "diagnostics": [] }
+            }),
+        );
+        let arr = ca0
+            .result
+            .expect("code actions")
+            .as_array()
+            .unwrap()
+            .clone();
+        let action = arr
+            .iter()
+            .find(|a| a["title"] == "Use `//` comment")
+            .expect("Use // comment action");
+        let edits = action["edit"]["changes"][uri.as_str()]
+            .as_array()
+            .expect("edits");
+        assert_eq!(edits[0]["newText"], json!("//"));
+        assert_eq!(
+            edits[0]["range"],
+            json!({
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            })
+        );
+
+        // Lines 1 and 2 (`# include ...`, `# define X 1`) look like preprocessor directives and
+        // have no diagnostic here -> do not offer a `//` refactor action unprompted.
+        for (line, col) in [(1u32, 4u32), (2u32, 0u32)] {
             let ca = client.send_request(
                 "textDocument/codeAction",
                 json!({
                     "textDocument": { "uri": uri.as_str() },
                     "range": {
-                        "start": { "line": line, "character": expected_col },
-                        "end": { "line": line, "character": expected_col }
+                        "start": { "line": line, "character": col },
+                        "end": { "line": line, "character": col }
                     },
                     "context": { "diagnostics": [] }
                 }),
             );
-            let arr = ca.result.expect("code actions").as_array().unwrap().clone();
-            let action = arr
-                .iter()
-                .find(|a| a["title"] == "Use `//` comment")
-                .expect("Use // comment action");
-            let edits = action["edit"]["changes"][uri.as_str()]
-                .as_array()
-                .expect("edits");
-            assert_eq!(edits[0]["newText"], json!(expected_new_text));
-            assert_eq!(
-                edits[0]["range"],
-                json!({
-                    "start": { "line": line, "character": expected_col },
-                    "end": { "line": line, "character": expected_col + 1 }
-                })
+            assert!(
+                ca.result.as_ref().is_none_or(|v| v.is_null()),
+                "unexpected refactor action on preprocessor-like line {line}: {ca:?}"
             );
         }
 

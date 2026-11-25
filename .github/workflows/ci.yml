@@ -68,3 +68,21 @@ jobs:
         run: |
           cargo check --all-targets
           cargo check --manifest-path zed/Cargo.toml --target wasm32-wasip2
+
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.100"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run non-tool tests on ${{ matrix.os }}
+        run: cargo test --locked

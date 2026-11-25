@@ -17,4 +17,4 @@ addi sp, sp, %pcrel_lo(.Lpcrel_hi0)  # (relocated)
 
 ---
 
-Load address — With `.option nopic` (Default) (expands to `auipc rd, symbol[31:12] addi rd, rd, symbol[11:0]`)
+Load address — With `.option nopic` (Default) (expands to `auipc rd, symbol[31:12] addi rd, rd, symbol[11:0]`).

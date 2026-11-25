@@ -126,6 +126,33 @@
     }
   },
   {
+    "children": [
+      {
+        "detail": "local",
+        "kind": 20,
+        "name": ".Llocal_helper",
+        "range": {
+          "end": {
+            "character": 15,
+            "line": 34
+          },
+          "start": {
+            "character": 0,
+            "line": 34
+          }
+        },
+        "selectionRange": {
+          "end": {
+            "character": 14,
+            "line": 34
+          },
+          "start": {
+            "character": 0,
+            "line": 34
+          }
+        }
+      }
+    ],
     "detail": "global",
     "kind": 12,
     "name": "trap_vector",
@@ -147,31 +174,6 @@
       "start": {
         "character": 0,
         "line": 26
-      }
-    }
-  },
-  {
-    "detail": "local",
-    "kind": 20,
-    "name": ".Llocal_helper",
-    "range": {
-      "end": {
-        "character": 15,
-        "line": 34
-      },
-      "start": {
-        "character": 0,
-        "line": 34
-      }
-    },
-    "selectionRange": {
-      "end": {
-        "character": 14,
-        "line": 34
-      },
-      "start": {
-        "character": 0,
-        "line": 34
       }
     }
   },

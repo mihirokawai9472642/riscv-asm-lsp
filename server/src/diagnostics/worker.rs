@@ -19,8 +19,14 @@ enum WorkerMsg {
         version: i32,
         text: String,
         file_ctx: Box<FileContext>,
+        immediate: bool,
     },
     Clear(Uri),
+    InvalidateAll,
+    UpdateConfig {
+        enable: bool,
+        delay_ms: u64,
+    },
     Shutdown,
 }
 
@@ -42,15 +48,6 @@ impl DiagnosticsWorker {
             Arc::new(Mutex::new(HashMap::new()));
         let cache: DiagnosticsCache = Arc::new(Mutex::new(HashMap::new()));
 
-        if !enable {
-            return Self {
-                tx: None,
-                handle: None,
-                latest_versions,
-                cache,
-            };
-        }
-
         let (tx, rx) = mpsc::channel();
         let versions_bg = Arc::clone(&latest_versions);
         let cache_bg = Arc::clone(&cache);
@@ -59,12 +56,14 @@ impl DiagnosticsWorker {
         let handle = thread::spawn(move || {
             let mut runner = DiagnosticsRunner {
                 rx,
+                enable,
                 delay,
                 tools,
                 lsp_sender,
                 latest_versions: versions_bg,
                 cache: cache_bg,
                 pending: HashMap::new(),
+                last_diagnosed: HashMap::new(),
                 logged_panic: false,
             };
             runner.run();
@@ -79,6 +78,21 @@ impl DiagnosticsWorker {
     }
 
     pub fn schedule(&self, uri: Uri, version: i32, text: String, file_ctx: FileContext) {
+        self.schedule_with_mode(uri, version, text, file_ctx, false);
+    }
+
+    pub fn schedule_immediate(&self, uri: Uri, version: i32, text: String, file_ctx: FileContext) {
+        self.schedule_with_mode(uri, version, text, file_ctx, true);
+    }
+
+    fn schedule_with_mode(
+        &self,
+        uri: Uri,
+        version: i32,
+        text: String,
+        file_ctx: FileContext,
+        immediate: bool,
+    ) {
         if let Ok(mut map) = self.latest_versions.lock() {
             map.insert(uri.as_str().to_owned(), version);
         }
@@ -88,19 +102,36 @@ impl DiagnosticsWorker {
                 version,
                 text,
                 file_ctx: Box::new(file_ctx),
+                immediate,
             });
+        }
+    }
+
+    pub fn invalidate_all(&self) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(WorkerMsg::InvalidateAll);
+        }
+    }
+
+    pub fn update_config(&self, enable: bool, delay_ms: u64) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(WorkerMsg::UpdateConfig { enable, delay_ms });
         }
     }
 
     pub fn clear(&self, uri: &Uri) {
         let key = uri.as_str().to_owned();
-        if let Ok(mut map) = self.latest_versions.lock() {
-            map.remove(&key);
-        }
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.remove(&key);
-        }
-        if let Some(tx) = &self.tx {
+        let had_version = self
+            .latest_versions
+            .lock()
+            .is_ok_and(|mut map| map.remove(&key).is_some());
+        let had_cache = self
+            .cache
+            .lock()
+            .is_ok_and(|mut cache| cache.remove(&key).is_some());
+        if (had_version || had_cache)
+            && let Some(tx) = &self.tx
+        {
             let _ = tx.send(WorkerMsg::Clear(uri.clone()));
         }
     }
@@ -121,16 +152,19 @@ struct PendingJob {
     text: String,
     file_ctx: FileContext,
     due_at: Instant,
+    force: bool,
 }
 
 struct DiagnosticsRunner {
     rx: mpsc::Receiver<WorkerMsg>,
+    enable: bool,
     delay: Duration,
     tools: Arc<ToolRunner>,
     lsp_sender: MessageSink,
     latest_versions: Arc<Mutex<HashMap<String, i32>>>,
     cache: DiagnosticsCache,
     pending: HashMap<String, PendingJob>,
+    last_diagnosed: HashMap<String, i32>,
     logged_panic: bool,
 }
 
@@ -153,12 +187,16 @@ impl DiagnosticsRunner {
                 WaitResult::Disconnected => return,
             }
 
-            self.run_due_jobs();
+            if !self.run_due_jobs() {
+                return;
+            }
         }
     }
 
     fn wait_next_message(&self) -> WaitResult {
-        if let Some(next_due) = self.pending.values().map(|j| j.due_at).min() {
+        if self.enable
+            && let Some(next_due) = self.pending.values().map(|j| j.due_at).min()
+        {
             let now = Instant::now();
             if next_due <= now {
                 return WaitResult::DueReady;
@@ -186,8 +224,20 @@ impl DiagnosticsRunner {
                 version,
                 text,
                 file_ctx,
+                immediate,
             } => {
+                if !self.enable {
+                    return true;
+                }
                 let key = uri.as_str().to_owned();
+                if immediate && self.last_diagnosed.get(&key).copied() == Some(version) {
+                    return true;
+                }
+                let due_at = if immediate {
+                    Instant::now()
+                } else {
+                    Instant::now() + self.delay
+                };
                 self.pending.insert(
                     key,
                     PendingJob {
@@ -195,30 +245,73 @@ impl DiagnosticsRunner {
                         version,
                         text,
                         file_ctx: *file_ctx,
-                        due_at: Instant::now() + self.delay,
+                        due_at,
+                        force: false,
                     },
                 );
                 true
             }
             WorkerMsg::Clear(uri) => {
-                self.pending.remove(uri.as_str());
+                let key = uri.as_str().to_owned();
+                self.pending.remove(&key);
+                self.last_diagnosed.remove(&key);
                 publish_diagnostics(&self.lsp_sender, uri, Vec::new(), None);
+                true
+            }
+            WorkerMsg::InvalidateAll => {
+                self.last_diagnosed.clear();
+                for job in self.pending.values_mut() {
+                    job.force = true;
+                }
+                true
+            }
+            WorkerMsg::UpdateConfig { enable, delay_ms } => {
+                self.enable = enable;
+                self.delay = Duration::from_millis(delay_ms);
+                self.last_diagnosed.clear();
+                if !enable {
+                    let uris: Vec<Uri> = if let Ok(mut guard) = self.cache.lock() {
+                        guard
+                            .drain()
+                            .filter_map(|(k, _)| k.parse::<Uri>().ok())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    self.pending.clear();
+                    for uri in uris {
+                        publish_diagnostics(&self.lsp_sender, uri, Vec::new(), None);
+                    }
+                }
                 true
             }
             WorkerMsg::Shutdown => false,
         }
     }
 
-    fn run_due_jobs(&mut self) {
-        let now = Instant::now();
-        let due_keys: Vec<String> = self
-            .pending
-            .iter()
-            .filter(|(_, job)| job.due_at <= now)
-            .map(|(k, _)| k.clone())
-            .collect();
-
-        for key in due_keys {
+    fn run_due_jobs(&mut self) -> bool {
+        if !self.enable {
+            return true;
+        }
+        loop {
+            while let Ok(msg) = self.rx.try_recv() {
+                if !self.apply_message(msg) {
+                    return false;
+                }
+            }
+            if !self.enable {
+                return true;
+            }
+            let now = Instant::now();
+            let Some(key) = self
+                .pending
+                .iter()
+                .filter(|(_, job)| job.due_at <= now)
+                .min_by_key(|(_, job)| job.due_at)
+                .map(|(k, _)| k.clone())
+            else {
+                return true;
+            };
             let Some(job) = self.pending.remove(&key) else {
                 continue;
             };
@@ -232,8 +325,11 @@ impl DiagnosticsRunner {
         }
     }
 
-    fn execute_job(&self, key: String, job: PendingJob) {
+    fn execute_job(&mut self, key: String, job: PendingJob) {
         if is_stale(&self.latest_versions, &key, job.version) {
+            return;
+        }
+        if !job.force && self.last_diagnosed.get(&key).copied() == Some(job.version) {
             return;
         }
         let Some(diags) = run_clang_diagnostics(&self.tools, &job.uri, &job.text, &job.file_ctx)
@@ -245,6 +341,7 @@ impl DiagnosticsRunner {
         }
 
         let lsp_diags: Vec<Diagnostic> = diags.iter().map(|d| d.diagnostic.clone()).collect();
+        self.last_diagnosed.insert(key.clone(), job.version);
         if let Ok(mut guard) = self.cache.lock() {
             guard.insert(key, diags);
         }

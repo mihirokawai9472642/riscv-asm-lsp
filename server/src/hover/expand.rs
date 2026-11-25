@@ -13,6 +13,11 @@ pub(super) struct ExpansionCacheKey {
     pub(super) mattr: String,
     pub(super) option_lines: Vec<String>,
     pub(super) const_pairs: Vec<(String, String)>,
+    pub(super) clang_flags: Vec<String>,
+    pub(super) cpp_preamble: Vec<String>,
+    pub(super) open_if_depth: usize,
+    pub(super) file_dir: Option<PathBuf>,
+    pub(super) working_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,10 +35,6 @@ pub(super) enum CachedExpansion {
 #[derive(Debug, Clone)]
 pub struct PendingExpansion {
     pub(super) key: ExpansionCacheKey,
-    pub(super) clang_flags: Vec<String>,
-    pub(super) file_dir: Option<PathBuf>,
-    pub(super) working_dir: Option<PathBuf>,
-    pub(super) cpp_preamble: Vec<String>,
     pub(super) known_consts: HashMap<String, String>,
 }
 
@@ -90,14 +91,15 @@ pub(super) fn resolve_expansion(pending: &PendingExpansion, tools: &ToolRunner) 
     }
 
     // 3. Preprocess with `clang -E -P -x assembler-with-cpp` when preprocessor directives exist
-    if !pending.cpp_preamble.is_empty()
+    if !key.cpp_preamble.is_empty()
         && !tools.is_disabled(ToolKind::Clang)
         && let Some(pre) = preprocess_with_clang(
             &key.stmt,
-            &pending.cpp_preamble,
-            &pending.clang_flags,
-            pending.file_dir.as_deref(),
-            pending.working_dir.as_deref(),
+            &key.cpp_preamble,
+            key.open_if_depth,
+            &key.clang_flags,
+            key.file_dir.as_deref(),
+            key.working_dir.as_deref(),
             tools,
         )
     {
@@ -216,6 +218,7 @@ fn format_encoding_bytes(enc_part: &str) -> Option<String> {
 fn preprocess_with_clang(
     stmt: &str,
     cpp_preamble: &[String],
+    open_if_depth: usize,
     clang_flags: &[String],
     file_dir: Option<&Path>,
     working_dir: Option<&Path>,
@@ -240,6 +243,9 @@ fn preprocess_with_clang(
     }
     stdin_buf.push_str(stmt);
     stdin_buf.push('\n');
+    for _ in 0..open_if_depth {
+        stdin_buf.push_str("#endif\n");
+    }
 
     let out = tools.run_clang(&args, &stdin_buf, working_dir)?;
     if !out.success {
@@ -259,17 +265,43 @@ fn preprocess_with_clang(
     }
 }
 
-pub(super) fn collect_cpp_preamble(text: &str, up_to_line: usize) -> Vec<String> {
+pub(super) fn collect_cpp_preamble(text: &str, up_to_line: usize) -> (Vec<String>, usize) {
     let mut out = Vec::new();
+    let mut in_block = false;
+    let mut in_continuation = false;
+    let mut if_depth = 0usize;
+
     for (idx, line) in text.lines().enumerate() {
         if idx >= up_to_line {
             break;
         }
-        if crate::preprocessor::is_cpp_preamble_line(line) {
-            out.push(line.trim().to_owned());
+        let started_in_block = in_block;
+        let _ = crate::line::strip_comments_with_state(line, &mut in_block, true);
+
+        if in_continuation {
+            let clean = line.trim_end_matches('\r');
+            out.push(clean.to_owned());
+            in_continuation = clean.ends_with('\\');
+            continue;
+        }
+        if started_in_block {
+            continue;
+        }
+        if let Some(crate::preprocessor::HashLineKind::Directive { name, .. }) =
+            crate::preprocessor::classify_hash_line(line)
+            && crate::preprocessor::is_cpp_preamble_line(line)
+        {
+            match name {
+                "if" | "ifdef" | "ifndef" => if_depth += 1,
+                "endif" => if_depth = if_depth.saturating_sub(1),
+                _ => {}
+            }
+            let clean = line.trim().trim_end_matches('\r');
+            out.push(clean.to_owned());
+            in_continuation = clean.ends_with('\\');
         }
     }
-    out
+    (out, if_depth)
 }
 
 fn substitute_constants(stmt: &str, consts: &HashMap<String, String>) -> String {
@@ -282,7 +314,17 @@ fn substitute_constants(stmt: &str, consts: &HashMap<String, String>) -> String 
             if contains_ident(&current, name)
                 && let Some(val) = consts.get(name)
             {
-                let replaced = replace_whole_ident(&current, name, &format!("({val})"));
+                let trimmed = val.trim();
+                let is_bare_token = !trimmed.is_empty()
+                    && trimmed
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'$'));
+                let rep = if is_bare_token {
+                    trimmed.to_owned()
+                } else {
+                    format!("({trimmed})")
+                };
+                let replaced = replace_whole_ident(&current, name, &rep);
                 if replaced != current {
                     current = replaced;
                     changed = true;

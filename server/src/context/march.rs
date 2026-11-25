@@ -46,7 +46,7 @@ impl MarchSpec {
             self.extensions.insert("c".to_owned());
             self.expand_implications();
         } else {
-            for ext in ["c", "zca", "zcf", "zcd"] {
+            for ext in ["c", "zca", "zcf", "zcd", "zcb", "zcmp", "zcmt"] {
                 self.extensions.remove(ext);
             }
         }
@@ -58,87 +58,182 @@ impl MarchSpec {
             return;
         }
         let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("rv32") || lower.starts_with("rv64") {
-            *self = Self::parse(&lower);
-            return;
-        }
         for token in lower.split(',') {
             let t = token.trim();
             if let Some(ext) = t.strip_prefix('+') {
                 let name = strip_ext_version(ext);
                 if !name.is_empty() {
                     self.extensions.insert(name.to_owned());
+                    self.expand_implications();
                 }
             } else if let Some(ext) = t.strip_prefix('-') {
                 let name = strip_ext_version(ext);
-                if name == "c" {
-                    self.apply_rvc(false);
-                } else {
-                    self.extensions.remove(name);
-                }
+                self.remove_extension(name);
             } else if t.starts_with("rv32") || t.starts_with("rv64") {
                 *self = Self::parse(t);
             }
         }
-        self.expand_implications();
+    }
+
+    fn remove_extension(&mut self, name: &str) {
+        if name == "c" {
+            self.apply_rvc(false);
+            return;
+        }
+        let mut queue = vec![name.to_owned()];
+        while let Some(cur) = queue.pop() {
+            if !self.extensions.remove(&cur) {
+                continue;
+            }
+            for &dependent in reverse_implications(cur.as_str()) {
+                if self.extensions.contains(dependent) {
+                    queue.push(dependent.to_owned());
+                }
+            }
+        }
     }
 
     fn expand_implications(&mut self) {
-        if self.extensions.contains("g") {
-            for ext in ["i", "m", "a", "f", "d", "zicsr", "zifencei"] {
-                self.extensions.insert(ext.to_owned());
+        loop {
+            let before = self.extensions.len();
+            if self.extensions.contains("g") {
+                for ext in ["i", "m", "a", "f", "d", "zicsr", "zifencei"] {
+                    self.extensions.insert(ext.to_owned());
+                }
             }
-        }
-        if self.extensions.contains("m") {
-            self.extensions.insert("zmmul".to_owned());
-        }
-        if self.extensions.contains("a") {
-            self.extensions.insert("zaamo".to_owned());
-            self.extensions.insert("zalrsc".to_owned());
-        }
-        if self.extensions.contains("d") {
-            self.extensions.insert("f".to_owned());
-        }
-        if self.extensions.contains("f") {
-            self.extensions.insert("zicsr".to_owned());
-        }
-        if self.extensions.contains("c") {
-            self.extensions.insert("zca".to_owned());
+            if self.extensions.contains("m") {
+                self.extensions.insert("zmmul".to_owned());
+            }
+            if self.extensions.contains("a") {
+                for ext in ["zaamo", "zalrsc"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
             if self.extensions.contains("d") {
-                self.extensions.insert("zcd".to_owned());
+                self.extensions.insert("f".to_owned());
             }
-            if self.xlen == Xlen::Rv32 && self.extensions.contains("f") {
-                self.extensions.insert("zcf".to_owned());
+            if self.extensions.contains("f") {
+                self.extensions.insert("zicsr".to_owned());
             }
-        }
-        if self.extensions.contains("b") {
-            for ext in ["zba", "zbb", "zbs"] {
-                self.extensions.insert(ext.to_owned());
+            if self.extensions.contains("c") {
+                self.extensions.insert("zca".to_owned());
+                if self.extensions.contains("d") {
+                    self.extensions.insert("zcd".to_owned());
+                }
+                if self.xlen == Xlen::Rv32 && self.extensions.contains("f") {
+                    self.extensions.insert("zcf".to_owned());
+                }
             }
-        }
-        if self.extensions.contains("v") {
-            for ext in [
-                "zve32x", "zve32f", "zve64x", "zve64f", "zve64d", "zvl32b", "zvl64b", "zvl128b",
-            ] {
-                self.extensions.insert(ext.to_owned());
+            if self.extensions.contains("zcd") {
+                for ext in ["zca", "d"] {
+                    self.extensions.insert(ext.to_owned());
+                }
             }
-        }
-        if self.extensions.contains("zfh") {
-            self.extensions.insert("zfhmin".to_owned());
-        }
-        if self.extensions.contains("zk") {
-            for ext in ["zkn", "zkr", "zkt"] {
-                self.extensions.insert(ext.to_owned());
+            if self.extensions.contains("zcf") {
+                for ext in ["zca", "f"] {
+                    self.extensions.insert(ext.to_owned());
+                }
             }
-        }
-        if self.extensions.contains("zkn") {
-            for ext in ["zbkb", "zbkc", "zbkx", "zkne", "zknd", "zknh"] {
-                self.extensions.insert(ext.to_owned());
+            for ext in ["zcb", "zcmp", "zcmt"] {
+                if self.extensions.contains(ext) {
+                    self.extensions.insert("zca".to_owned());
+                }
             }
-        }
-        if self.extensions.contains("zks") {
-            for ext in ["zbkb", "zbkc", "zbkx", "zksed", "zksh"] {
-                self.extensions.insert(ext.to_owned());
+            if self.extensions.contains("b") {
+                for ext in ["zba", "zbb", "zbs"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("v") {
+                for ext in ["zve64d", "zvl128b"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zve64d") {
+                for ext in ["zve64f", "d"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zve64f") {
+                for ext in ["zve64x", "zve32f"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zve64x") {
+                for ext in ["zve32x", "zvl64b"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zve32f") {
+                for ext in ["zve32x", "f"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zve32x") {
+                for ext in ["zicsr", "zvl32b"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zvl128b") {
+                self.extensions.insert("zvl64b".to_owned());
+            }
+            if self.extensions.contains("zvl64b") {
+                self.extensions.insert("zvl32b".to_owned());
+            }
+            if self.extensions.contains("zvfh") {
+                for ext in ["zvfhmin", "zfhmin"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zvfhmin") {
+                self.extensions.insert("zve32f".to_owned());
+            }
+            if self.extensions.contains("zvfbfwma") {
+                for ext in ["zvfbfmin", "zfbfmin"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zvfbfmin") {
+                self.extensions.insert("zve32f".to_owned());
+            }
+            if self.extensions.contains("zfh") {
+                self.extensions.insert("zfhmin".to_owned());
+            }
+            if self.extensions.contains("zfhmin")
+                || self.extensions.contains("zfbfmin")
+                || self.extensions.contains("zfa")
+            {
+                self.extensions.insert("f".to_owned());
+            }
+            if self.extensions.contains("zdinx") {
+                self.extensions.insert("zfinx".to_owned());
+            }
+            if self.extensions.contains("zhinx") {
+                self.extensions.insert("zhinxmin".to_owned());
+            }
+            if self.extensions.contains("zhinxmin") {
+                self.extensions.insert("zfinx".to_owned());
+            }
+            if self.extensions.contains("zfinx") {
+                self.extensions.insert("zicsr".to_owned());
+            }
+            if self.extensions.contains("zk") {
+                for ext in ["zkn", "zkr", "zkt"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zkn") {
+                for ext in ["zbkb", "zbkc", "zbkx", "zkne", "zknd", "zknh"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.contains("zks") {
+                for ext in ["zbkb", "zbkc", "zbkx", "zksed", "zksh"] {
+                    self.extensions.insert(ext.to_owned());
+                }
+            }
+            if self.extensions.len() == before {
+                break;
             }
         }
     }
@@ -184,6 +279,9 @@ impl MarchSpec {
             .collect();
         if !self.extensions.contains("c") {
             attrs.push("-c".to_owned());
+            if !self.extensions.contains("zca") {
+                attrs.push("-zca".to_owned());
+            }
         }
         attrs.join(",")
     }
@@ -196,6 +294,36 @@ impl MarchSpec {
     }
 }
 
+fn reverse_implications(ext: &str) -> &'static [&'static str] {
+    match ext {
+        "m" => &["g"],
+        "zmmul" => &["m"],
+        "a" => &["g"],
+        "zaamo" | "zalrsc" => &["a"],
+        "d" => &["g", "zcd", "zve64d"],
+        "f" => &["d", "zcf", "zve32f", "zfhmin", "zfbfmin", "zfa"],
+        "zicsr" => &["g", "f", "zve32x", "zfinx"],
+        "zifencei" => &["g"],
+        "zca" => &["c", "zcd", "zcf", "zcb", "zcmp", "zcmt"],
+        "zba" | "zbb" | "zbs" => &["b"],
+        "zve64d" | "zvl128b" => &["v"],
+        "zve64f" => &["zve64d"],
+        "zve64x" | "zvl64b" => &["zve64f", "zvl128b"],
+        "zve32f" => &["zve64f", "zvfhmin", "zvfbfmin"],
+        "zve32x" => &["zve32f", "zve64x"],
+        "zfhmin" => &["zfh", "zvfh"],
+        "zvfhmin" => &["zvfh"],
+        "zfbfmin" | "zvfbfmin" => &["zvfbfwma"],
+        "zfinx" => &["zdinx", "zhinxmin"],
+        "zhinxmin" => &["zhinx"],
+        "zkn" | "zkr" | "zkt" => &["zk"],
+        "zbkb" | "zbkc" | "zbkx" => &["zkn", "zks"],
+        "zkne" | "zknd" | "zknh" => &["zkn"],
+        "zksed" | "zksh" => &["zks"],
+        _ => &[],
+    }
+}
+
 fn parse_single_letter_exts(segment: &str, out: &mut BTreeSet<String>) {
     // Strip trailing version like `2p1` while collecting single-letter ISA flags.
     let bytes = segment.as_bytes();
@@ -203,8 +331,10 @@ fn parse_single_letter_exts(segment: &str, out: &mut BTreeSet<String>) {
     while i < bytes.len() {
         let b = bytes[i];
         if b.is_ascii_alphabetic() {
-            // If `z` or `s` starts a multi-letter extension without `_` (rare), read rest
-            if (b == b'z' || b == b's') && i + 1 < bytes.len() && bytes[i + 1].is_ascii_alphabetic()
+            // If `z`, `s`, or `x` starts a multi-letter extension without `_`, read rest
+            if (b == b'z' || b == b's' || b == b'x')
+                && i + 1 < bytes.len()
+                && bytes[i + 1].is_ascii_alphabetic()
             {
                 let ext = strip_ext_version(&segment[i..]);
                 if !ext.is_empty() {
@@ -259,11 +389,13 @@ pub fn effective_options_at_line(
     let mut stack: Vec<(MarchSpec, Vec<String>)> = Vec::new();
     let mut active_lines: Vec<String> = Vec::new();
 
+    let mut in_block = false;
     for (line_idx, raw_line) in text.lines().enumerate() {
         if line_idx >= target_line {
             break;
         }
-        for stmt in crate::line::split_unquoted_statements(raw_line) {
+        let stripped = crate::line::strip_comments_with_state(raw_line, &mut in_block, false);
+        for stmt in crate::line::split_unquoted_statements_stripped(&stripped) {
             let trimmed = stmt.trim();
             let Some(rest) = trimmed.strip_prefix(".option") else {
                 continue;

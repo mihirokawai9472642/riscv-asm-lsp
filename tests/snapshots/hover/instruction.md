@@ -10,4 +10,4 @@ Operands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047
 
 ---
 
-Adds an immediate value to the value in xs1, and store the result in xd
+Adds an immediate value to the value in rs1, and store the result in rd.

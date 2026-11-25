@@ -80,11 +80,15 @@ fn parse_directives(text: &str) -> Vec<DirectiveEntry> {
 
 fn parse_pseudos(text: &str) -> Vec<ManualPseudo> {
     let mut by_mnemonic: BTreeMap<String, ManualPseudo> = BTreeMap::new();
-    for title in [
-        ".Pseudo Instructions",
-        ".Pseudoinstructions for acccessing control and status registers",
-    ] {
-        let rows = extract_table_rows(text, title);
+    let mut table_offsets: Vec<usize> = Vec::new();
+    if let Some(pos) = text.find(".Pseudo Instructions") {
+        table_offsets.push(pos);
+    }
+    if let Some(csr_pos) = find_csr_pseudo_section_offset(text) {
+        table_offsets.push(csr_pos);
+    }
+    for start in table_offsets {
+        let rows = extract_table_rows_from(&text[start..]);
         for (idx, row) in rows.into_iter().enumerate() {
             if idx == 0 || row.len() < 3 {
                 continue;
@@ -120,13 +124,32 @@ fn parse_pseudos(text: &str) -> Vec<ManualPseudo> {
     by_mnemonic.into_values().collect()
 }
 
+fn find_csr_pseudo_section_offset(text: &str) -> Option<usize> {
+    let mut offset = 0usize;
+    for raw_line in text.split_inclusive('\n') {
+        let trimmed = raw_line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if trimmed.starts_with('.')
+            && lower.contains("pseudoinstruction")
+            && lower.contains("control and status register")
+        {
+            return Some(offset);
+        }
+        offset += raw_line.len();
+    }
+    None
+}
+
 /// Extract AsciiDoc `|=== ... |===` table rows following `section_marker`.
 /// Each row is split into cells delimited by `|`, keeping multi-line cells intact.
 fn extract_table_rows(text: &str, section_marker: &str) -> Vec<Vec<String>> {
     let Some(marker_pos) = text.find(section_marker) else {
         return Vec::new();
     };
-    let after_marker = &text[marker_pos..];
+    extract_table_rows_from(&text[marker_pos..])
+}
+
+fn extract_table_rows_from(after_marker: &str) -> Vec<Vec<String>> {
     let Some(open_pos) = after_marker.find("|===") else {
         return Vec::new();
     };
@@ -292,9 +315,15 @@ mod tests {
 | li rd, symbol | *Myriad sequences{fn-8} | Load immediate | Arbitrary size
 | mv rd, rs | addi rd, rs, 0 | Copy register |
 |===
+
+.Pseudoinstructions for accessing control and status registers
+|===
+| Pseudoinstruction | Base Instruction(s) | Meaning
+| rdinstret rd | csrrs rd, instret, x0 | Read instructions-retired counter
+|===
 ";
         let pseudos = parse_pseudos(doc);
-        assert_eq!(pseudos.len(), 2);
+        assert_eq!(pseudos.len(), 3);
         for p in &pseudos {
             assert!(
                 !p.description.contains("expands to"),

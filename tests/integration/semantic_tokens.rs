@@ -249,3 +249,70 @@ _start:
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn semantic_tokens_prefer_user_symbols_over_non_csr_positions_and_skip_block_comments() {
+    let mut client = LspClient::start(None, None);
+    let uri: lsp_types::Uri = "file:///tmp/sem_csr_and_blk.S".parse().expect("uri");
+    let src = "\
+/*
+#define GHOST_CONST 1
+*/
+time:
+    ret
+_start:
+    call time
+    csrr a0, time
+";
+    client.open_doc(&uri, 1, src);
+
+    let token_types = legend_token_types(&client);
+    let idx_of = |name: &str| {
+        token_types
+            .iter()
+            .position(|t| t == name)
+            .expect("legend type") as u32
+    };
+    let label_idx = idx_of("label");
+    let csr_idx = idx_of("csr");
+    let const_idx = idx_of("constant");
+    let pp_idx = idx_of("preprocessor");
+
+    let resp = client.send_request(
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    let data: Vec<u32> = resp.result.expect("tokens")["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+    let decoded = decode_semantic_tokens(src, &data);
+
+    // `#define GHOST_CONST 1` inside `/* ... */` produces neither preprocessor nor constant tokens
+    assert!(
+        !decoded
+            .iter()
+            .any(|(lex, ty, _)| lex == "#define" && *ty == pp_idx)
+    );
+    assert!(
+        !decoded
+            .iter()
+            .any(|(lex, ty, _)| lex == "GHOST_CONST" && *ty == const_idx)
+    );
+
+    // `call time` uses `label`, while `csrr a0, time` still uses `csr`
+    let time_tokens: Vec<(u32, u32)> = decoded
+        .iter()
+        .filter(|(lex, _, _)| lex == "time")
+        .map(|(_, ty, m)| (*ty, *m))
+        .collect();
+    assert_eq!(
+        time_tokens,
+        vec![(label_idx, 1), (label_idx, 0), (csr_idx, 0)],
+        "decoded: {decoded:?}"
+    );
+
+    client.shutdown_and_exit();
+}

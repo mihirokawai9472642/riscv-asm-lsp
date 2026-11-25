@@ -30,8 +30,8 @@ use crate::document::Document;
 use crate::position::LineIndex;
 
 pub use scope::{
-    enclosing_macro_at, parse_macro_var_token, parse_numeric_ref_token, resolve_numeric_def,
-    resolve_param_scope, visible_params_at,
+    IncludeKind, enclosing_macro_at, parse_macro_var_token, parse_numeric_ref_token,
+    resolve_numeric_def, resolve_param_scope, visible_params_at,
 };
 
 use parse::{BuildFileInput, build_file_index, is_eager_asm_path, is_header_path};
@@ -176,9 +176,12 @@ pub struct SymbolHoverInfo {
 pub struct WorkspaceIndex {
     pub(super) workspace_root: Option<PathBuf>,
     pub(super) canon_workspace_root: Option<PathBuf>,
+    workspace_roots: Vec<PathBuf>,
+    canon_workspace_roots: Vec<PathBuf>,
     pub(super) files: HashMap<PathBuf, FileIndex>,
     parser: Parser,
     seen_paths: Arc<Mutex<HashSet<PathBuf>>>,
+    excluded_paths: Arc<Mutex<HashSet<PathBuf>>>,
     priority_rxs: Vec<mpsc::Receiver<FileIndex>>,
     priority_handles: Vec<JoinHandle<()>>,
     prioritized_roots: HashSet<PathBuf>,
@@ -189,18 +192,28 @@ pub struct WorkspaceIndex {
 
 impl WorkspaceIndex {
     pub fn new(workspace_root: Option<PathBuf>) -> Result<Self, String> {
+        Self::new_multi(workspace_root.into_iter().collect())
+    }
+
+    pub fn new_multi(workspace_roots: Vec<PathBuf>) -> Result<Self, String> {
         let mut parser = Parser::new();
         let language = tree_sitter_riscv::LANGUAGE.into();
         parser
             .set_language(&language)
             .map_err(|err| format!("failed to initialize tree-sitter-riscv: {err}"))?;
-        let canon_workspace_root = workspace_root.as_deref().map(normalize_path);
+        let canon_workspace_roots: Vec<PathBuf> =
+            workspace_roots.iter().map(|r| normalize_path(r)).collect();
+        let workspace_root = workspace_roots.first().cloned();
+        let canon_workspace_root = canon_workspace_roots.first().cloned();
         Ok(Self {
             workspace_root,
             canon_workspace_root,
+            workspace_roots,
+            canon_workspace_roots,
             files: HashMap::new(),
             parser,
             seen_paths: Arc::new(Mutex::new(HashSet::new())),
+            excluded_paths: Arc::new(Mutex::new(HashSet::new())),
             priority_rxs: Vec::new(),
             priority_handles: Vec::new(),
             prioritized_roots: HashSet::new(),
@@ -210,7 +223,33 @@ impl WorkspaceIndex {
         })
     }
 
+    pub fn set_excluded_paths(&mut self, paths: HashSet<PathBuf>) {
+        for p in &paths {
+            self.files.remove(p);
+        }
+        if let Ok(mut guard) = self.excluded_paths.lock() {
+            *guard = paths;
+        }
+    }
+
+    fn is_excluded_path(&self, norm_path: &Path) -> bool {
+        self.excluded_paths
+            .lock()
+            .map(|g| g.contains(norm_path))
+            .unwrap_or(false)
+    }
+
     pub fn display_path(&self, path: &Path) -> PathBuf {
+        let norm_p = normalize_path(path);
+        for (client_root, canon_root) in self
+            .workspace_roots
+            .iter()
+            .zip(self.canon_workspace_roots.iter())
+        {
+            if norm_p.starts_with(canon_root) {
+                return display_path_for_client(path, Some(client_root), Some(canon_root));
+            }
+        }
         display_path_for_client(
             path,
             self.workspace_root.as_deref(),
@@ -222,14 +261,57 @@ impl WorkspaceIndex {
     /// skipping hidden, `.gitignore`d, and foreign-architecture files and stopping at
     /// `MAX_WORKSPACE_FILES`.
     pub fn start_background_scan(&mut self, progress_sink: Option<MessageSink>) {
-        self.start_background_scan_with_cap(progress_sink, MAX_WORKSPACE_FILES);
+        self.start_background_scan_with_id(progress_sink, RequestId::from(2));
     }
 
-    fn start_background_scan_with_cap(&mut self, progress_sink: Option<MessageSink>, cap: usize) {
-        let Some(root) = self.workspace_root.clone() else {
-            return;
-        };
-        if self.bg_handle.is_some() {
+    pub fn start_background_scan_with_id(
+        &mut self,
+        progress_sink: Option<MessageSink>,
+        progress_req_id: RequestId,
+    ) {
+        self.start_background_scan_with_cap(progress_sink, MAX_WORKSPACE_FILES, progress_req_id);
+    }
+
+    /// Update indexed workspace roots after `workspace/didChangeWorkspaceFolders`,
+    /// pruning non-open files from removed roots and scanning newly added roots.
+    pub fn update_workspace_roots(
+        &mut self,
+        workspace_roots: Vec<PathBuf>,
+        is_open_path: &impl Fn(&Path) -> bool,
+        progress_sink: Option<MessageSink>,
+        progress_req_id: RequestId,
+    ) {
+        self.bg_cancel.store(true, Ordering::Relaxed);
+        self.bg_rx.take();
+        if let Some(handle) = self.bg_handle.take() {
+            let _ = handle.join();
+        }
+        self.bg_cancel = Arc::new(AtomicBool::new(false));
+
+        let canon_roots: Vec<PathBuf> = workspace_roots.iter().map(|r| normalize_path(r)).collect();
+        self.files.retain(|path, _| {
+            is_open_path(path) || canon_roots.iter().any(|r| path.starts_with(r))
+        });
+        if let Ok(mut seen) = self.seen_paths.lock() {
+            seen.retain(|p| self.files.contains_key(p));
+        }
+        self.prioritized_roots.retain(|r| canon_roots.contains(r));
+
+        self.workspace_root = workspace_roots.first().cloned();
+        self.canon_workspace_root = canon_roots.first().cloned();
+        self.workspace_roots = workspace_roots;
+        self.canon_workspace_roots = canon_roots;
+
+        self.start_background_scan_with_id(progress_sink, progress_req_id);
+    }
+
+    fn start_background_scan_with_cap(
+        &mut self,
+        progress_sink: Option<MessageSink>,
+        cap: usize,
+        progress_req_id: RequestId,
+    ) {
+        if self.workspace_roots.is_empty() || self.bg_handle.is_some() {
             return;
         }
 
@@ -239,7 +321,7 @@ impl WorkspaceIndex {
             })
         {
             sink(Message::Request(Request::new(
-                RequestId::from(2),
+                progress_req_id,
                 "window/workDoneProgress/create".to_owned(),
                 create_params,
             )));
@@ -256,30 +338,45 @@ impl WorkspaceIndex {
 
         let cancel = Arc::clone(&self.bg_cancel);
         let seen = Arc::clone(&self.seen_paths);
-        let canon_root = self.canon_workspace_root.clone();
+        let excluded = Arc::clone(&self.excluded_paths);
+        let roots: Vec<(PathBuf, PathBuf)> = self
+            .workspace_roots
+            .iter()
+            .cloned()
+            .zip(self.canon_workspace_roots.iter().cloned())
+            .collect();
         let (tx, rx) = mpsc::channel();
         self.bg_rx = Some(rx);
 
         let handle = thread::spawn(move || {
             let mut logged_panic = false;
-            let scanned = run_guarded_index_step("background scan", &mut logged_panic, || {
-                scan_directory_in_background(ScanTask {
-                    root: &root,
-                    client_root: Some(&root),
-                    canon_root: canon_root.as_deref(),
-                    cap,
-                    cancel: &cancel,
-                    seen: &seen,
-                    tx: &tx,
-                    progress_sink: progress_sink.as_ref(),
+            let mut total_scanned = 0usize;
+            for (root, canon_root) in &roots {
+                if total_scanned >= cap || cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let remaining_cap = cap - total_scanned;
+                let scanned = run_guarded_index_step("background scan", &mut logged_panic, || {
+                    scan_directory_in_background(ScanTask {
+                        root,
+                        client_root: Some(root),
+                        canon_root: Some(canon_root),
+                        cap: remaining_cap,
+                        cancel: &cancel,
+                        seen: &seen,
+                        excluded: &excluded,
+                        tx: &tx,
+                        progress_sink: progress_sink.as_ref(),
+                    })
                 })
-            })
-            .unwrap_or(0);
+                .unwrap_or(0);
+                total_scanned += scanned;
+            }
             if let Some(sink) = &progress_sink {
                 send_progress(
                     sink,
                     WorkDoneProgress::End(WorkDoneProgressEnd {
-                        message: Some(format!("Indexed {scanned} files")),
+                        message: Some(format!("Indexed {total_scanned} files")),
                     }),
                 );
             }
@@ -291,6 +388,7 @@ impl WorkspaceIndex {
     /// cross-file lookups work rapidly even when `workspace_root` is a broad directory
     /// such as `$HOME`.
     pub fn prioritize_open_document(&mut self, uri: &Uri) {
+        self.reap_finished_priority_handles();
         let Some(file_path) = uri_to_path(uri) else {
             return;
         };
@@ -313,6 +411,7 @@ impl WorkspaceIndex {
         let canon_root = self.canon_workspace_root.clone();
         let cancel = Arc::clone(&self.bg_cancel);
         let seen = Arc::clone(&self.seen_paths);
+        let excluded = Arc::clone(&self.excluded_paths);
         let (tx, rx) = mpsc::channel();
         self.priority_rxs.push(rx);
 
@@ -326,6 +425,7 @@ impl WorkspaceIndex {
                     cap: MAX_WORKSPACE_FILES,
                     cancel: &cancel,
                     seen: &seen,
+                    excluded: &excluded,
                     tx: &tx,
                     progress_sink: None,
                 });
@@ -334,9 +434,22 @@ impl WorkspaceIndex {
         self.priority_handles.push(handle);
     }
 
+    fn reap_finished_priority_handles(&mut self) {
+        let mut active = Vec::with_capacity(self.priority_handles.len());
+        for h in self.priority_handles.drain(..) {
+            if h.is_finished() {
+                let _ = h.join();
+            } else {
+                active.push(h);
+            }
+        }
+        self.priority_handles = active;
+    }
+
     /// Non-blocking drain of completed priority and background file parses into the index.
     pub fn drain_background(&mut self, is_open_path: &impl Fn(&Path) -> bool) {
         drain_receiver_vec(&mut self.priority_rxs, &mut self.files, is_open_path);
+        self.reap_finished_priority_handles();
         let Some(rx) = self.bg_rx.take() else {
             return;
         };
@@ -404,6 +517,10 @@ impl WorkspaceIndex {
 
     pub fn files(&self) -> impl Iterator<Item = &FileIndex> {
         self.files.values()
+    }
+
+    pub fn file_by_path(&self, path: &Path) -> Option<&FileIndex> {
+        self.files.get(path)
     }
 
     pub fn file_by_uri(&self, uri: &Uri) -> Option<&FileIndex> {
@@ -481,17 +598,25 @@ impl WorkspaceIndex {
     }
 
     pub fn reload_path(&mut self, uri: &Uri) {
+        self.reload_path_with_preprocessed(uri, None);
+    }
+
+    pub fn reload_path_with_preprocessed(
+        &mut self,
+        uri: &Uri,
+        preprocessed_override: Option<bool>,
+    ) {
         let Some(path) = uri_to_path(uri) else {
             return;
         };
         let norm = normalize_path(&path);
-        if is_linker_script_template(&norm) {
+        if is_linker_script_template(&norm) || self.is_excluded_path(&norm) {
             self.files.remove(&norm);
             return;
         }
         if norm.exists() {
             let display = self.display_path(&path);
-            self.index_path_from_disk_with_display(&display, &norm);
+            self.index_path_from_disk_with_display(&display, &norm, preprocessed_override);
         } else {
             self.files.remove(&norm);
         }
@@ -506,19 +631,32 @@ impl WorkspaceIndex {
         self.files.remove(&path);
     }
 
-    pub(super) fn index_path_from_disk(&mut self, path: &Path) {
+    pub(super) fn index_path_from_disk_with_preprocessed(
+        &mut self,
+        path: &Path,
+        preprocessed_override: Option<bool>,
+    ) {
         let norm = normalize_path(path);
         let display = self.display_path(path);
-        self.index_path_from_disk_with_display(&display, &norm);
+        self.index_path_from_disk_with_display(&display, &norm, preprocessed_override);
     }
 
-    fn index_path_from_disk_with_display(&mut self, display_path: &Path, norm_path: &Path) {
+    fn index_path_from_disk_with_display(
+        &mut self,
+        display_path: &Path,
+        norm_path: &Path,
+        preprocessed_override: Option<bool>,
+    ) {
         if let Some(entry) = parse_file_from_disk(
-            display_path,
-            Some(norm_path),
-            self.workspace_root.as_deref(),
-            self.canon_workspace_root.as_deref(),
-            None,
+            DiskParseRequest {
+                path: display_path,
+                known_norm: Some(norm_path),
+                client_root: self.workspace_root.as_deref(),
+                canon_root: self.canon_workspace_root.as_deref(),
+                preprocessed_override,
+                seen: None,
+                excluded: None,
+            },
             &mut self.parser,
         ) {
             self.files.insert(entry.path.clone(), entry);
@@ -615,18 +753,31 @@ fn find_priority_root(
     Some(parent.to_path_buf())
 }
 
-fn parse_file_from_disk(
-    path: &Path,
-    known_norm: Option<&Path>,
-    client_root: Option<&Path>,
-    canon_root: Option<&Path>,
-    seen: Option<&Mutex<HashSet<PathBuf>>>,
-    parser: &mut Parser,
-) -> Option<FileIndex> {
-    if is_linker_script_template(path) {
+struct DiskParseRequest<'a> {
+    path: &'a Path,
+    known_norm: Option<&'a Path>,
+    client_root: Option<&'a Path>,
+    canon_root: Option<&'a Path>,
+    preprocessed_override: Option<bool>,
+    seen: Option<&'a Mutex<HashSet<PathBuf>>>,
+    excluded: Option<&'a Mutex<HashSet<PathBuf>>>,
+}
+
+fn parse_file_from_disk(req: DiskParseRequest<'_>, parser: &mut Parser) -> Option<FileIndex> {
+    if is_linker_script_template(req.path) {
         return None;
     }
-    let mut file = fs::File::open(path).ok()?;
+    let norm = req
+        .known_norm
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| normalize_path(req.path));
+    if let Some(excluded_lock) = req.excluded {
+        let guard = excluded_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.contains(&norm) {
+            return None;
+        }
+    }
+    let mut file = fs::File::open(req.path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.len() > MAX_INDEX_FILE_BYTES {
         return None;
@@ -643,10 +794,7 @@ fn parse_file_from_disk(
         return None;
     }
 
-    let norm = known_norm
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| normalize_path(path));
-    if let Some(seen_lock) = seen {
+    if let Some(seen_lock) = req.seen {
         let mut guard = seen_lock.lock().unwrap_or_else(|e| e.into_inner());
         if !guard.insert(norm.clone()) {
             return None;
@@ -658,11 +806,13 @@ fn parse_file_from_disk(
         file.read_to_end(&mut buf).ok()?;
     }
     let text = String::from_utf8(buf).ok()?;
-    let display = display_path_for_client(path, client_root, canon_root);
+    let display = display_path_for_client(req.path, req.client_root, req.canon_root);
     let uri = path_to_uri(&display)?;
     let line_index = LineIndex::new(&text);
     let is_header = is_header_path(&norm);
-    let preprocessed = is_preprocessed_by_suffix(&norm);
+    let preprocessed = req
+        .preprocessed_override
+        .unwrap_or_else(|| is_preprocessed_by_suffix(&norm));
     Some(build_file_index(
         BuildFileInput {
             path: norm,
@@ -710,6 +860,7 @@ struct ScanTask<'a> {
     cap: usize,
     cancel: &'a AtomicBool,
     seen: &'a Mutex<HashSet<PathBuf>>,
+    excluded: &'a Mutex<HashSet<PathBuf>>,
     tx: &'a mpsc::Sender<FileIndex>,
     progress_sink: Option<&'a MessageSink>,
 }
@@ -736,7 +887,16 @@ fn scan_directory_in_background(task: ScanTask<'_>) -> usize {
             }
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 let name = entry.file_name().to_string_lossy();
-                return !matches!(name.as_ref(), "target" | "build" | "node_modules");
+                if matches!(name.as_ref(), "target" | "node_modules") {
+                    return false;
+                }
+                if name.as_ref() == "build" {
+                    let p = entry.path();
+                    return !(p.join("CMakeCache.txt").exists()
+                        || p.join("build.ninja").exists()
+                        || p.join("Makefile").exists()
+                        || p.join("meson-info").exists());
+                }
             }
             true
         });
@@ -760,11 +920,15 @@ fn scan_directory_in_background(task: ScanTask<'_>) -> usize {
         }
         let parsed = run_guarded_index_step("parse file", &mut logged_panic, || {
             parse_file_from_disk(
-                path,
-                None,
-                task.client_root,
-                task.canon_root,
-                Some(task.seen),
+                DiskParseRequest {
+                    path,
+                    known_norm: None,
+                    client_root: task.client_root,
+                    canon_root: task.canon_root,
+                    preprocessed_override: None,
+                    seen: Some(task.seen),
+                    excluded: Some(task.excluded),
+                },
                 &mut parser,
             )
         })
@@ -909,7 +1073,7 @@ mod tests {
         fs::write(tmp.join("c.S"), "sym_c:\n    nop\n").unwrap();
 
         let mut idx = WorkspaceIndex::new(Some(tmp.clone())).unwrap();
-        idx.start_background_scan_with_cap(None, 2);
+        idx.start_background_scan_with_cap(None, 2, RequestId::from(2));
         idx.wait_for_background_scan();
 
         assert!(!idx.files.keys().any(|p| p.ends_with("secret.S")

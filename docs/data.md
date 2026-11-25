@@ -64,10 +64,12 @@ Pipeline stages:
    pseudo-instruction and directive tables cleanly without duplicating
    `expands to` clauses.
 4. **Join & Clean (`xtask/src/join.rs`)**: merges by canonical/deprecated name,
-   applies `data/supplements.json` descriptions, deprecation markers, and typo
-   corrections, and generates concise `summary` strings (stripping leading
-   markdown title headings or syntax prefixes, capped at 220 characters for
-   entries and 100 characters for CSR fields and registers).
+   normalizes UDB `xd`/`xs1`/`xs2`/`xs3` register placeholders to match LLVM's
+   `rd`/`rs1`/`rs2`/`rs3` operands, derives privileged/counter `isa_label`s
+   (`Sm`, `S`, `Sdext`, `Zicntr`), applies `data/supplements.json` descriptions,
+   CSR extension requirements, deprecation markers, and typo corrections, and
+   generates concise punctuation-terminated `summary` strings (capped at 260
+   characters for entries and 140 characters for CSR fields and registers).
 5. **Report (`xtask/src/report.rs`)**: emits `data/report.md` summarizing
    matches, upstream gaps, cleaned `TODO` items, and applied corrections.
 
@@ -78,17 +80,19 @@ Pipeline stages:
   - `extensions`: `-march` name, LLVM feature name, description.
   - `instructions`: `mnemonic`, `kind` (`instruction` | `alias` | `pseudo`),
     `variants` (`syntax`, `operands` with LLVM operand class, `required_extensions`,
-    `xlen`, `alias_of`), `udb_assembly`, `long_name`, `summary`, `description`,
-    `description_source`, `llvm_supported`, `deprecated`, `preferred_name`.
-  - `csrs`: `name`, `number`, privilege/mode, extensions, `summary`,
-    `description`, `fields` (each with optional `summary`), `deprecated_names`.
+    `xlen`, `alias_of`), `udb_assembly`, `isa_label`, `long_name`, `summary`,
+    `description`, `description_source`, `llvm_supported`, `deprecated`,
+    `preferred_name`.
+  - `csrs`: `name`, `number`, privilege/mode, `required_extensions`, `summary`,
+    `description`, `fields` (each with `bits`, optional `bits_rv32`, and
+    optional `summary`), `deprecated_names`.
   - `registers`: `name`, ABI names, `class`, `summary`, `description`, saver
     convention.
   - `directives`: `name`, arguments, `description`, source.
 - **`data/texts.json`** (embedded via `include_str!`):
   - `relocations`: `%hi(`, `%lo(`, `%pcrel_hi(`, `%pcrel_lo(`, `%tprel_hi(`,
     `%tprel_lo(`, `%tprel_add(`, `%got_pcrel_hi(`.
-  - `preprocessor_directives`: 14 `#` preprocessor directives (`define`,
+  - `preprocessor_directives`: 22 `#` preprocessor directives (`define`,
     `undef`, `include`, `if`, ...).
   - `macro_counter`: description for `\@`.
   - `operand_classes`: human-readable labels for the 51 non-immediate LLVM

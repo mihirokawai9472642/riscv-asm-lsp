@@ -161,11 +161,11 @@ pub fn parse_cpp_define_line(line: &str) -> Option<ParsedDefine<'_>> {
 
     let is_function_like = after_ident.starts_with('(');
     let raw_val = if is_function_like {
-        after_ident.trim()
+        after_ident.trim().to_owned()
     } else {
-        strip_cpp_line_comment(after_ident).trim()
+        strip_cpp_line_comment(after_ident).trim().to_owned()
     };
-    let value = (!raw_val.is_empty()).then(|| raw_val.to_owned());
+    let value = (!raw_val.is_empty()).then_some(raw_val);
 
     Some(ParsedDefine {
         name: ident,
@@ -175,14 +175,63 @@ pub fn parse_cpp_define_line(line: &str) -> Option<ParsedDefine<'_>> {
     })
 }
 
-fn strip_cpp_line_comment(s: &str) -> &str {
-    if let Some(idx) = s.find("//") {
-        &s[..idx]
-    } else if let Some(idx) = s.find("/*") {
-        &s[..idx]
-    } else {
-        s
+/// Strip C/C++ comments (`//` and `/* ... */`) from a `#define` value while respecting
+/// quotes and preserving `#`/`##` preprocessor operators.
+pub fn strip_cpp_line_comment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = s.char_indices().peekable();
+
+    while let Some((idx, ch)) = chars.next() {
+        if in_single {
+            out.push(ch);
+            if ch == '\\' {
+                if let Some((_, next)) = chars.next() {
+                    out.push(next);
+                }
+            } else if ch == '\'' {
+                in_single = false;
+            }
+        } else if in_double {
+            out.push(ch);
+            if ch == '\\' {
+                if let Some((_, next)) = chars.next() {
+                    out.push(next);
+                }
+            } else if ch == '"' {
+                in_double = false;
+            }
+        } else if ch == '\'' {
+            in_single = true;
+            out.push(ch);
+        } else if ch == '"' {
+            in_double = true;
+            out.push(ch);
+        } else if ch == '/' && chars.peek().is_some_and(|&(_, next)| next == '/') {
+            break;
+        } else if ch == '/' && chars.peek().is_some_and(|&(_, next)| next == '*') {
+            chars.next();
+            let rest = &s[idx + 2..];
+            if let Some(rel_end) = rest.find("*/") {
+                out.push(' ');
+                let end_byte = idx + 2 + rel_end + 2;
+                while let Some(&(next_idx, _)) = chars.peek() {
+                    if next_idx < end_byte {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        } else {
+            out.push(ch);
+        }
     }
+
+    out
 }
 
 pub fn parse_cpp_include_line(line: &str) -> Option<(String, bool)> {
@@ -332,5 +381,14 @@ mod tests {
         );
         assert_eq!(hash_to_slash_replacement("#define FOO 1", 0), "// ");
         assert_eq!(hash_to_slash_replacement("# if foo", 0), "//");
+
+        let block_then_line = parse_cpp_define_line("#define FOO 1 /* c */ // note").unwrap();
+        assert_eq!(block_then_line.value.as_deref(), Some("1"));
+        let quoted_url = parse_cpp_define_line("#define URL \"http://example.com\" // ok").unwrap();
+        assert_eq!(quoted_url.value.as_deref(), Some("\"http://example.com\""));
+        assert_eq!(
+            strip_cpp_line_comment(" #x /* comment */ // trailing").trim(),
+            "#x"
+        );
     }
 }

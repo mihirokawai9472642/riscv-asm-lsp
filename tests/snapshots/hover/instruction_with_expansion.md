@@ -11,4 +11,4 @@ This line: `c.addi sp, -16` → `0x1141`
 
 ---
 
-Adds an immediate value to the value in xs1, and store the result in xd
+Adds an immediate value to the value in rs1, and store the result in rd.

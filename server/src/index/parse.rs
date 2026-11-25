@@ -174,9 +174,17 @@ fn parse_header_file(path: PathBuf, uri: Uri, text: String, line_index: LineInde
 
 fn scan_cpp_defines(text: &str, definitions: &mut Vec<SymbolDef>) {
     let mut line_start = 0usize;
+    let mut in_block = false;
     for raw_line in text.split_inclusive('\n') {
         let line_end = line_start + raw_line.len();
-        if let Some(parsed) = parse_cpp_define_raw(raw_line) {
+        let started_in_block = in_block;
+        let stripped = crate::line::strip_comments_with_state(raw_line, &mut in_block, true);
+        if let Some(parsed) = parse_cpp_define_raw(&stripped) {
+            let line_text = if started_in_block {
+                stripped.trim().to_owned()
+            } else {
+                raw_line.trim().to_owned()
+            };
             definitions.push(SymbolDef {
                 name: parsed.name.to_owned(),
                 kind: SymKind::Define,
@@ -186,7 +194,7 @@ fn scan_cpp_defines(text: &str, definitions: &mut Vec<SymbolDef>) {
                     line_start + parsed.name_span.1,
                 ),
                 full_span: (line_start, line_end),
-                line_text: raw_line.trim().to_owned(),
+                line_text,
                 value_text: parsed.value,
                 params: Vec::new(),
                 enclosing_label_idx: None,
@@ -198,8 +206,10 @@ fn scan_cpp_defines(text: &str, definitions: &mut Vec<SymbolDef>) {
 }
 
 fn scan_cpp_includes(text: &str, out: &mut Vec<IncludeDirective>) {
+    let mut in_block = false;
     for line in text.lines() {
-        if let Some(inc) = parse_cpp_include_line(line) {
+        let stripped = crate::line::strip_comments_with_state(line, &mut in_block, true);
+        if let Some(inc) = parse_cpp_include_line(&stripped) {
             out.push(inc);
         }
     }
@@ -586,16 +596,16 @@ fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<
         .collect();
 
     let mut offset = 0usize;
+    let mut in_block = false;
     for raw_line in text.split_inclusive('\n') {
-        let code = raw_line.split('#').next().unwrap_or(raw_line);
-        let code = code.split("//").next().unwrap_or(code);
+        let code = crate::line::strip_comments_with_state(raw_line, &mut in_block, false);
         if let Some((lhs, rhs)) = code.split_once('=') {
             let lhs_trim = lhs.trim();
             if !lhs_trim.is_empty()
                 && !lhs_trim.ends_with(['!', '<', '>'])
                 && !rhs.starts_with('=')
                 && is_valid_ident(lhs_trim)
-                && let Some(rel) = raw_line.find(lhs_trim)
+                && let Some(rel) = code.find(lhs_trim)
             {
                 let name_start = offset + rel;
                 if existing_equs.insert(name_start) {
@@ -652,7 +662,7 @@ fn finalize_label_hierarchy_and_ranges(text: &str, defs: &mut [SymbolDef], refs:
     }
 
     for i in 0..defs.len() {
-        if defs[i].kind != SymKind::NumericLabel {
+        if !matches!(defs[i].kind, SymKind::NumericLabel | SymKind::LocalLabel) {
             continue;
         }
         let off = defs[i].name_span.0;

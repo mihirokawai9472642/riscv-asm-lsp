@@ -58,7 +58,7 @@ pub fn goto_definition(
     pos: Position,
     ctx: &mut CompileContext,
 ) -> Option<GotoDefinitionResponse> {
-    if let Some((_, resolved_path)) = index.resolve_include_on_line(uri, pos.line, ctx)
+    if let Some((_, _, resolved_path)) = index.resolve_include_on_line(uri, pos.line, ctx)
         && let Some(target_uri) = path_to_uri(&resolved_path)
     {
         return Some(GotoDefinitionResponse::Scalar(Location::new(
@@ -104,7 +104,7 @@ pub fn goto_definition(
         TargetSymbol::ScopedEquOrMacro { name, .. } => {
             let closure = index.resolve_include_closure(&file.path, ctx);
             for path in closure {
-                if let Some(f) = index.files().find(|f| f.path == path) {
+                if let Some(f) = index.file_by_path(&path) {
                     for def in &f.definitions {
                         if matches!(d_kind(def), SymKind::Equ | SymKind::Macro) && def.name == name
                         {
@@ -117,7 +117,7 @@ pub fn goto_definition(
         TargetSymbol::Define { name, .. } => {
             let closure = index.resolve_include_closure(&file.path, ctx);
             for path in closure {
-                if let Some(f) = index.files().find(|f| f.path == path) {
+                if let Some(f) = index.file_by_path(&path) {
                     for def in &f.definitions {
                         if def.kind == SymKind::Define && def.name == name {
                             locations.push(f.location(def.name_span));
@@ -208,7 +208,7 @@ pub fn prepare_rename(
     if db.instruction(token).is_some()
         || db.register(token).is_some()
         || db.csr(token).is_some()
-        || db.directive(token).is_some()
+        || (token.starts_with('.') && db.directive(token).is_some())
     {
         return None;
     }
@@ -254,7 +254,7 @@ pub fn rename_symbol(
     if db.instruction(token).is_some()
         || db.register(token).is_some()
         || db.csr(token).is_some()
-        || db.directive(token).is_some()
+        || (token.starts_with('.') && db.directive(token).is_some())
     {
         return Ok(None);
     }
@@ -321,6 +321,11 @@ fn validate_rename_target(
     if !is_valid_symbol_name(new_name) {
         return Err(format!("invalid symbol name `{new_name}`"));
     }
+    if db.instruction(new_name).is_some() {
+        return Err(format!(
+            "cannot rename symbol to instruction name `{new_name}`"
+        ));
+    }
     if db.register(new_name).is_some() {
         return Err(format!(
             "cannot rename symbol to register name `{new_name}`"
@@ -363,7 +368,7 @@ fn validate_rename_target(
                 scope_files.insert(p);
             }
             scope_files.iter().any(|path| {
-                index.files().find(|f| f.path == *path).is_some_and(|f| {
+                index.file_by_path(path).is_some_and(|f| {
                     f.definitions.iter().any(|d| {
                         !matches!(d.kind, SymKind::NumericLabel | SymKind::MacroParam)
                             && d.name == new_name
@@ -450,6 +455,10 @@ fn identify_target(
     offset: usize,
     ctx: &mut CompileContext,
 ) -> Option<TargetSymbol> {
+    if crate::line::is_offset_in_comment(&file.text, None, offset, file.preprocessed) {
+        return None;
+    }
+
     // 1. Check if cursor is directly on a numeric label definition (`1:`)
     if let Some(def) = file.definitions.iter().find(|d| {
         d.kind == SymKind::NumericLabel && offset >= d.name_span.0 && offset <= d.full_span.1
@@ -529,7 +538,7 @@ fn identify_target(
     // 6. Check current file & include closure for `.equ`, `.macro`, `#define`
     let closure = index.resolve_include_closure(&file.path, ctx);
     for path in &closure {
-        if let Some(f) = index.files().find(|f| f.path == *path)
+        if let Some(f) = index.file_by_path(path)
             && let Some(def) = f.definitions.iter().find(|d| {
                 matches!(d.kind, SymKind::Equ | SymKind::Macro | SymKind::Define) && d.name == token
             })
@@ -623,29 +632,50 @@ fn collect_occurrences(
             });
         }
         TargetSymbol::GlobalLabel { name } => {
-            let files: Vec<FileIndex> = if current_file_only {
-                vec![cur_file.clone()]
+            if current_file_only {
+                collect_label_occurrences_in_file(
+                    cur_file,
+                    name,
+                    include_declaration,
+                    &mut out,
+                    &mut seen,
+                );
             } else {
-                index.files().cloned().collect()
-            };
-            for f in files {
-                if include_declaration {
-                    for def in &f.definitions {
-                        if def.kind == SymKind::Label && def.name == *name {
-                            push_unique(&mut out, &mut seen, f.location(def.name_span));
-                        }
-                    }
-                }
-                for r in &f.references {
-                    if r.kind == RefKind::Identifier && r.name == *name {
-                        push_unique(&mut out, &mut seen, f.location(r.span));
-                    }
+                for f in index.files() {
+                    collect_label_occurrences_in_file(
+                        f,
+                        name,
+                        include_declaration,
+                        &mut out,
+                        &mut seen,
+                    );
                 }
             }
         }
     }
 
     out
+}
+
+fn collect_label_occurrences_in_file(
+    f: &FileIndex,
+    name: &str,
+    include_declaration: bool,
+    out: &mut Vec<Location>,
+    seen: &mut HashSet<(String, u32, u32)>,
+) {
+    if include_declaration {
+        for def in &f.definitions {
+            if def.kind == SymKind::Label && def.name == name {
+                push_unique(out, seen, f.location(def.name_span));
+            }
+        }
+    }
+    for r in &f.references {
+        if r.kind == RefKind::Identifier && r.name == name {
+            push_unique(out, seen, f.location(r.span));
+        }
+    }
 }
 
 fn collect_numeric_occurrences(
@@ -740,7 +770,7 @@ fn collect_scoped_occurrences(q: ScopedOccurrenceQuery<'_>) {
     };
 
     for path in scope_files {
-        let Some(f) = q.index.files().find(|f| f.path == path) else {
+        let Some(f) = q.index.file_by_path(&path) else {
             continue;
         };
         if q.include_declaration {

@@ -1,5 +1,5 @@
-mod candidates;
-mod snippets;
+pub(crate) mod candidates;
+pub(crate) mod snippets;
 
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionItemTag, CompletionList, CompletionResponse,
@@ -12,9 +12,10 @@ use crate::document::Document;
 use crate::index::{WorkspaceIndex, visible_params_at};
 
 use candidates::{
-    OPTION_SUBCOMMANDS, OperandQuery, ResolvePayload, collect_directive_completions,
+    OPTION_SUBCOMMANDS, OperandQuery, ParenKind, ResolvePayload, collect_directive_completions,
     collect_instruction_completions, collect_operand_completions, push_macro_param_completions,
-    push_relocation_completions, resolve_documentation, serialize_payload,
+    push_option_arch_completions, push_relocation_completions, resolve_documentation,
+    serialize_payload,
 };
 
 pub(super) const MAX_SYMBOL_CANDIDATES: usize = 200;
@@ -29,13 +30,19 @@ pub struct CompletionClientCaps {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CompletionContext {
     OptionSubcommand,
+    OptionArchArg,
+    SectionArg {
+        arg_index: usize,
+        in_quotes: bool,
+    },
+    Suppressed,
     StatementStart {
         prefix: String,
     },
     Operand {
         mnemonic: String,
         operand_index: usize,
-        inside_parens: bool,
+        paren_kind: ParenKind,
     },
 }
 
@@ -49,14 +56,27 @@ pub fn provide_completion(
 ) -> Option<CompletionResponse> {
     let file_ctx = ctx.for_uri(&doc.uri);
     let offset = doc.line_index.position_to_offset(&doc.text, pos);
-    if crate::line::is_offset_in_comment(&doc.text, doc.tree.as_ref(), offset, false) {
+    if crate::line::is_offset_in_comment(
+        &doc.text,
+        doc.tree.as_ref(),
+        offset,
+        file_ctx.preprocessed,
+    ) {
         return None;
     }
     let (line_start, _, _) = doc.line_index.line_bounds(&doc.text, pos.line as usize);
     let line_prefix = doc.text.get(line_start..offset)?;
-    let comp_ctx = classify_completion_context(line_prefix);
+    let starts_in_block =
+        crate::line::in_block_comment_before(&doc.text, line_start, file_ctx.preprocessed);
+    let (march, _) = effective_options_at_line(&doc.text, pos.line as usize, &file_ctx.march);
+    let comp_ctx = classify_completion_context(line_prefix, starts_in_block, db, &march);
+    if comp_ctx == CompletionContext::Suppressed {
+        return None;
+    }
 
-    let (replace_start, typed_prefix) = completion_token_prefix(&doc.text, line_start, offset);
+    let include_sign = matches!(comp_ctx, CompletionContext::OptionArchArg);
+    let (replace_start, typed_prefix) =
+        completion_token_prefix(&doc.text, line_start, offset, include_sign);
     let replace_range = doc
         .line_index
         .byte_span_to_range(&doc.text, replace_start, offset);
@@ -66,7 +86,6 @@ pub fn provide_completion(
     let next_is_ws = next_char.is_some_and(|c| c == ' ' || c == '\t');
     let next_is_comma = next_char == Some(',');
 
-    let (march, _) = effective_options_at_line(&doc.text, pos.line as usize, &file_ctx.march);
     let visible = index.visible_symbols_for_completion(&doc.uri, offset, ctx);
     let in_macro_body = index
         .file_by_uri(&doc.uri)
@@ -79,6 +98,22 @@ pub fn provide_completion(
         CompletionContext::OptionSubcommand => {
             push_option_subcommands(&typed_lower, next_is_comma, replace_range, &mut items);
         }
+        CompletionContext::OptionArchArg => {
+            push_option_arch_completions(db, &typed_lower, replace_range, &mut items);
+        }
+        CompletionContext::SectionArg {
+            arg_index,
+            in_quotes,
+        } => {
+            candidates::push_section_arg_completions(
+                arg_index,
+                in_quotes,
+                &typed_lower,
+                replace_range,
+                &mut items,
+            );
+        }
+        CompletionContext::Suppressed => return None,
         CompletionContext::StatementStart { prefix } => {
             if prefix.starts_with('\\') && in_macro_body {
                 push_macro_param_completions(
@@ -108,7 +143,7 @@ pub fn provide_completion(
         CompletionContext::Operand {
             mnemonic,
             operand_index,
-            inside_parens,
+            paren_kind,
         } => {
             if typed_prefix.starts_with('%') {
                 push_relocation_completions(db, &typed_lower, replace_range, &mut items);
@@ -127,7 +162,7 @@ pub fn provide_completion(
                         march: &march,
                         mnemonic: &mnemonic,
                         operand_index,
-                        inside_parens,
+                        paren_kind,
                         next_is_comma,
                         visible_syms: &visible.symbols,
                         in_macro_body,
@@ -252,7 +287,12 @@ pub fn resolve_completion_item(mut item: CompletionItem, db: &Database) -> Compl
     item
 }
 
-fn completion_token_prefix(text: &str, line_start: usize, offset: usize) -> (usize, &str) {
+fn completion_token_prefix(
+    text: &str,
+    line_start: usize,
+    offset: usize,
+    include_sign: bool,
+) -> (usize, &str) {
     let bytes = text.as_bytes();
     let mut start = offset.min(bytes.len());
     while start > line_start {
@@ -263,7 +303,10 @@ fn completion_token_prefix(text: &str, line_start: usize, offset: usize) -> (usi
             break;
         }
     }
-    if start > line_start && matches!(bytes[start - 1], b'%' | b'\\') {
+    if start > line_start
+        && (matches!(bytes[start - 1], b'%' | b'\\' | b'@')
+            || (include_sign && matches!(bytes[start - 1], b'+' | b'-')))
+    {
         start -= 1;
     }
     let slice = text.get(start..offset).unwrap_or("");
@@ -349,8 +392,14 @@ pub(super) fn make_rich_item(s: RichItemSpec) -> CompletionItem {
     }
 }
 
-fn classify_completion_context(line_prefix: &str) -> CompletionContext {
-    let active = crate::line::active_statement_prefix(line_prefix);
+fn classify_completion_context(
+    line_prefix: &str,
+    starts_in_block: bool,
+    db: &Database,
+    march: &MarchSpec,
+) -> CompletionContext {
+    let active =
+        crate::line::active_statement_prefix_with_block_state(line_prefix, starts_in_block);
     let after_label = active.as_str();
 
     if after_label.is_empty() {
@@ -369,15 +418,110 @@ fn classify_completion_context(line_prefix: &str) -> CompletionContext {
     let args = after_label[ws_pos..].trim_start();
 
     if head == ".option" {
-        return CompletionContext::OptionSubcommand;
+        if !args.contains(',') && !args.chars().any(char::is_whitespace) {
+            return CompletionContext::OptionSubcommand;
+        }
+        if args
+            .to_ascii_lowercase()
+            .strip_prefix("arch")
+            .is_some_and(|r| r.trim_start().starts_with(','))
+        {
+            return CompletionContext::OptionArchArg;
+        }
+        return CompletionContext::Suppressed;
+    }
+
+    if head == ".section" || head == ".pushsection" {
+        let (arg_index, _) = crate::line::count_operand_position(args);
+        let in_quotes = is_inside_double_quotes(args);
+        return CompletionContext::SectionArg {
+            arg_index,
+            in_quotes,
+        };
     }
 
     let (operand_index, inside_parens) = crate::line::count_operand_position(args);
+    let paren_kind = if inside_parens {
+        classify_paren_kind(args, &head, operand_index, db, march)
+    } else {
+        ParenKind::None
+    };
     CompletionContext::Operand {
         mnemonic: head,
         operand_index,
-        inside_parens,
+        paren_kind,
     }
+}
+
+fn is_inside_double_quotes(s: &str) -> bool {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for ch in s.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && in_quotes {
+            escaped = true;
+        } else if ch == '"' {
+            in_quotes = !in_quotes;
+        }
+    }
+    in_quotes
+}
+
+fn classify_paren_kind(
+    args: &str,
+    mnemonic: &str,
+    operand_index: usize,
+    db: &Database,
+    march: &MarchSpec,
+) -> ParenKind {
+    let stripped = crate::line::strip_comments(args);
+    let mut paren_stack: Vec<usize> = Vec::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = stripped.char_indices();
+    while let Some((idx, ch)) = chars.next() {
+        if in_single {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == '\'' {
+                in_single = false;
+            }
+        } else if in_double {
+            if ch == '\\' {
+                chars.next();
+            } else if ch == '"' {
+                in_double = false;
+            }
+        } else {
+            match ch {
+                '\'' => in_single = true,
+                '"' => in_double = true,
+                '(' => paren_stack.push(idx),
+                ')' => {
+                    paren_stack.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(&open_idx) = paren_stack.last() {
+        let before = stripped[..open_idx].trim_end();
+        let bytes = before.as_bytes();
+        let mut i = bytes.len();
+        while i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+            i -= 1;
+        }
+        if i > 0 && bytes[i - 1] == b'%' {
+            return ParenKind::Relocation;
+        }
+    }
+    if candidates::has_memory_operand_at(db, march, mnemonic, operand_index) {
+        return ParenKind::MemoryBase;
+    }
+    ParenKind::Expression
 }
 
 #[cfg(test)]

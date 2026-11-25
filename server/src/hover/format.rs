@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use crate::context::MarchSpec;
+use crate::context::{MarchSpec, uri_to_path};
 use crate::data::{
     CsrEntry, Database, DirectiveEntry, InstructionEntry, InstructionKind, InstructionVariant,
     RegisterClass, RegisterEntry, Xlen,
 };
-use crate::index::{AssignKind, SymKind, SymbolHoverInfo};
+use crate::index::{AssignKind, IncludeKind, SymKind, SymbolHoverInfo};
 
 use super::operands::describe_operand_class;
 
@@ -136,19 +136,29 @@ fn select_variants<'a>(
     effective_march: &MarchSpec,
     specific_syntax: Option<&str>,
 ) -> Vec<&'a InstructionVariant> {
-    let xlen_matching: Vec<_> = inst
+    let ext_matching: Vec<_> = inst
         .variants
         .iter()
-        .filter(|v| effective_march.supports_xlen(v.xlen))
+        .filter(|v| effective_march.supports_extensions(&v.required_extensions, v.xlen))
         .collect();
-    let pool: Vec<_> = if xlen_matching.is_empty() {
-        inst.variants.iter().collect()
+    let pool: Vec<_> = if !ext_matching.is_empty() {
+        ext_matching
     } else {
-        xlen_matching
+        let xlen_matching: Vec<_> = inst
+            .variants
+            .iter()
+            .filter(|v| effective_march.supports_xlen(v.xlen))
+            .collect();
+        if xlen_matching.is_empty() {
+            inst.variants.iter().collect()
+        } else {
+            xlen_matching
+        }
     };
+    let sorted = crate::completion::snippets::deduplicate_and_sort_variants(&inst.mnemonic, &pool);
     if let Some(target) = specific_syntax {
         let norm_target = normalize_syntax(target);
-        let narrowed: Vec<_> = pool
+        let narrowed: Vec<_> = sorted
             .iter()
             .copied()
             .filter(|v| normalize_syntax(&v.syntax) == norm_target)
@@ -157,7 +167,7 @@ fn select_variants<'a>(
             return narrowed;
         }
     }
-    pool
+    sorted
 }
 
 fn collect_syntax_block(
@@ -219,12 +229,16 @@ fn format_instruction_context(inst: &InstructionEntry, variants: &[&InstructionV
     };
 
     let ext_part = if exts.is_empty() {
-        let base_badge = match (has_rv32, has_rv64) {
-            (true, false) => "RV32I",
-            (false, true) => "RV64I",
-            _ => "I",
-        };
-        format!("`{base_badge}`")
+        if let Some(isa) = &inst.isa_label {
+            format!("`{isa}`")
+        } else {
+            let base_badge = match (has_rv32, has_rv64) {
+                (true, false) => "RV32I",
+                (false, true) => "RV64I",
+                _ => "I",
+            };
+            format!("`{base_badge}`")
+        }
     } else {
         exts.iter()
             .map(|e| format!("`{e}`"))
@@ -260,17 +274,16 @@ fn collect_aliases(inst: &InstructionEntry) -> Vec<&str> {
 
 fn format_operands_fact(variants: &[&InstructionVariant], db: &Database) -> Option<String> {
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-    let mut seen_pair: HashSet<(String, String)> = HashSet::new();
+    let mut seen_name: HashSet<String> = HashSet::new();
 
-    for v in variants {
+    for v in variants.iter().take(MAX_SYNTAX_VARIANTS) {
         for op in &v.operands {
+            if !seen_name.insert(op.name.clone()) {
+                continue;
+            }
             let Some(desc) = describe_operand_class(&op.class, db) else {
                 continue;
             };
-            let pair_key = (op.name.clone(), desc.clone());
-            if !seen_pair.insert(pair_key) {
-                continue;
-            }
             if let Some((_, names)) = groups.iter_mut().find(|(d, _)| *d == desc) {
                 names.push(op.name.clone());
             } else {
@@ -369,7 +382,7 @@ fn normalize_syntax(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(crate) fn format_csr_hover(csr: &CsrEntry) -> String {
+pub(crate) fn format_csr_hover(csr: &CsrEntry, effective_march: Option<&MarchSpec>) -> String {
     let mut header = vec!["CSR".to_owned()];
     if let Some(long_name) = csr
         .description
@@ -387,12 +400,18 @@ pub(crate) fn format_csr_hover(csr: &CsrEntry) -> String {
     }
     let context = header.join(" · ");
 
+    let is_rv32 = effective_march.is_some_and(|m| m.xlen == Xlen::Rv32);
     let mut facts = Vec::new();
     if !csr.fields.is_empty() {
         let mut list = String::from("Fields:\n");
         let total = csr.fields.len();
         for f in csr.fields.iter().take(MAX_CSR_FIELDS) {
-            let bits = f.bits.replace('-', ":");
+            let raw_bits = if is_rv32 {
+                f.bits_rv32.as_deref().unwrap_or(&f.bits)
+            } else {
+                f.bits.as_str()
+            };
+            let bits = raw_bits.replace('-', ":");
             let fsum = f
                 .summary
                 .as_deref()
@@ -430,12 +449,42 @@ pub(crate) fn format_csr_hover(csr: &CsrEntry) -> String {
                 .then(|| "*No description in RISC-V specification.*".to_owned())
         });
 
+    let mut notices = Vec::new();
+    if !csr.llvm_supported {
+        notices.push("Not accepted by LLVM 19 (spec only).".to_owned());
+    } else if let Some(march) = effective_march
+        && !march.supports_csr(&csr.required_extensions, csr.xlen)
+    {
+        if !march.supports_xlen(csr.xlen) {
+            let xlen_name = match csr.xlen {
+                Xlen::Rv32 => "RV32",
+                Xlen::Rv64 => "RV64",
+                Xlen::Both => "a different XLEN",
+            };
+            notices.push(format!(
+                "Requires {xlen_name}; not available on `-march={}`.",
+                march.raw
+            ));
+        } else {
+            let reqs: Vec<String> = csr
+                .required_extensions
+                .iter()
+                .map(|r| format_ext_req_notice(r))
+                .collect();
+            notices.push(format!(
+                "Requires {}; not enabled by `-march={}`.",
+                reqs.join(" + "),
+                march.raw
+            ));
+        }
+    }
+
     RenderedHoverParts {
         context,
         lang: "riscv",
         code: csr.name.clone(),
         below_fence: None,
-        notices: Vec::new(),
+        notices,
         facts,
         prose,
     }
@@ -540,15 +589,56 @@ pub(crate) fn format_cpp_directive_hover(name: &str) -> String {
     .render()
 }
 
-pub(crate) fn format_include_hover(target: &str, resolved: &str) -> String {
+pub(crate) fn format_include_hover(kind: IncludeKind, target: &str, resolved: &str) -> String {
+    let (lang, code) = match kind {
+        IncludeKind::CppQuote => ("c", format!("#include \"{target}\"")),
+        IncludeKind::CppSystem => ("c", format!("#include <{target}>")),
+        IncludeKind::AsmQuote => ("riscv", format!(".include \"{target}\"")),
+    };
     RenderedHoverParts {
         context: "Include".to_owned(),
-        lang: "c",
-        code: format!("#include \"{target}\""),
+        lang,
+        code,
         below_fence: None,
         notices: Vec::new(),
         facts: vec![format!("Path: `{resolved}`")],
         prose: None,
+    }
+    .render()
+}
+
+pub(crate) fn format_unresolved_include_hover(kind: IncludeKind, target: &str) -> String {
+    let (lang, code) = match kind {
+        IncludeKind::CppQuote => ("c", format!("#include \"{target}\"")),
+        IncludeKind::CppSystem => ("c", format!("#include <{target}>")),
+        IncludeKind::AsmQuote => ("riscv", format!(".include \"{target}\"")),
+    };
+    RenderedHoverParts {
+        context: "Include · unresolved".to_owned(),
+        lang,
+        code,
+        below_fence: None,
+        notices: vec![
+            "File not found in the active include search paths.".to_owned(),
+        ],
+        facts: Vec::new(),
+        prose: Some(
+            "Configure include directories (`-I` / `-isystem`) in `compile_commands.json` or `compile_flags.txt`."
+                .to_owned(),
+        ),
+    }
+    .render()
+}
+
+pub(crate) fn format_operand_keyword_hover(context: &str, code: &str, prose: &str) -> String {
+    RenderedHoverParts {
+        context: context.to_owned(),
+        lang: "riscv",
+        code: code.to_owned(),
+        below_fence: None,
+        notices: Vec::new(),
+        facts: Vec::new(),
+        prose: Some(prose.to_owned()),
     }
     .render()
 }
@@ -599,11 +689,15 @@ pub(crate) fn format_symbol_hover(info: &SymbolHoverInfo) -> String {
     let mut header = vec![kind_label.to_owned()];
     if let Some(line) = info.target_line_1based {
         if let Some(uri) = &info.target_uri {
-            let file_label = uri
-                .as_str()
-                .rsplit('/')
-                .next()
-                .unwrap_or_else(|| uri.as_str());
+            let file_label = uri_to_path(uri)
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| {
+                    uri.as_str()
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or_else(|| uri.as_str())
+                        .to_owned()
+                });
             header.push(format!("`{file_label}:{line}`"));
         } else {
             header.push(format!("line {line}"));

@@ -12,24 +12,25 @@ use super::{
     VisibleCompletions, WorkspaceIndex,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncludeKind {
+    CppQuote,
+    CppSystem,
+    AsmQuote,
+}
+
 impl WorkspaceIndex {
-    /// Resolve `#include` / `.include` target on `line` (0-based) to `(display_target, resolved_path)`.
+    /// Resolve `#include` / `.include` target on `line` (0-based) to `(kind, display_target, resolved_path)`.
     pub fn resolve_include_on_line(
         &mut self,
         uri: &Uri,
         line: u32,
         ctx: &mut CompileContext,
-    ) -> Option<(String, PathBuf)> {
+    ) -> Option<(IncludeKind, String, PathBuf)> {
         let file_ctx = ctx.for_uri(uri);
         self.sync_preprocessed(uri, file_ctx.preprocessed);
         let file = self.file_by_uri(uri)?.clone();
-        let (ls, le, _) = file.line_index.line_bounds(&file.text, line as usize);
-        let trimmed = file.text.get(ls..le)?.trim();
-        let inc = if file_ctx.preprocessed {
-            parse_cpp_include_line(trimmed).or_else(|| parse_asm_include_line(trimmed))
-        } else {
-            parse_asm_include_line(trimmed)
-        }?;
+        let (kind, inc) = parse_include_directive_in_file(&file, line, file_ctx.preprocessed)?;
         let cur_dir = file.path.parent();
         let resolved = resolve_include_path(
             &inc,
@@ -38,7 +39,20 @@ impl WorkspaceIndex {
             &file_ctx.include_dirs,
             self.workspace_root.as_deref(),
         )?;
-        Some((inc.target, self.display_path(&resolved)))
+        Some((kind, inc.target, self.display_path(&resolved)))
+    }
+
+    /// Parse an `#include` / `.include` directive on `line` (0-based) even if the target
+    /// file could not be resolved on disk.
+    pub fn parse_include_on_line(
+        &self,
+        uri: &Uri,
+        line: u32,
+        preprocessed: bool,
+    ) -> Option<(IncludeKind, String)> {
+        let file = self.file_by_uri(uri)?;
+        let (kind, inc) = parse_include_directive_in_file(file, line, preprocessed)?;
+        Some((kind, inc.target))
     }
 
     /// Collect known constant `#define` and `.equ`/`.set`/`=` definitions visible from `uri`,
@@ -141,8 +155,9 @@ impl WorkspaceIndex {
                     self.workspace_root.as_deref(),
                 ) {
                     let res_norm = normalize_path(&resolved);
+                    let res_pre = ctx.is_preprocessed_path(&res_norm);
                     if !self.files.contains_key(&res_norm) {
-                        self.index_path_from_disk(&res_norm);
+                        self.index_path_from_disk_with_preprocessed(&res_norm, Some(res_pre));
                     }
                     if visited.insert(res_norm.clone()) {
                         queue.push_back(res_norm);
@@ -160,9 +175,14 @@ impl WorkspaceIndex {
         ctx: &mut CompileContext,
     ) -> Vec<PathBuf> {
         let target_norm = normalize_path(target_path);
-        let all_paths: Vec<PathBuf> = self.files.keys().cloned().collect();
+        let candidate_paths: Vec<PathBuf> = self
+            .files
+            .iter()
+            .filter(|(p, f)| **p == target_norm || !f.includes.is_empty())
+            .map(|(p, _)| p.clone())
+            .collect();
         let mut matching = Vec::new();
-        for p in all_paths {
+        for p in candidate_paths {
             let closure = self.resolve_include_closure(&p, ctx);
             if closure.contains(&target_norm) {
                 matching.push(p);
@@ -375,6 +395,27 @@ impl WorkspaceIndex {
 
         out
     }
+}
+
+fn parse_include_directive_in_file(
+    file: &FileIndex,
+    line: u32,
+    preprocessed: bool,
+) -> Option<(IncludeKind, super::IncludeDirective)> {
+    let (ls, le, _) = file.line_index.line_bounds(&file.text, line as usize);
+    let mut in_block = crate::line::in_block_comment_before(&file.text, ls, preprocessed);
+    let raw_line = file.text.get(ls..le)?;
+    let stripped = crate::line::strip_comments_with_state(raw_line, &mut in_block, preprocessed);
+    let trimmed = stripped.trim();
+    if preprocessed && let Some(cpp_inc) = parse_cpp_include_line(trimmed) {
+        let kind = if cpp_inc.is_system {
+            IncludeKind::CppSystem
+        } else {
+            IncludeKind::CppQuote
+        };
+        return Some((kind, cpp_inc));
+    }
+    Some((IncludeKind::AsmQuote, parse_asm_include_line(trimmed)?))
 }
 
 fn hover_numeric_or_param(

@@ -525,3 +525,214 @@ addi a0, a1, 1 /* ad */
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn completion_rv32_resolve_option_arch_and_paren_contexts() {
+    let mut client = LspClient::start_with_snippets(
+        Some(json!({ "defaultMarch": "rv32imac_zacas", "diagnostics": { "enable": false } })),
+        None,
+    );
+    let uri: lsp_types::Uri = "file:///tmp/comp_ctx_edge.S".parse().expect("uri");
+    client.open_doc(
+        &uri,
+        1,
+        "\
+my_sym:
+    amocas.d
+    .option arch, +zb
+    .option rvc 
+    ld a0, 0(
+    lui a0, %hi(
+",
+    );
+
+    // 1. RV32 resolve uses active RV32 march instead of rv64gc
+    let amo_comp = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 1, "character": 12 }
+        }),
+    );
+    let amo_item = completion_items_vec(&amo_comp.result)
+        .into_iter()
+        .find(|i| i["filterText"] == "amocas.d")
+        .expect("amocas.d");
+    let resolved = client
+        .send_request("completionItem/resolve", amo_item)
+        .result
+        .expect("resolved amocas.d");
+    let doc_md = resolved["documentation"]["value"].as_str().unwrap_or("");
+    assert!(
+        doc_md.contains("· RV32\n") && !doc_md.contains("· RV64\n"),
+        "expected RV32 doc in resolve, got: {doc_md}"
+    );
+
+    // 2. `.option arch, +zb` offers `+zba`/`+zbb` extensions
+    let opt_arch = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 2, "character": 21 }
+        }),
+    );
+    let opt_labels = completion_labels(&opt_arch.result);
+    assert!(opt_labels.iter().any(|l| l == "+zba"), "{opt_labels:?}");
+    assert!(!opt_labels.iter().any(|l| l == "rvc"));
+
+    // 3. `.option rvc ` suppresses completion
+    let opt_done = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 3, "character": 16 }
+        }),
+    );
+    assert!(completion_items_vec(&opt_done.result).is_empty());
+
+    // 4. `ld a0, 0(` offers int regs only, not symbols or `%hi(`
+    let mem_base = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 4, "character": 13 }
+        }),
+    );
+    let mem_labels = completion_labels(&mem_base.result);
+    assert!(mem_labels.iter().any(|l| l == "sp"));
+    assert!(!mem_labels.iter().any(|l| l == "my_sym"));
+    assert!(!mem_labels.iter().any(|l| l == "%hi("));
+
+    // 5. `lui a0, %hi(` offers symbols only, not registers
+    let reloc_arg = client.send_request(
+        "textDocument/completion",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 5, "character": 16 }
+        }),
+    );
+    let reloc_labels = completion_labels(&reloc_arg.result);
+    assert!(reloc_labels.iter().any(|l| l == "my_sym"));
+    assert!(!reloc_labels.iter().any(|l| l == "sp"));
+
+    client.shutdown_and_exit();
+}
+
+#[test]
+fn completion_covers_sd_order_section_directives_and_vector_subextensions() {
+    let uri = "file:///tmp/comp_adv.S".parse::<lsp_types::Uri>().unwrap();
+    let src = "\
+sd
+.section 
+.section .custom, \"
+.section .custom, \"ax\", 
+.section .custom, \"ax\", @
+vfadd.v
+";
+    let mut client = LspClient::start_with_snippets(
+        Some(json!({ "defaultMarch": "rv64gc", "diagnostics": { "enable": false } })),
+        None,
+    );
+    client.open_doc(&uri, 1, src);
+
+    let sd_resp = client.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 0, "character": 2 } }),
+    );
+    let sd_items = completion_items_vec(&sd_resp.result);
+    let first_sd = sd_items
+        .iter()
+        .find(|i| {
+            i["label"]
+                .as_str()
+                .is_some_and(|l| l == "sd" || l.starts_with("sd "))
+        })
+        .expect("sd completion");
+    let sd_snippet = first_sd["textEdit"]["newText"]
+        .as_str()
+        .or_else(|| first_sd["insertText"].as_str())
+        .unwrap_or("");
+    assert!(
+        !sd_snippet.contains("%tprel") && sd_snippet.contains('('),
+        "unexpected primary sd snippet: {first_sd}"
+    );
+
+    let sec_name_resp = client.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 1, "character": 9 } }),
+    );
+    let sec_names = completion_labels(&sec_name_resp.result);
+    assert!(sec_names.iter().any(|l| l == ".text"), "{sec_names:?}");
+    assert!(sec_names.iter().any(|l| l == ".rodata"), "{sec_names:?}");
+
+    let sec_flag_resp = client.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 2, "character": 19 } }),
+    );
+    let sec_flags = completion_labels(&sec_flag_resp.result);
+    assert!(
+        sec_flags.iter().any(|l| l == "ax" || l == "\"ax\""),
+        "{sec_flags:?}"
+    );
+
+    let sec_type_resp = client.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 3, "character": 24 } }),
+    );
+    let sec_types = completion_labels(&sec_type_resp.result);
+    assert!(sec_types.iter().any(|l| l == "@progbits"), "{sec_types:?}");
+
+    let sec_at_resp = client.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 4, "character": 25 } }),
+    );
+    let sec_at_items = completion_items_vec(&sec_at_resp.result);
+    let progbits = sec_at_items
+        .iter()
+        .find(|i| i["label"].as_str().is_some_and(|l| l.contains("progbits")))
+        .expect("@progbits item");
+    if let Some(te) = progbits.get("textEdit").filter(|v| !v.is_null()) {
+        assert_eq!(te["range"]["start"]["character"], 24, "{progbits}");
+        assert_eq!(te["newText"], "@progbits", "{progbits}");
+    } else {
+        assert_ne!(
+            progbits["insertText"].as_str().unwrap_or(""),
+            "@progbits",
+            "should strip leading @ when user already typed @"
+        );
+    }
+    client.shutdown_and_exit();
+
+    // Check vector sub-extension filtering (`vfadd.vv` needs Zve32f, not Zve32x)
+    let mut client_zve32x = LspClient::start(
+        Some(json!({ "defaultMarch": "rv32i_zve32x", "diagnostics": { "enable": false } })),
+        None,
+    );
+    client_zve32x.open_doc(&uri, 1, src);
+    let vx = client_zve32x.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 5, "character": 7 } }),
+    );
+    let vx_labels = completion_labels(&vx.result);
+    assert!(
+        !vx_labels.iter().any(|l| l == "vfadd.vv"),
+        "vfadd.vv must not be offered on zve32x: {vx_labels:?}"
+    );
+    client_zve32x.shutdown_and_exit();
+
+    let mut client_zve32f = LspClient::start(
+        Some(json!({ "defaultMarch": "rv32i_zve32f", "diagnostics": { "enable": false } })),
+        None,
+    );
+    client_zve32f.open_doc(&uri, 1, src);
+    let vf = client_zve32f.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 5, "character": 7 } }),
+    );
+    let vf_labels = completion_labels(&vf.result);
+    assert!(
+        vf_labels.iter().any(|l| l == "vfadd.vv"),
+        "vfadd.vv should be offered on zve32f: {vf_labels:?}"
+    );
+    client_zve32f.shutdown_and_exit();
+}

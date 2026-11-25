@@ -3,70 +3,70 @@
   "items": [
     {
       "detail": "Integer add",
-      "documentation": "Instruction · Integer add · `I` · RV32/RV64\n\n```riscv\nadd rd, rs1, rs2\n```\n\n---\n\nAlias of: `addi`  \nOperands: `rd`, `rs1`, `rs2` integer reg (x0–x31)\n\n---\n\nAdd the value in xs1 to xs2, and store the result in xd. Any overflow is thrown away.",
+      "documentation": "Instruction · Integer add · `I` · RV32/RV64\n\n```riscv\nadd rd, rs1, rs2\n```\n\n---\n\nAlias of: `addi`  \nOperands: `rd`, `rs1`, `rs2` integer reg (x0–x31)\n\n---\n\nAdd the value in rs1 to rs2, and store the result in rd. Any overflow is thrown away.",
       "insertText": "add ${1:rd}, ${2:rs1}, ${3:rs2}$0",
       "kind": 3,
       "label": "add rd, rs1, rs2"
     },
     {
       "detail": "Integer add",
-      "documentation": "Instruction · Integer add · `I` · RV32/RV64\n\n```riscv\nadd rd, rs1, imm12\n```\n\n---\n\nAlias of: `addi`  \nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdd the value in xs1 to xs2, and store the result in xd. Any overflow is thrown away.",
+      "documentation": "Instruction · Integer add · `I` · RV32/RV64\n\n```riscv\nadd rd, rs1, imm12\n```\n\n---\n\nAlias of: `addi`  \nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdd the value in rs1 to rs2, and store the result in rd. Any overflow is thrown away.",
       "insertText": "add ${1:rd}, ${2:rs1}, ${3:imm12}$0",
       "kind": 3,
       "label": "add rd, rs1, imm12"
     },
     {
       "detail": "Integer add",
-      "documentation": "Instruction · Integer add · `I` · RV32/RV64\n\n```riscv\nadd rd, rs1, rs2, src\n```\n\n---\n\nAlias of: `addi`  \nOperands: `rd`, `rs1`, `rs2` integer reg (x0–x31); `src` TLS %tprel_add relocation\n\n---\n\nAdd the value in xs1 to xs2, and store the result in xd. Any overflow is thrown away.",
+      "documentation": "Instruction · Integer add · `I` · RV32/RV64\n\n```riscv\nadd rd, rs1, rs2, src\n```\n\n---\n\nAlias of: `addi`  \nOperands: `rd`, `rs1`, `rs2` integer reg (x0–x31); `src` TLS %tprel_add relocation\n\n---\n\nAdd the value in rs1 to rs2, and store the result in rd. Any overflow is thrown away.",
       "insertText": "add ${1:rd}, ${2:rs1}, ${3:rs2}, ${4:src}$0",
       "kind": 3,
       "label": "add rd, rs1, rs2, src"
     },
     {
       "detail": "Add immediate",
-      "documentation": "Instruction · Add immediate · `I` · RV32/RV64\n\n```riscv\naddi rd, rs1, imm12\n```\n\n---\n\nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdds an immediate value to the value in xs1, and store the result in xd",
+      "documentation": "Instruction · Add immediate · `I` · RV32/RV64\n\n```riscv\naddi rd, rs1, imm12\n```\n\n---\n\nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdds an immediate value to the value in rs1, and store the result in rd.",
       "insertText": "addi ${1:rd}, ${2:rs1}, ${3:imm12}$0",
       "kind": 3,
       "label": "addi rd, rs1, imm12"
     },
     {
       "detail": "Add immediate word",
-      "documentation": "Instruction · Add immediate word · `RV64I` · RV64\n\n```riscv\naddiw rd, rs1, imm12\n```\n\n---\n\nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdd an immediate to the 32-bit value in xs1, and store the sign extended result in xd",
+      "documentation": "Instruction · Add immediate word · `RV64I` · RV64\n\n```riscv\naddiw rd, rs1, imm12\n```\n\n---\n\nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdd an immediate to the 32-bit value in rs1, and store the sign extended result in rd.",
       "insertText": "addiw ${1:rd}, ${2:rs1}, ${3:imm12}$0",
       "kind": 3,
       "label": "addiw rd, rs1, imm12"
     },
     {
       "detail": "Add word",
-      "documentation": "Instruction · Add word · `RV64I` · RV64\n\n```riscv\naddw rd, rs1, rs2\n```\n\n---\n\nAlias of: `addiw`  \nOperands: `rd`, `rs1`, `rs2` integer reg (x0–x31)\n\n---\n\nAdd the 32-bit values in xs1 to xs2, and store the sign-extended result in xd. Any overflow is thrown away.",
+      "documentation": "Instruction · Add word · `RV64I` · RV64\n\n```riscv\naddw rd, rs1, rs2\n```\n\n---\n\nAlias of: `addiw`  \nOperands: `rd`, `rs1`, `rs2` integer reg (x0–x31)\n\n---\n\nAdd the 32-bit values in rs1 to rs2, and store the sign-extended result in rd. Any overflow is thrown away.",
       "insertText": "addw ${1:rd}, ${2:rs1}, ${3:rs2}$0",
       "kind": 3,
       "label": "addw rd, rs1, rs2"
     },
     {
       "detail": "Add word",
-      "documentation": "Instruction · Add word · `RV64I` · RV64\n\n```riscv\naddw rd, rs1, imm12\n```\n\n---\n\nAlias of: `addiw`  \nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdd the 32-bit values in xs1 to xs2, and store the sign-extended result in xd. Any overflow is thrown away.",
+      "documentation": "Instruction · Add word · `RV64I` · RV64\n\n```riscv\naddw rd, rs1, imm12\n```\n\n---\n\nAlias of: `addiw`  \nOperands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)\n\n---\n\nAdd the 32-bit values in rs1 to rs2, and store the sign-extended result in rd. Any overflow is thrown away.",
       "insertText": "addw ${1:rd}, ${2:rs1}, ${3:imm12}$0",
       "kind": 3,
       "label": "addw rd, rs1, imm12"
     },
     {
       "detail": "Atomic fetch-and-add doubleword",
-      "documentation": "Instruction · Atomic fetch-and-add doubleword · `A or Zaamo` · RV64\n\n```riscv\namoadd.d rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically: load the doubleword at address _xs1_; write the loaded value into _xd_; add the value of register _xs2_ to the loaded value; write the result to the address in _xs1_.",
+      "documentation": "Instruction · Atomic fetch-and-add doubleword · `A or Zaamo` · RV64\n\n```riscv\namoadd.d rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
       "insertText": "amoadd.d ${1:rd}, ${2:rs2}, (${3:rs1})$0",
       "kind": 3,
       "label": "amoadd.d rd, rs2, (rs1)"
     },
     {
       "detail": "Atomic fetch-and-add doubleword (acquire)",
-      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire) · `A or Zaamo` · RV64\n\n```riscv\namoadd.d.aq rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire ordering: load the doubleword at address _xs1_; write the loaded value into _xd_; add the value of register _xs2_ to the loaded value; write the result to the address in _xs1_.",
+      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire) · `A or Zaamo` · RV64\n\n```riscv\namoadd.d.aq rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire ordering: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
       "insertText": "amoadd.d.aq ${1:rd}, ${2:rs2}, (${3:rs1})$0",
       "kind": 3,
       "label": "amoadd.d.aq rd, rs2, (rs1)"
     },
     {
       "detail": "Atomic fetch-and-add doubleword (acquire-release)",
-      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire-release) · `A or Zaamo` · RV64\n\n```riscv\namoadd.d.aqrl rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire and release ordering: load the doubleword at address _xs1_; write the loaded value into _xd_; add the value of register _xs2_ to the loaded value; write the result to the address in _xs1_.",
+      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire-release) · `A or Zaamo` · RV64\n\n```riscv\namoadd.d.aqrl rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire and release ordering: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
       "insertText": "amoadd.d.aqrl ${1:rd}, ${2:rs2}, (${3:rs1})$0",
       "kind": 3,
       "label": "amoadd.d.aqrl rd, rs2, (rs1)"
@@ -2125,16 +2125,16 @@
     {
       "detail": null,
       "documentation": null,
-      "insertText": "la ${1:rd}, ${2:imm}$0",
+      "insertText": "la ${1:dst}, ${2:src}$0",
       "kind": 15,
-      "label": "la rd, imm"
+      "label": "la dst, src"
     },
     {
       "detail": null,
       "documentation": null,
-      "insertText": "la ${1:dst}, ${2:src}$0",
+      "insertText": "la ${1:rd}, ${2:imm}$0",
       "kind": 15,
-      "label": "la dst, src"
+      "label": "la rd, imm"
     },
     {
       "detail": null,
@@ -8332,7 +8332,7 @@
       "label": ".include"
     },
     {
-      "detail": "see description",
+      "detail": "format, opcode, ...",
       "documentation": null,
       "insertText": ".insn ",
       "kind": 14,

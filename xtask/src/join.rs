@@ -44,6 +44,8 @@ struct SupplementsFile {
 #[derive(Debug, Clone, Deserialize)]
 struct SupplementalDirective {
     name: String,
+    #[serde(default)]
+    arguments: Option<String>,
     description: String,
 }
 
@@ -60,6 +62,8 @@ struct SupplementalInst {
 #[derive(Debug, Clone, Deserialize)]
 struct SupplementalCsr {
     name: String,
+    #[serde(default)]
+    required_extensions: Vec<String>,
     description: String,
     #[serde(default)]
     summary: Option<String>,
@@ -168,8 +172,8 @@ fn apply_description_corrections(
     desc
 }
 
-const SUMMARY_ENTRY_MAX_CHARS: usize = 220;
-const SUMMARY_FIELD_MAX_CHARS: usize = 100;
+const SUMMARY_ENTRY_MAX_CHARS: usize = 260;
+const SUMMARY_FIELD_MAX_CHARS: usize = 140;
 
 /// Extract a deterministic 1–2 sentence summary for display without runtime truncation.
 pub fn make_summary(desc: &str, max_chars: usize) -> Option<String> {
@@ -210,7 +214,7 @@ pub fn make_summary(desc: &str, max_chars: usize) -> Option<String> {
         && let Some(next_para) = paras.get(idx + 1)
         && let Some(joined) = join_colon_list(&flat, next_para)
     {
-        return Some(truncate_clean_markdown(&joined, max_chars));
+        return Some(finalize_summary(&joined, max_chars));
     }
 
     let sentences = split_sentences(&flat);
@@ -229,7 +233,28 @@ pub fn make_summary(desc: &str, max_chars: usize) -> Option<String> {
         flat
     };
 
-    Some(truncate_clean_markdown(&selected, max_chars))
+    Some(finalize_summary(&selected, max_chars))
+}
+
+fn finalize_summary(raw: &str, max_chars: usize) -> String {
+    let mut s = raw.trim().to_owned();
+    if let Some(inner) = s.strip_prefix('*').and_then(|r| r.strip_suffix('*'))
+        && !inner.is_empty()
+        && !inner.contains('*')
+    {
+        s = inner.trim().to_owned();
+    }
+    let truncated = truncate_clean_markdown(&s, max_chars);
+    if !truncated.ends_with('…')
+        && truncated
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '`' | '_' | ')'))
+    {
+        format!("{truncated}.")
+    } else {
+        truncated
+    }
 }
 
 fn join_colon_list(intro: &str, list_para: &str) -> Option<String> {
@@ -496,7 +521,8 @@ fn build_llvm_instruction_entry(
     }
 
     let udb_assembly = udb_entry.and_then(|u| u.assembly.clone());
-    let (long_name, description, description_source) = resolve_inst_docs(
+    let isa_label = derive_isa_label(mnemonic, &variants, udb_entry);
+    let (long_name, raw_description, description_source) = resolve_inst_docs(
         mnemonic,
         udb_entry,
         manual_entry,
@@ -504,6 +530,7 @@ fn build_llvm_instruction_entry(
         sources.supplements,
         corrections,
     );
+    let description = raw_description.map(|d| normalize_udb_register_names(&d, &variants));
     let summary = supplement_entry
         .and_then(|s| s.summary.clone())
         .or_else(|| {
@@ -520,6 +547,7 @@ fn build_llvm_instruction_entry(
         kind,
         variants,
         udb_assembly,
+        isa_label,
         long_name,
         summary,
         description,
@@ -528,6 +556,98 @@ fn build_llvm_instruction_entry(
         deprecated,
         preferred_name,
     }
+}
+
+fn derive_isa_label(
+    mnemonic: &str,
+    variants: &[InstructionVariant],
+    udb_entry: Option<&crate::udb::UdbInstruction>,
+) -> Option<String> {
+    if variants.iter().any(|v| !v.required_extensions.is_empty()) {
+        return None;
+    }
+    if matches!(
+        mnemonic,
+        "rdinstret" | "rdinstreth" | "rdcycle" | "rdcycleh" | "rdtime" | "rdtimeh"
+    ) {
+        return Some("Zicntr".to_owned());
+    }
+    let u = udb_entry?;
+    let mut labels = Vec::new();
+    for ext in &u.extensions {
+        for alt in ext.split('|') {
+            let trimmed = alt.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            // Only preserve privileged/system/CSR/counter labels here; base RV32/RV64
+            // instructions like ld/sd have noisy UDB extensions (e.g. Zilsd) that should
+            // not override RV64I.
+            if !matches!(
+                lower.as_str(),
+                "sm" | "s" | "sdext" | "zicsr" | "zifencei" | "zicntr" | "zihpm" | "smrnmi"
+            ) {
+                continue;
+            }
+            let formatted = format_ext_title(trimmed);
+            if !labels.contains(&formatted) {
+                labels.push(formatted);
+            }
+        }
+    }
+    (!labels.is_empty()).then(|| labels.join(" / "))
+}
+
+fn format_ext_title(ext: &str) -> String {
+    let mut chars = ext.chars();
+    match chars.next() {
+        Some(c) => format!("{}{}", c.to_ascii_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
+fn normalize_udb_register_names(text: &str, variants: &[InstructionVariant]) -> String {
+    let has_op = |name: &str| {
+        variants
+            .iter()
+            .any(|v| v.operands.iter().any(|o| o.name == name))
+    };
+    let mut out = text.to_owned();
+    for (udb_name, llvm_name) in [("xd", "rd"), ("xs1", "rs1"), ("xs2", "rs2"), ("xs3", "rs3")] {
+        if has_op(llvm_name) && !has_op(udb_name) {
+            out = replace_reg_token(&out, udb_name, llvm_name);
+        }
+    }
+    out
+}
+
+fn replace_reg_token(text: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if text[i..].starts_with(from) {
+            let left_ok = i == 0
+                || (!bytes[i - 1].is_ascii_alphanumeric()
+                    && !(bytes[i - 1] == b'_' && i >= 2 && bytes[i - 2].is_ascii_alphanumeric()));
+            let end = i + from.len();
+            let right_ok = end >= bytes.len()
+                || (!bytes[end].is_ascii_alphanumeric()
+                    && !(bytes[end] == b'_'
+                        && end + 1 < bytes.len()
+                        && bytes[end + 1].is_ascii_alphanumeric()));
+            if left_ok && right_ok {
+                out.push_str(to);
+                i = end;
+                continue;
+            }
+        }
+        if let Some(ch) = text[i..].chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 fn resolve_inst_docs(
@@ -619,6 +739,7 @@ fn append_udb_only_instructions(
             .description
             .as_deref()
             .and_then(|d| make_summary(d, SUMMARY_ENTRY_MAX_CHARS));
+        let isa_label = derive_isa_label(&mnemonic, &[], Some(u));
         out.push(InstructionEntry {
             mnemonic,
             kind,
@@ -630,6 +751,7 @@ fn append_udb_only_instructions(
                 alias_of: u.alias_of.clone(),
             }],
             udb_assembly: u.assembly.clone(),
+            isa_label,
             long_name: u.long_name.clone(),
             summary,
             description: u.description.clone(),
@@ -812,11 +934,14 @@ fn build_llvm_csr_entry(
             report.llvm_only.push((l.name.clone(), l.number));
             None
         };
+        let required_extensions = supp
+            .map(|s| s.required_extensions.clone())
+            .unwrap_or_default();
         CsrEntry {
             name: l.name.clone(),
             number: l.number,
             privilege: infer_csr_privilege(&l.name, l.number),
-            required_extensions: Vec::new(),
+            required_extensions,
             fields: Vec::new(),
             summary,
             description: supp_desc,
@@ -959,6 +1084,9 @@ fn join_directives(
         let name = sup.name.to_ascii_lowercase();
         let summary = make_summary(&sup.description, SUMMARY_ENTRY_MAX_CHARS);
         if let Some(entry) = by_name.get_mut(&name) {
+            if let Some(args) = &sup.arguments {
+                entry.arguments = Some(args.clone());
+            }
             entry.description = sup.description.clone();
             entry.summary = summary;
             entry.source = supplements.source.clone();

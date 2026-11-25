@@ -755,3 +755,177 @@ fn location_counter_dot_excluded_from_symbols_refs_and_semantic_tokens() {
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn rename_allows_directive_stem_labels_rejects_instructions_and_ignores_comments() {
+    let mut client = LspClient::start(None, None);
+    let uri: lsp_types::Uri = "file:///tmp/rename_edge.S".parse().expect("uri");
+    let src = "\
+data:
+    nop
+// see data in comment
+foo:
+    j data
+";
+    client.open_doc(&uri, 1, src);
+
+    // `data` is a valid label (not `.data`), so prepareRename & rename succeed
+    let prep_data = client.send_request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 0, "character": 1 }
+        }),
+    );
+    assert!(
+        prep_data.result.as_ref().is_some_and(|v| !v.is_null()),
+        "expected prepareRename on `data:` to succeed"
+    );
+
+    let ren_data = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 0, "character": 1 },
+            "newName": "rodata_tbl"
+        }),
+    );
+    assert!(ren_data.error.is_none());
+    assert_eq!(
+        ren_data.result.as_ref().unwrap()["changes"][uri.as_str()]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Renaming to an instruction mnemonic (`addi`) must be rejected
+    let ren_inst = client.send_request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 3, "character": 1 },
+            "newName": "addi"
+        }),
+    );
+    assert!(ren_inst.error.is_some());
+
+    // Navigation & rename inside `// see data in comment` must return null
+    let def_comment = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 2, "character": 8 }
+        }),
+    );
+    assert!(def_comment.result.as_ref().is_none_or(|v| v.is_null()));
+
+    let prep_comment = client.send_request(
+        "textDocument/prepareRename",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": 2, "character": 8 }
+        }),
+    );
+    assert!(prep_comment.result.as_ref().is_none_or(|v| v.is_null()));
+
+    client.shutdown_and_exit();
+}
+
+#[test]
+fn new_lsp_providers_and_workspace_symbol_local_label_filter() {
+    let uri = "file:///tmp/nav_features.S"
+        .parse::<lsp_types::Uri>()
+        .unwrap();
+    let src = "\
+.equ MY_CONST, 42
+.macro PUSH r
+    sd \\r, 0(sp)
+.endm
+main_fn:
+    addi a0, a1, MY_CONST
+    csrr t0, mtvec
+.Linner_loop:
+    j .Linner_loop
+";
+    let mut client = LspClient::start(
+        Some(json!({ "defaultMarch": "rv64gc", "diagnostics": { "enable": false } })),
+        None,
+    );
+    let caps = &client.init_result.capabilities;
+    assert!(caps.signature_help_provider.is_some());
+    assert!(caps.folding_range_provider.is_some());
+    assert!(caps.inlay_hint_provider.is_some());
+
+    client.open_doc(&uri, 1, src);
+
+    let ws_resp = client.send_request("workspace/symbol", json!({ "query": "" }));
+    let ws_names: Vec<String> = ws_resp
+        .result
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s["name"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(ws_names.iter().any(|n| n == "main_fn"), "{ws_names:?}");
+    assert!(
+        !ws_names.iter().any(|n| n == ".Linner_loop"),
+        "local label leaked into workspace symbols: {ws_names:?}"
+    );
+
+    let sig = client.send_request(
+        "textDocument/signatureHelp",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 5, "character": 13 } }),
+    );
+    let sig_val = sig.result.expect("signatureHelp result");
+    assert_eq!(sig_val["activeParameter"], json!(1), "{sig_val}");
+
+    let folds = client.send_request(
+        "textDocument/foldingRange",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    let fold_arr = folds
+        .result
+        .expect("foldingRange")
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        fold_arr
+            .iter()
+            .any(|f| f["startLine"] == 1 && f["endLine"] == 3),
+        "expected .macro fold in {fold_arr:?}"
+    );
+
+    let hints = client.send_request(
+        "textDocument/inlayHint",
+        json!({
+            "textDocument": { "uri": uri.as_str() },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 8, "character": 0 }
+            }
+        }),
+    );
+    let hint_labels: Vec<String> = hints
+        .result
+        .expect("inlayHint")
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|h| h["label"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        hint_labels.iter().any(|l| l.contains("0x305")),
+        "missing mtvec CSR hint in {hint_labels:?}"
+    );
+    assert!(
+        hint_labels.iter().any(|l| l.contains("42")),
+        "missing MY_CONST value hint in {hint_labels:?}"
+    );
+
+    client.shutdown_and_exit();
+}

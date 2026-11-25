@@ -29,8 +29,14 @@ pub(super) struct MacroHintQuery<'a> {
 
 pub(super) fn collect_cpp_define_lines(text: &str) -> Vec<CppDefineLine> {
     let mut defs = Vec::new();
+    let mut in_block = false;
     for (idx, line) in text.lines().enumerate() {
-        if let Some(parsed) = parse_cpp_define_line(line) {
+        let started_in_block = in_block;
+        let stripped = crate::line::strip_comments_with_state(line, &mut in_block, true);
+        if started_in_block {
+            continue;
+        }
+        if let Some(parsed) = parse_cpp_define_line(&stripped) {
             defs.push(CppDefineLine {
                 name: parsed.name.to_owned(),
                 def_line: idx as u32,
@@ -50,7 +56,9 @@ pub(super) fn build_macro_def_hints(
     if classify_hash_line(raw_line).is_some() {
         return (None, Vec::new());
     }
-    let code = strip_asm_comment_for_ident(raw_line);
+    let mut in_block = crate::line::in_block_comment_before(q.text, ls, true);
+    let code_owned = crate::line::strip_comments_with_state(raw_line, &mut in_block, false);
+    let code = code_owned.as_str();
 
     let mut latest_by_name: HashMap<&str, (&CppDefineLine, usize)> = HashMap::new();
     for def in q.defined_macros {
@@ -197,41 +205,6 @@ fn looks_like_prose_define(value: Option<&str>, is_function_like: bool) -> bool 
         }
     }
     max_run >= 2
-}
-
-fn strip_asm_comment_for_ident(line: &str) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_single {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == b'\'' {
-                in_single = false;
-            }
-        } else if in_double {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == b'"' {
-                in_double = false;
-            }
-        } else if b == b'\'' {
-            in_single = true;
-        } else if b == b'"' {
-            in_double = true;
-        } else if b == b'#' || (b == b'/' && bytes.get(i + 1) == Some(&b'/')) {
-            return &line[..i];
-        }
-        i += 1;
-    }
-    line
 }
 
 fn find_ident_word_col(haystack: &str, ident: &str) -> Option<usize> {

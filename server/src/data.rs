@@ -87,6 +87,8 @@ pub struct InstructionEntry {
     pub variants: Vec<InstructionVariant>,
     #[serde(default)]
     pub udb_assembly: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isa_label: Option<String>,
     pub long_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
@@ -101,6 +103,8 @@ pub struct InstructionEntry {
 pub struct CsrField {
     pub name: String,
     pub bits: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bits_rv32: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     pub description: Option<String>,

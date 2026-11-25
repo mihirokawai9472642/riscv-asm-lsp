@@ -3,35 +3,35 @@
   "items": [
     {
       "detail": "0x001 · U-mode",
-      "documentation": "CSR · Floating-Point Accrued Exceptions · 0x001 · U-mode\n\n```riscv\nfflags\n```\n\n---\n\nFields:\n- `NV` [4] — Set by hardware when a floating point operation is invalid and stays set until explicitly cleared…\n- `DZ` [3] — Set by hardware when a floating point divide attempts to divide by zero and stays set until…\n- `OF` [2] — Set by hardware when a floating point operation overflows and stays set until explicitly cleared…\n- `UF` [1] — Set by hardware when a floating point operation underflows and stays set until explicitly cleared…\n- `NX` [0] — Set by hardware when a floating point operation is inexact and stays set until explicitly cleared…\n\n---\n\nThe accrued exception flags indicate the exception conditions that have arisen on any floating-point arithmetic instruction since the field was last reset by software.",
+      "documentation": "CSR · Floating-Point Accrued Exceptions · 0x001 · U-mode\n\n```riscv\nfflags\n```\n\n---\n\nFields:\n- `NV` [4] — Set by hardware when a floating point operation is invalid and stays set until explicitly cleared by software.\n- `DZ` [3] — Set by hardware when a floating point divide attempts to divide by zero and stays set until explicitly cleared by software.\n- `OF` [2] — Set by hardware when a floating point operation overflows and stays set until explicitly cleared by software.\n- `UF` [1] — Set by hardware when a floating point operation underflows and stays set until explicitly cleared by software.\n- `NX` [0] — Set by hardware when a floating point operation is inexact and stays set until explicitly cleared by software.\n\n---\n\nThe accrued exception flags indicate the exception conditions that have arisen on any floating-point arithmetic instruction since the field was last reset by software.",
       "insertText": "fflags",
       "kind": 21,
       "label": "fflags"
     },
     {
       "detail": "0x002 · U-mode",
-      "documentation": "CSR · Floating-Point Dynamic Rounding Mode · 0x002 · U-mode\n\n```riscv\nfrm\n```\n\n---\n\nFields:\n- `ROUNDINGMODE` [2:0] — Rounding mode data.\n\n---\n\nThe behavior of floating-point instructions that depend on rounding mode when executed with a reserved rounding mode is _reserved_, including both static reserved rounding modes (101-110) and dynamic reserved rounding…",
+      "documentation": "CSR · Floating-Point Dynamic Rounding Mode · 0x002 · U-mode\n\n```riscv\nfrm\n```\n\n---\n\nFields:\n- `ROUNDINGMODE` [2:0] — Rounding mode data.\n\n---\n\nThe behavior of floating-point instructions that depend on rounding mode when executed with a reserved rounding mode is _reserved_, including both static reserved rounding modes (101-110) and dynamic reserved rounding modes (101-111).",
       "insertText": "frm",
       "kind": 21,
       "label": "frm"
     },
     {
       "detail": "0x003 · U-mode",
-      "documentation": "CSR · Floating-point control and status register (`frm` + `fflags`) · 0x003 · U-mode\n\n```riscv\nfcsr\n```\n\n---\n\nFields:\n- `FRM` [7:5] — A value of 111 in the instruction's _rm_ field selects the dynamic rounding mode held in `frm`.\n- `NV` [4] — *Invalid Operation*\n- `DZ` [3] — *Divide by zero*\n- `OF` [2] — *Overflow*\n- `UF` [1] — *Underflow*\n- `NX` [0] — *Inexact*\n\n---\n\nThe floating-point control and status register, `fcsr`, is a RISC-V control and status register (CSR).",
+      "documentation": "CSR · Floating-point control and status register (`frm` + `fflags`) · 0x003 · U-mode\n\n```riscv\nfcsr\n```\n\n---\n\nFields:\n- `FRM` [7:5] — A value of 111 in the instruction's _rm_ field selects the dynamic rounding mode held in `frm`.\n- `NV` [4] — Invalid Operation.\n- `DZ` [3] — Divide by zero.\n- `OF` [2] — Overflow.\n- `UF` [1] — Underflow.\n- `NX` [0] — Inexact.\n\n---\n\nThe floating-point control and status register, `fcsr`, is a RISC-V control and status register (CSR).",
       "insertText": "fcsr",
       "kind": 21,
       "label": "fcsr"
     },
     {
       "detail": "0x008 · U-mode",
-      "documentation": "CSR · Vector Start Index · 0x008 · U-mode\n\n```riscv\nvstart\n```\n\n---\n\nFields:\n- `VALUE` [63:0] — Normally, vstart is only written by hardware on a trap on a vector instruction, with the vstart…\n\n---\n\nSpecifies the index of the first element to be executed by a vector instruction.",
+      "documentation": "CSR · Vector Start Index · 0x008 · U-mode\n\n```riscv\nvstart\n```\n\n---\n\nFields:\n- `VALUE` [63:0] — Normally, vstart is only written by hardware on a trap on a vector instruction, with the vstart value representing the element on which…\n\n---\n\nSpecifies the index of the first element to be executed by a vector instruction.",
       "insertText": "vstart",
       "kind": 21,
       "label": "vstart"
     },
     {
       "detail": "0x009 · U-mode",
-      "documentation": "CSR · Vector Fixed-Point Saturate Flag · 0x009 · U-mode\n\n```riscv\nvxsat\n```\n\n---\n\nFields:\n- `VALUE` [63:0] — The vxsat CSR has a single read-write least-significant bit (vxsat[0]) that indicates if a…\n\n---\n\nIndicates if a fixed-point instruction has had to saturate an output value to fit into a destination format",
+      "documentation": "CSR · Vector Fixed-Point Saturate Flag · 0x009 · U-mode\n\n```riscv\nvxsat\n```\n\n---\n\nFields:\n- `VALUE` [63:0] — The vxsat CSR has a single read-write least-significant bit (vxsat[0]) that indicates if a fixed-point instruction has had to saturate an…\n\n---\n\nIndicates if a fixed-point instruction has had to saturate an output value to fit into a destination format.",
       "insertText": "vxsat",
       "kind": 21,
       "label": "vxsat"
@@ -198,13 +198,6 @@
       "label": "sireg6"
     },
     {
-      "detail": "0x15c · S-mode",
-      "documentation": null,
-      "insertText": "stopei",
-      "kind": 21,
-      "label": "stopei"
-    },
-    {
       "detail": "0x180 · S-mode",
       "documentation": null,
       "insertText": "satp",
@@ -268,13 +261,6 @@
       "label": "vsireg6"
     },
     {
-      "detail": "0x25c · VS-mode",
-      "documentation": null,
-      "insertText": "vstopei",
-      "kind": 21,
-      "label": "vstopei"
-    },
-    {
       "detail": "0x300 · M-mode",
       "documentation": null,
       "insertText": "mstatus",
@@ -322,20 +308,6 @@
       "insertText": "mcounteren",
       "kind": 21,
       "label": "mcounteren"
-    },
-    {
-      "detail": "0x308 · M-mode",
-      "documentation": null,
-      "insertText": "mvien",
-      "kind": 21,
-      "label": "mvien"
-    },
-    {
-      "detail": "0x309 · M-mode",
-      "documentation": null,
-      "insertText": "mvip",
-      "kind": 21,
-      "label": "mvip"
     },
     {
       "detail": "0x30a · M-mode",
@@ -588,13 +560,6 @@
       "insertText": "mip",
       "kind": 21,
       "label": "mip"
-    },
-    {
-      "detail": "0x35c · M-mode",
-      "documentation": null,
-      "insertText": "mtopei",
-      "kind": 21,
-      "label": "mtopei"
     },
     {
       "detail": "0x3a0 · M-mode",
@@ -1101,20 +1066,6 @@
       "label": "pmpaddr63"
     },
     {
-      "detail": "0x608 · HS-mode",
-      "documentation": null,
-      "insertText": "hvien",
-      "kind": 21,
-      "label": "hvien"
-    },
-    {
-      "detail": "0x609 · HS-mode",
-      "documentation": null,
-      "insertText": "hvictl",
-      "kind": 21,
-      "label": "hvictl"
-    },
-    {
       "detail": "0x60a · S-mode",
       "documentation": null,
       "insertText": "henvcfg",
@@ -1148,20 +1099,6 @@
       "insertText": "hstateen3",
       "kind": 21,
       "label": "hstateen3"
-    },
-    {
-      "detail": "0x646 · HS-mode",
-      "documentation": null,
-      "insertText": "hviprio1",
-      "kind": 21,
-      "label": "hviprio1"
-    },
-    {
-      "detail": "0x647 · HS-mode",
-      "documentation": null,
-      "insertText": "hviprio2",
-      "kind": 21,
-      "label": "hviprio2"
     },
     {
       "detail": "0x6a8 · S-mode",
@@ -1640,20 +1577,6 @@
       "label": "vlenb"
     },
     {
-      "detail": "0xdb0 · S-mode",
-      "documentation": null,
-      "insertText": "stopi",
-      "kind": 21,
-      "label": "stopi"
-    },
-    {
-      "detail": "0xeb0 · VS-mode",
-      "documentation": null,
-      "insertText": "vstopi",
-      "kind": 21,
-      "label": "vstopi"
-    },
-    {
       "detail": "0xf11 · M-mode",
       "documentation": null,
       "insertText": "mvendorid",
@@ -1687,13 +1610,6 @@
       "insertText": "mconfigptr",
       "kind": 21,
       "label": "mconfigptr"
-    },
-    {
-      "detail": "0xfb0 · M-mode",
-      "documentation": null,
-      "insertText": "mtopi",
-      "kind": 21,
-      "label": "mtopi"
     }
   ]
 }

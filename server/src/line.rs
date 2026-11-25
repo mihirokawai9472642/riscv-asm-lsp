@@ -34,14 +34,47 @@ fn for_each_unquoted(s: &str, mut f: impl FnMut(usize, char) -> bool) {
 }
 
 /// Strip `// ...`, `# ...`, and block comments `/* ... */` outside quotes on a single line.
-/// Closed block comments are replaced by a space so adjacent tokens remain separated;
+/// Closed block comments are replaced by spaces of equal byte length so byte offsets are preserved;
 /// unclosed `/*` or line comments truncate the remainder of the line.
 pub fn strip_comments(line: &str) -> String {
+    let mut in_block = false;
+    strip_comments_with_state(line, &mut in_block, false)
+}
+
+/// Strip comments on a single line while tracking multi-line `/* ... */` state across lines.
+///
+/// Replaces skipped block-comment spans with equal-byte spaces so remaining byte offsets match
+/// `line`. When `preprocessed` is true, a leading `#<directive>` line does not act as a line
+/// comment, so `/*` on a `#define` line properly updates `in_block_comment`.
+pub fn strip_comments_with_state(
+    line: &str,
+    in_block_comment: &mut bool,
+    preprocessed: bool,
+) -> String {
     let mut out = String::with_capacity(line.len());
     let mut in_single = false;
     let mut in_double = false;
     let bytes = line.as_bytes();
     let mut i = 0;
+    let mut only_ws = true;
+
+    if *in_block_comment {
+        if let Some(rel_end) = line.find("*/") {
+            let skip = rel_end + 2;
+            out.extend(std::iter::repeat_n(' ', skip));
+            i = skip;
+            *in_block_comment = false;
+            only_ws = false;
+        } else {
+            return String::new();
+        }
+    }
+
+    let is_hash_directive = preprocessed
+        && matches!(
+            classify_hash_line(line),
+            Some(HashLineKind::Directive { .. })
+        );
 
     while i < bytes.len() {
         let b = bytes[i];
@@ -71,25 +104,41 @@ pub fn strip_comments(line: &str) -> String {
                 in_double = false;
             }
             i += ch_len;
+        } else if b == b' ' || b == b'\t' || b == b'\r' {
+            out.push(b as char);
+            i += 1;
         } else if b == b'\'' {
             in_single = true;
+            only_ws = false;
             out.push('\'');
             i += 1;
         } else if b == b'"' {
             in_double = true;
+            only_ws = false;
             out.push('"');
             i += 1;
-        } else if b == b'#' || (b == b'/' && bytes.get(i + 1) == Some(&b'/')) {
+        } else if b == b'#' {
+            if only_ws && is_hash_directive {
+                only_ws = false;
+                out.push('#');
+                i += 1;
+            } else {
+                break;
+            }
+        } else if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
             break;
         } else if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            only_ws = false;
             if let Some(rel_end) = line[i + 2..].find("*/") {
                 let comment_len = 2 + rel_end + 2;
                 out.extend(std::iter::repeat_n(' ', comment_len));
                 i += comment_len;
             } else {
+                *in_block_comment = true;
                 break;
             }
         } else {
+            only_ws = false;
             let ch_len = utf8_char_len(bytes, i);
             out.push_str(&line[i..i + ch_len]);
             i += ch_len;
@@ -115,7 +164,14 @@ pub fn is_offset_in_comment(
     {
         return true;
     }
-    scanner_in_comment_at(text, clamped, preprocessed)
+    let (in_block, in_line) = scan_comment_state(text, clamped, preprocessed);
+    in_block || in_line
+}
+
+/// Return `true` if `offset` starts inside an open multi-line `/* ... */` block comment.
+pub fn in_block_comment_before(text: &str, offset: usize, preprocessed: bool) -> bool {
+    let clamped = clamp_to_char_boundary(text, offset.min(text.len()));
+    scan_comment_state(text, clamped, preprocessed).0
 }
 
 fn tree_node_is_comment(text: &str, tree: &Tree, offset: usize, preprocessed: bool) -> bool {
@@ -157,7 +213,7 @@ fn tree_node_is_comment(text: &str, tree: &Tree, offset: usize, preprocessed: bo
     false
 }
 
-fn scanner_in_comment_at(text: &str, offset: usize, preprocessed: bool) -> bool {
+fn scan_comment_state(text: &str, offset: usize, preprocessed: bool) -> (bool, bool) {
     let bytes = text.as_bytes();
     let limit = offset.min(bytes.len());
     let mut i = 0usize;
@@ -185,7 +241,7 @@ fn scanner_in_comment_at(text: &str, offset: usize, preprocessed: bool) -> bool 
                     i += 2;
                     continue;
                 }
-                return true;
+                return (true, false);
             }
             i += 1;
             continue;
@@ -254,7 +310,7 @@ fn scanner_in_comment_at(text: &str, offset: usize, preprocessed: bool) -> bool 
         }
     }
 
-    in_block_comment || in_line_comment
+    (in_block_comment, in_line_comment)
 }
 
 fn line_from(text: &str, start: usize) -> Option<&str> {
@@ -304,14 +360,33 @@ pub fn strip_leading_labels(stmt: &str) -> &str {
 /// Return the active partial statement prefix after stripping comments, prior `;` statements,
 /// and leading labels.
 pub fn active_statement_prefix(line_prefix: &str) -> String {
-    let stripped = strip_comments(line_prefix);
+    active_statement_prefix_with_block_state(line_prefix, false)
+}
+
+/// Variant of `active_statement_prefix` that tracks whether `line_prefix` starts inside
+/// a multi-line `/* ... */` block comment.
+pub fn active_statement_prefix_with_block_state(
+    line_prefix: &str,
+    starts_in_block: bool,
+) -> String {
+    let mut in_block = starts_in_block;
+    let stripped = strip_comments_with_state(line_prefix, &mut in_block, false);
+    if in_block {
+        return String::new();
+    }
     let stmt = last_unquoted_statement(&stripped);
     strip_leading_labels(stmt).trim_start().to_owned()
 }
 
 /// Return `true` when `line_prefix` places the token at statement head (no preceding opcode).
 pub fn is_statement_head(line_prefix: &str) -> bool {
-    active_statement_prefix(line_prefix).is_empty()
+    is_statement_head_with_block_state(line_prefix, false)
+}
+
+/// Variant of `is_statement_head` that accounts for a multi-line `/* ... */` block comment
+/// closed earlier on the same line.
+pub fn is_statement_head_with_block_state(line_prefix: &str, starts_in_block: bool) -> bool {
+    active_statement_prefix_with_block_state(line_prefix, starts_in_block).is_empty()
 }
 
 /// Count unquoted commas at paren depth 0 in `args` and whether depth > 0 at EOF.
@@ -333,7 +408,18 @@ pub fn count_operand_position(args: &str) -> (usize, bool) {
 
 /// Extract the statement on `full_line` around `rel_col` (byte column), stripped of comments and labels.
 pub fn extract_statement_at(full_line: &str, rel_col: usize) -> Option<String> {
-    let without_comment = strip_comments(full_line);
+    extract_statement_at_with_block_state(full_line, rel_col, false)
+}
+
+/// Variant of `extract_statement_at` that tracks whether `full_line` starts inside a multi-line
+/// `/* ... */` block comment.
+pub fn extract_statement_at_with_block_state(
+    full_line: &str,
+    rel_col: usize,
+    starts_in_block: bool,
+) -> Option<String> {
+    let mut in_block = starts_in_block;
+    let without_comment = strip_comments_with_state(full_line, &mut in_block, false);
     let mut seg_start = 0usize;
     let mut selected = without_comment.as_str();
     let mut found = false;
@@ -362,9 +448,14 @@ pub fn extract_statement_at(full_line: &str, rel_col: usize) -> Option<String> {
 /// Split `line` on unquoted `;` separators after stripping comments.
 pub fn split_unquoted_statements(line: &str) -> Vec<String> {
     let stripped = strip_comments(line);
+    split_unquoted_statements_stripped(&stripped)
+}
+
+/// Split an already comment-stripped line on unquoted `;` separators.
+pub fn split_unquoted_statements_stripped(stripped: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut start = 0usize;
-    for_each_unquoted(&stripped, |idx, ch| {
+    for_each_unquoted(stripped, |idx, ch| {
         if ch == ';' {
             out.push(stripped[start..idx].to_owned());
             start = idx + 1;

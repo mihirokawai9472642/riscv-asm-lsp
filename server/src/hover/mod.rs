@@ -1,8 +1,8 @@
 mod expand;
 mod format;
-mod operands;
+pub(crate) mod operands;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::mpsc;
@@ -27,7 +27,8 @@ use expand::{
 };
 use format::{
     RenderedHoverParts, build_instruction_hover_parts, format_cpp_directive_hover,
-    format_include_hover, format_macro_counter_hover, format_symbol_hover,
+    format_include_hover, format_macro_counter_hover, format_operand_keyword_hover,
+    format_symbol_hover, format_unresolved_include_hover,
 };
 pub(crate) use format::{
     format_csr_hover, format_directive_hover, format_instruction_completion_doc,
@@ -62,18 +63,45 @@ pub struct HoverWorker {
     tx: Option<mpsc::Sender<HoverJob>>,
     handle: Option<JoinHandle<()>>,
     pub cache: ExpansionCache,
+    in_flight: Arc<Mutex<HashSet<String>>>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
+}
+
+fn request_id_key(id: &RequestId) -> String {
+    serde_json::to_string(id).unwrap_or_default()
 }
 
 impl HoverWorker {
     pub fn new(tools: Arc<ToolRunner>, lsp_sender: MessageSink) -> Self {
         let cache = new_expansion_cache();
         let cache_bg = cache.clone();
+        let in_flight: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let cancelled: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let in_flight_bg = Arc::clone(&in_flight);
+        let cancelled_bg = Arc::clone(&cancelled);
         let (tx, rx) = mpsc::channel::<HoverJob>();
 
         let handle = thread::spawn(move || {
             let mut logged_panic = false;
             for job in rx {
                 let job_id = job.id.clone();
+                let key = request_id_key(&job_id);
+                if let Ok(mut guard) = in_flight_bg.lock() {
+                    guard.remove(&key);
+                }
+                let was_cancelled = cancelled_bg
+                    .lock()
+                    .map(|mut guard| guard.remove(&key))
+                    .unwrap_or(false);
+                if was_cancelled {
+                    lsp_sender(Message::Response(Response::new_err(
+                        job_id,
+                        ErrorCode::RequestCanceled as i32,
+                        "request cancelled".to_owned(),
+                    )));
+                    continue;
+                }
+
                 match catch_unwind(AssertUnwindSafe(|| {
                     finish_deferred_hover(job.deferred, &tools, &cache_bg)
                 })) {
@@ -102,12 +130,36 @@ impl HoverWorker {
             tx: Some(tx),
             handle: Some(handle),
             cache,
+            in_flight,
+            cancelled,
         }
     }
 
     pub fn submit(&self, id: RequestId, deferred: DeferredHover) {
+        let key = request_id_key(&id);
+        if let Ok(mut guard) = self.in_flight.lock() {
+            guard.insert(key);
+        }
         if let Some(tx) = &self.tx {
             let _ = tx.send(HoverJob { id, deferred });
+        }
+    }
+
+    pub fn cancel(&self, id: &RequestId) {
+        let key = request_id_key(id);
+        let is_pending = self
+            .in_flight
+            .lock()
+            .map(|guard| guard.contains(&key))
+            .unwrap_or(false);
+        if is_pending && let Ok(mut guard) = self.cancelled.lock() {
+            guard.insert(key);
+        }
+    }
+
+    pub fn clear_cache(&self) {
+        if let Ok(mut guard) = self.cache.0.lock() {
+            guard.clear();
         }
     }
 
@@ -124,6 +176,11 @@ enum HoverTarget<'a> {
     Instruction(&'a InstructionEntry),
     Register(&'a RegisterEntry),
     Csr(&'a CsrEntry),
+    OperandKeyword {
+        context: &'static str,
+        code: String,
+        prose: String,
+    },
     Symbol(SymbolHoverInfo),
 }
 
@@ -162,13 +219,21 @@ pub fn prepare_hover(
     }
 
     // Handle `#include` / `.include` lines even though tree-sitter classifies `#include` as comment
-    if let Some((inc_target, resolved_path)) =
+    if let Some((inc_kind, inc_target, resolved_path)) =
         index.resolve_include_on_line(&doc.uri, pos.line, ctx)
     {
         let range = doc
             .line_index
             .byte_span_to_range(&doc.text, line_start, line_end);
-        let md = format_include_hover(&inc_target, &resolved_path.display().to_string());
+        let md = format_include_hover(inc_kind, &inc_target, &resolved_path.display().to_string());
+        return HoverResolution::Ready(Some(make_hover(md, range)));
+    } else if let Some((inc_kind, inc_target)) =
+        index.parse_include_on_line(&doc.uri, pos.line, file_ctx.preprocessed)
+    {
+        let range = doc
+            .line_index
+            .byte_span_to_range(&doc.text, line_start, line_end);
+        let md = format_unresolved_include_hover(inc_kind, &inc_target);
         return HoverResolution::Ready(Some(make_hover(md, range)));
     }
 
@@ -194,12 +259,15 @@ pub fn prepare_hover(
         return HoverResolution::Ready(Some(make_hover(format_macro_counter_hover(db), range)));
     }
 
+    let starts_in_block =
+        crate::line::in_block_comment_before(&doc.text, line_start, file_ctx.preprocessed);
     let line_prefix = doc.text.get(line_start..start).unwrap_or("");
     let (effective_march, option_lines) =
         effective_options_at_line(&doc.text, pos.line as usize, &file_ctx.march);
     let query = TokenTargetQuery {
         token: &token,
         line_prefix,
+        starts_in_block,
         doc,
         offset,
         effective_march: &effective_march,
@@ -218,9 +286,18 @@ pub fn prepare_hover(
         HoverTarget::Register(reg) => {
             HoverResolution::Ready(Some(make_hover(format_register_hover(reg), range)))
         }
-        HoverTarget::Csr(csr) => {
-            HoverResolution::Ready(Some(make_hover(format_csr_hover(csr), range)))
-        }
+        HoverTarget::Csr(csr) => HoverResolution::Ready(Some(make_hover(
+            format_csr_hover(csr, Some(&effective_march)),
+            range,
+        ))),
+        HoverTarget::OperandKeyword {
+            context,
+            code,
+            prose,
+        } => HoverResolution::Ready(Some(make_hover(
+            format_operand_keyword_hover(context, &code, &prose),
+            range,
+        ))),
         HoverTarget::Symbol(sym) => {
             HoverResolution::Ready(Some(make_hover(format_symbol_hover(&sym), range)))
         }
@@ -230,6 +307,7 @@ pub fn prepare_hover(
             pos,
             token_start: start,
             line_start,
+            starts_in_block,
             offset,
             full_line,
             range,
@@ -248,6 +326,7 @@ pub fn prepare_hover(
 struct TokenTargetQuery<'q, 'db> {
     token: &'q str,
     line_prefix: &'q str,
+    starts_in_block: bool,
     doc: &'q Document,
     offset: usize,
     effective_march: &'q MarchSpec,
@@ -257,7 +336,7 @@ struct TokenTargetQuery<'q, 'db> {
 }
 
 fn resolve_token_target<'q, 'db>(q: TokenTargetQuery<'q, 'db>) -> Option<HoverTarget<'db>> {
-    let is_head = crate::line::is_statement_head(q.line_prefix);
+    let is_head = crate::line::is_statement_head_with_block_state(q.line_prefix, q.starts_in_block);
     if q.token.starts_with('.') {
         if let Some(dir) = q.db.directive(q.token) {
             Some(HoverTarget::Directive(dir))
@@ -280,17 +359,43 @@ fn resolve_token_target<'q, 'db>(q: TokenTargetQuery<'q, 'db>) -> Option<HoverTa
                 .token_hover_info(&q.doc.uri, q.offset, q.ctx)
                 .map(HoverTarget::Symbol)
         }
+    } else if q.token.starts_with('%') {
+        let lower = q.token.to_ascii_lowercase();
+        q.db.texts
+            .relocations
+            .iter()
+            .find(|r| r.label.trim_end_matches('(') == lower)
+            .map(|reloc| HoverTarget::OperandKeyword {
+                context: "Relocation modifier",
+                code: reloc.label.trim_end_matches('(').to_owned(),
+                prose: format!("{}.", reloc.description.trim_end_matches('.')),
+            })
     } else if let Some(reg) = q.db.register(q.token) {
         Some(HoverTarget::Register(reg))
-    } else if let Some(csr) = q.db.csr(q.token) {
-        Some(HoverTarget::Csr(csr))
-    } else if is_csr_operand_position(q.line_prefix, q.db, q.effective_march)
-        && let Some(num) = parse_csr_number(q.token)
-        && let Some(csr) = q.db.csr_by_number(num)
-    {
-        Some(HoverTarget::Csr(csr))
+    } else if is_csr_operand_position(q.line_prefix, q.starts_in_block, q.db, q.effective_march) {
+        if let Some(csr) = q.db.csr(q.token) {
+            Some(HoverTarget::Csr(csr))
+        } else if let Some(num) = parse_csr_number(q.token)
+            && let Some(csr) = q.db.csr_by_number(num)
+        {
+            Some(HoverTarget::Csr(csr))
+        } else {
+            q.index
+                .token_hover_info(&q.doc.uri, q.offset, q.ctx)
+                .map(HoverTarget::Symbol)
+        }
+    } else if let Some(kw) = resolve_operand_keyword(
+        q.token,
+        q.line_prefix,
+        q.starts_in_block,
+        q.db,
+        q.effective_march,
+    ) {
+        Some(kw)
     } else if let Some(sym) = q.index.token_hover_info(&q.doc.uri, q.offset, q.ctx) {
         Some(HoverTarget::Symbol(sym))
+    } else if let Some(csr) = q.db.csr(q.token) {
+        Some(HoverTarget::Csr(csr))
     } else {
         q.db.instruction(q.token).map(HoverTarget::Instruction)
     }
@@ -302,6 +407,7 @@ struct InstructionHoverCtx<'a> {
     pos: Position,
     token_start: usize,
     line_start: usize,
+    starts_in_block: bool,
     offset: usize,
     full_line: &'a str,
     range: Range,
@@ -326,9 +432,11 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
     if !c.inst.llvm_supported || !enabled_by_march || c.tools.is_disabled(ToolKind::LlvmMc) {
         return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
     }
-    let Some(stmt) =
-        crate::line::extract_statement_at(c.full_line, c.token_start.saturating_sub(c.line_start))
-    else {
+    let Some(stmt) = crate::line::extract_statement_at_with_block_state(
+        c.full_line,
+        c.token_start.saturating_sub(c.line_start),
+        c.starts_in_block,
+    ) else {
         return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
     };
 
@@ -342,12 +450,24 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
         .collect();
     const_pairs.sort();
 
+    let file_dir = uri_to_path(&c.doc.uri).and_then(|p| p.parent().map(Path::to_path_buf));
+    let (cpp_preamble, open_if_depth) = if c.file_ctx.preprocessed {
+        collect_cpp_preamble(&c.doc.text, c.pos.line as usize)
+    } else {
+        (Vec::new(), 0)
+    };
+
     let key = ExpansionCacheKey {
         stmt,
         triple: c.file_ctx.march.llvm_triple().to_owned(),
         mattr: c.file_ctx.march.to_llvm_mattr(),
         option_lines: c.option_lines,
         const_pairs,
+        clang_flags: c.file_ctx.clang_flags.clone(),
+        cpp_preamble,
+        open_if_depth,
+        file_dir,
+        working_dir: c.file_ctx.working_dir.clone(),
     };
 
     if let Ok(guard) = c.cache.0.lock()
@@ -357,23 +477,10 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
         return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
     }
 
-    let file_dir = uri_to_path(&c.doc.uri).and_then(|p| p.parent().map(Path::to_path_buf));
-    let cpp_preamble = if c.file_ctx.preprocessed {
-        collect_cpp_preamble(&c.doc.text, c.pos.line as usize)
-    } else {
-        Vec::new()
-    };
     HoverResolution::Deferred(Box::new(DeferredHover {
         base_parts: parts,
         range: c.range,
-        pending: PendingExpansion {
-            key,
-            clang_flags: c.file_ctx.clang_flags.clone(),
-            file_dir,
-            working_dir: c.file_ctx.working_dir.clone(),
-            cpp_preamble,
-            known_consts,
-        },
+        pending: PendingExpansion { key, known_consts },
     }))
 }
 
@@ -432,7 +539,7 @@ fn make_hover(markdown: String, range: Range) -> Hover {
     }
 }
 
-fn parse_csr_number(token: &str) -> Option<u16> {
+pub(crate) fn parse_csr_number(token: &str) -> Option<u16> {
     let val = if let Some(hex) = token
         .strip_prefix("0x")
         .or_else(|| token.strip_prefix("0X"))
@@ -451,8 +558,25 @@ fn parse_csr_number(token: &str) -> Option<u16> {
     (val <= 0xfff).then_some(val)
 }
 
-fn is_csr_operand_position(line_prefix: &str, db: &Database, march: &MarchSpec) -> bool {
-    let stmt = crate::line::active_statement_prefix(line_prefix);
+fn is_csr_operand_position(
+    line_prefix: &str,
+    starts_in_block: bool,
+    db: &Database,
+    march: &MarchSpec,
+) -> bool {
+    has_operand_class_at(line_prefix, starts_in_block, db, march, |c| {
+        c == "csr_sysreg"
+    })
+}
+
+fn has_operand_class_at(
+    line_prefix: &str,
+    starts_in_block: bool,
+    db: &Database,
+    march: &MarchSpec,
+    pred: impl Fn(&str) -> bool,
+) -> bool {
+    let stmt = crate::line::active_statement_prefix_with_block_state(line_prefix, starts_in_block);
     let Some(ws) = stmt.find(char::is_whitespace) else {
         return false;
     };
@@ -471,22 +595,85 @@ fn is_csr_operand_position(line_prefix: &str, db: &Database, march: &MarchSpec) 
     for v in &inst.variants {
         if march.supports_extensions(&v.required_extensions, v.xlen) {
             matched_march = true;
-            if v.operands
-                .get(op_idx)
-                .is_some_and(|op| op.class == "csr_sysreg")
-            {
+            if v.operands.get(op_idx).is_some_and(|op| pred(&op.class)) {
                 return true;
             }
         }
     }
     if !matched_march {
-        return inst.variants.iter().any(|v| {
-            v.operands
-                .get(op_idx)
-                .is_some_and(|op| op.class == "csr_sysreg")
-        });
+        return inst
+            .variants
+            .iter()
+            .any(|v| v.operands.get(op_idx).is_some_and(|op| pred(&op.class)));
     }
     false
+}
+
+fn resolve_operand_keyword<'a>(
+    token: &str,
+    line_prefix: &str,
+    starts_in_block: bool,
+    db: &Database,
+    march: &MarchSpec,
+) -> Option<HoverTarget<'a>> {
+    let lower = token.to_ascii_lowercase();
+    if lower == "v0.t"
+        && has_operand_class_at(line_prefix, starts_in_block, db, march, |c| c == "VMaskOp")
+    {
+        return Some(HoverTarget::OperandKeyword {
+            context: "Vector mask",
+            code: "v0.t".to_owned(),
+            prose:
+                "Predicated vector execution mask using `v0` (element active where mask bit = 1)."
+                    .to_owned(),
+        });
+    }
+    if has_operand_class_at(line_prefix, starts_in_block, db, march, |c| {
+        c.starts_with("frmarg") || c == "rtzarg"
+    }) && let Some((name, desc)) = crate::completion::candidates::ROUNDING_MODES
+        .iter()
+        .find(|(name, _)| *name == lower)
+    {
+        return Some(HoverTarget::OperandKeyword {
+            context: "Rounding mode",
+            code: (*name).to_owned(),
+            prose: format!("{desc}."),
+        });
+    }
+    if has_operand_class_at(line_prefix, starts_in_block, db, march, |c| c == "fencearg") {
+        if let Some((name, desc)) = crate::completion::candidates::FENCE_ARGS
+            .iter()
+            .find(|(name, _)| *name == lower)
+        {
+            return Some(HoverTarget::OperandKeyword {
+                context: "Fence ordering",
+                code: (*name).to_owned(),
+                prose: format!("{desc}."),
+            });
+        }
+        if !lower.is_empty()
+            && lower
+                .bytes()
+                .all(|b| matches!(b, b'i' | b'o' | b'r' | b'w'))
+        {
+            let parts: Vec<&str> = lower
+                .bytes()
+                .map(|b| match b {
+                    b'i' => "Input",
+                    b'o' => "Output",
+                    b'r' => "Read",
+                    b'w' => "Write",
+                    _ => unreachable!(),
+                })
+                .collect();
+            return Some(HoverTarget::OperandKeyword {
+                context: "Fence ordering",
+                code: lower,
+                prose: format!("{}.", parts.join(", ")),
+            });
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -791,5 +978,60 @@ loop_\\@:
             panic!();
         };
         assert!(m.value.contains(".irp parameter"));
+    }
+
+    #[test]
+    fn cancel_skips_pending_hover_job() {
+        let (tx_out, rx_out) = std::sync::mpsc::channel();
+        let tools = Arc::new(ToolRunner::new("clang".to_owned(), "llvm-mc".to_owned()));
+        let worker = HoverWorker::new(
+            tools,
+            Arc::new(move |msg| {
+                let _ = tx_out.send(msg);
+            }),
+        );
+        let dummy = DeferredHover {
+            base_parts: RenderedHoverParts {
+                context: String::new(),
+                lang: "riscv",
+                code: String::new(),
+                below_fence: None,
+                notices: Vec::new(),
+                facts: Vec::new(),
+                prose: None,
+            },
+            range: Range::default(),
+            pending: PendingExpansion {
+                key: ExpansionCacheKey {
+                    stmt: "nop".to_owned(),
+                    triple: "riscv64".to_owned(),
+                    mattr: String::new(),
+                    option_lines: Vec::new(),
+                    const_pairs: Vec::new(),
+                    clang_flags: Vec::new(),
+                    cpp_preamble: Vec::new(),
+                    open_if_depth: 0,
+                    file_dir: None,
+                    working_dir: None,
+                },
+                known_consts: HashMap::new(),
+            },
+        };
+        let id = RequestId::from(99);
+        worker.cancel(&id); // canceling unknown id is a no-op
+        worker.submit(id.clone(), dummy);
+        worker.cancel(&id);
+        let msg = rx_out
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("cancelled response");
+        let Message::Response(resp) = msg else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, id);
+        let err = resp
+            .response_result
+            .expect_err("expected RequestCanceled error");
+        assert_eq!(err.code, ErrorCode::RequestCanceled as i32);
+        worker.shutdown();
     }
 }

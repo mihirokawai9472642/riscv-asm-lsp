@@ -14,6 +14,7 @@ use super::uri::{lexical_normalize_path, normalize_path, resolve_path, uri_to_pa
 #[derive(Debug, Clone)]
 pub struct FileContext {
     pub target: String,
+    pub is_riscv: bool,
     pub march: MarchSpec,
     pub clang_flags: Vec<String>,
     pub include_dirs: Vec<PathBuf>,
@@ -22,6 +23,11 @@ pub struct FileContext {
     pub client_root: Option<PathBuf>,
     pub canon_root: Option<PathBuf>,
     pub preprocessed: bool,
+}
+
+pub fn is_riscv_target(target: &str) -> bool {
+    let lower = target.trim().to_ascii_lowercase();
+    lower.starts_with("riscv32") || lower.starts_with("riscv64")
 }
 
 pub fn is_linker_script_template(path: &Path) -> bool {
@@ -64,75 +70,109 @@ pub(super) struct ParsedCompileEntry {
 }
 
 pub struct CompileContext {
-    workspace_root: Option<PathBuf>,
+    workspace_roots: Vec<PathBuf>,
     config: Config,
-    entries: HashMap<PathBuf, ParsedCompileEntry>,
+    root_states: Vec<RootCompileState>,
+}
+
+struct RootCompileState {
+    root: PathBuf,
+    canon_root: PathBuf,
     loaded_db_path: Option<PathBuf>,
     loaded_mtime: Option<SystemTime>,
+    entries: HashMap<PathBuf, ParsedCompileEntry>,
+    fallback_entry: Option<ParsedCompileEntry>,
 }
 
 impl CompileContext {
     pub fn new(workspace_root: Option<PathBuf>, config: Config) -> Self {
+        Self::new_multi(workspace_root.into_iter().collect(), config)
+    }
+
+    pub fn new_multi(workspace_roots: Vec<PathBuf>, config: Config) -> Self {
+        let root_states = build_root_states(&workspace_roots);
         let mut ctx = Self {
-            workspace_root,
+            workspace_roots,
             config,
-            entries: HashMap::new(),
-            loaded_db_path: None,
-            loaded_mtime: None,
+            root_states,
         };
         ctx.reload_if_needed();
         ctx
     }
 
     pub fn workspace_root(&self) -> Option<&Path> {
-        self.workspace_root.as_deref()
+        self.workspace_roots.first().map(PathBuf::as_path)
+    }
+
+    pub fn workspace_roots(&self) -> &[PathBuf] {
+        &self.workspace_roots
     }
 
     pub fn config(&self) -> &Config {
         &self.config
     }
 
-    pub fn reload_if_needed(&mut self) {
-        let Some(root) = &self.workspace_root else {
-            return;
-        };
-        let Some((db_path, mtime)) = self.find_compile_commands(root) else {
-            self.entries.clear();
-            self.loaded_db_path = None;
-            self.loaded_mtime = None;
-            return;
-        };
-        if self.loaded_db_path.as_ref() == Some(&db_path) && self.loaded_mtime == Some(mtime) {
+    pub fn update_config(&mut self, config: Config) {
+        if self.config == config {
             return;
         }
-        if let Ok(text) = fs::read_to_string(&db_path)
-            && let Ok(raw_list) = serde_json::from_str::<Vec<RawCompileCommand>>(&text)
-        {
-            self.entries = build_compile_entries(root, raw_list);
-            self.loaded_db_path = Some(db_path);
-            self.loaded_mtime = Some(mtime);
+        self.config = config;
+        for state in &mut self.root_states {
+            state.loaded_db_path = None;
+            state.loaded_mtime = None;
+        }
+        self.reload_if_needed();
+    }
+
+    pub fn set_workspace_roots(&mut self, workspace_roots: Vec<PathBuf>) {
+        self.workspace_roots = workspace_roots;
+        self.root_states = build_root_states(&self.workspace_roots);
+        self.reload_if_needed();
+    }
+
+    pub fn reload_if_needed(&mut self) {
+        let dirs = self.config.compile_commands_dirs.clone();
+        for state in &mut self.root_states {
+            state.reload_if_needed(&dirs);
         }
     }
 
-    fn find_compile_commands(&self, root: &Path) -> Option<(PathBuf, SystemTime)> {
-        for rel in &self.config.compile_commands_dirs {
-            let candidate = if rel.is_empty() {
-                root.join("compile_commands.json")
-            } else {
-                root.join(rel).join("compile_commands.json")
-            };
-            if let Ok(meta) = fs::metadata(&candidate) {
-                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                return Some((candidate, mtime));
+    fn root_pair_for_path(&self, path: &Path) -> (Option<&Path>, Option<&Path>) {
+        let norm = normalize_path(path);
+        self.root_states
+            .iter()
+            .filter(|s| norm.starts_with(&s.canon_root) || path.starts_with(&s.root))
+            .max_by_key(|s| s.canon_root.as_os_str().len())
+            .map(|s| (Some(s.root.as_path()), Some(s.canon_root.as_path())))
+            .unwrap_or_else(|| {
+                (
+                    self.root_states.first().map(|s| s.root.as_path()),
+                    self.root_states.first().map(|s| s.canon_root.as_path()),
+                )
+            })
+    }
+
+    fn find_entry_for_path(
+        &self,
+        path: &Path,
+        norm: &Path,
+    ) -> Option<(&ParsedCompileEntry, &RootCompileState)> {
+        for state in &self.root_states {
+            if let Some(entry) = state.entries.get(norm).or_else(|| state.entries.get(path)) {
+                return Some((entry, state));
             }
         }
-        None
+        self.root_states
+            .iter()
+            .filter(|s| norm.starts_with(&s.canon_root) || path.starts_with(&s.root))
+            .max_by_key(|s| s.canon_root.as_os_str().len())
+            .and_then(|s| s.fallback_entry.as_ref().map(|e| (e, s)))
     }
 
     pub fn is_preprocessed_path(&mut self, path: &Path) -> bool {
         self.reload_if_needed();
         let norm = normalize_path(path);
-        if let Some(entry) = self.entries.get(&norm).or_else(|| self.entries.get(path))
+        if let Some((entry, _)) = self.find_entry_for_path(path, &norm)
             && let Some(override_pre) = entry.lang_override
         {
             return override_pre;
@@ -147,37 +187,72 @@ impl CompileContext {
             .as_deref()
             .map(is_preprocessed_by_suffix)
             .unwrap_or(true);
-        if let Some(path) = path_opt {
-            let norm = normalize_path(&path);
-            if let Some(entry) = self.entries.get(&norm).or_else(|| self.entries.get(&path)) {
-                return self.file_context_from_entry(entry, default_pre);
+        if let Some(path) = &path_opt {
+            let norm = normalize_path(path);
+            if let Some((entry, state)) = self.find_entry_for_path(path, &norm) {
+                return self.file_context_from_entry(
+                    entry,
+                    default_pre,
+                    Some(state.root.clone()),
+                    Some(state.canon_root.clone()),
+                );
             }
         }
 
+        let (client_root, canon_root) = path_opt
+            .as_deref()
+            .map(|p| {
+                let (cr, kr) = self.root_pair_for_path(p);
+                (cr.map(Path::to_path_buf), kr.map(Path::to_path_buf))
+            })
+            .unwrap_or_else(|| {
+                (
+                    self.root_states.first().map(|s| s.root.clone()),
+                    self.root_states.first().map(|s| s.canon_root.clone()),
+                )
+            });
+
         let target = self.config.default_target.clone();
+        let is_riscv = is_riscv_target(&target);
         let march_str = self.config.default_march.clone();
         FileContext {
             target: target.clone(),
+            is_riscv,
             march: MarchSpec::parse(&march_str),
             clang_flags: vec![format!("--target={target}"), format!("-march={march_str}")],
             include_dirs: Vec::new(),
             quote_dirs: Vec::new(),
-            working_dir: self.workspace_root.clone(),
-            client_root: self.workspace_root.clone(),
-            canon_root: self.workspace_root.as_deref().map(normalize_path),
+            working_dir: client_root.clone(),
+            client_root,
+            canon_root,
             preprocessed: default_pre,
         }
+    }
+
+    pub fn non_riscv_paths(&self) -> std::collections::HashSet<PathBuf> {
+        let mut out = std::collections::HashSet::new();
+        for state in &self.root_states {
+            for (path, entry) in &state.entries {
+                if entry.target.as_deref().is_some_and(|t| !is_riscv_target(t)) {
+                    out.insert(path.clone());
+                }
+            }
+        }
+        out
     }
 
     fn file_context_from_entry(
         &self,
         entry: &ParsedCompileEntry,
         default_pre: bool,
+        client_root: Option<PathBuf>,
+        canon_root: Option<PathBuf>,
     ) -> FileContext {
         let target = entry
             .target
             .clone()
             .unwrap_or_else(|| self.config.default_target.clone());
+        let is_riscv = is_riscv_target(&target);
         let march_str = entry.march.as_deref().unwrap_or(&self.config.default_march);
         let mut clang_flags = entry.clang_flags.clone();
         if entry.target.is_none() {
@@ -188,16 +263,102 @@ impl CompileContext {
         }
         FileContext {
             target,
+            is_riscv,
             march: MarchSpec::parse(march_str),
             clang_flags,
             include_dirs: entry.include_dirs.clone(),
             quote_dirs: entry.quote_dirs.clone(),
             working_dir: Some(entry.directory.clone()),
-            client_root: self.workspace_root.clone(),
-            canon_root: self.workspace_root.as_deref().map(normalize_path),
+            client_root,
+            canon_root,
             preprocessed: entry.lang_override.unwrap_or(default_pre),
         }
     }
+}
+
+fn build_root_states(workspace_roots: &[PathBuf]) -> Vec<RootCompileState> {
+    workspace_roots
+        .iter()
+        .map(|root| RootCompileState {
+            root: root.clone(),
+            canon_root: normalize_path(root),
+            loaded_db_path: None,
+            loaded_mtime: None,
+            entries: HashMap::new(),
+            fallback_entry: None,
+        })
+        .collect()
+}
+
+impl RootCompileState {
+    fn reload_if_needed(&mut self, compile_commands_dirs: &[String]) {
+        if let Some((db_path, mtime)) = find_compile_commands(&self.root, compile_commands_dirs) {
+            if self.loaded_db_path.as_ref() == Some(&db_path) && self.loaded_mtime == Some(mtime) {
+                return;
+            }
+            if let Ok(text) = fs::read_to_string(&db_path)
+                && let Ok(raw_list) = serde_json::from_str::<Vec<RawCompileCommand>>(&text)
+            {
+                self.entries = build_compile_entries(&self.root, raw_list);
+                self.fallback_entry = None;
+                self.loaded_db_path = Some(db_path);
+                self.loaded_mtime = Some(mtime);
+            }
+            return;
+        }
+
+        let flags_path = self.root.join("compile_flags.txt");
+        if let Ok(meta) = fs::metadata(&flags_path) {
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            if self.loaded_db_path.as_ref() == Some(&flags_path) && self.loaded_mtime == Some(mtime)
+            {
+                return;
+            }
+            if let Ok(text) = fs::read_to_string(&flags_path) {
+                let args = parse_compile_flags_txt(&text);
+                self.entries.clear();
+                self.fallback_entry = Some(extract_relevant_flags(&self.root, &args));
+                self.loaded_db_path = Some(flags_path);
+                self.loaded_mtime = Some(mtime);
+            }
+            return;
+        }
+
+        self.entries.clear();
+        self.fallback_entry = None;
+        self.loaded_db_path = None;
+        self.loaded_mtime = None;
+    }
+}
+
+fn find_compile_commands(
+    root: &Path,
+    compile_commands_dirs: &[String],
+) -> Option<(PathBuf, SystemTime)> {
+    for rel in compile_commands_dirs {
+        let candidate = if rel.is_empty() {
+            root.join("compile_commands.json")
+        } else {
+            root.join(rel).join("compile_commands.json")
+        };
+        if let Ok(meta) = fs::metadata(&candidate) {
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            return Some((candidate, mtime));
+        }
+    }
+    None
+}
+
+fn parse_compile_flags_txt(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    for raw_line in text.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        args.push(trimmed.to_owned());
+    }
+    args
 }
 
 fn build_compile_entries(
@@ -312,6 +473,15 @@ impl ParsedCompileEntry {
 
     fn consume_path_flag(&mut self, dir: &Path, args: &[String], i: usize) -> Option<usize> {
         let arg = &args[i];
+        if arg == "-I-" {
+            return Some(1);
+        }
+        if matches!(
+            arg.as_str(),
+            "-include-pch" | "-include-pth" | "-isystem-after"
+        ) {
+            return Some(if i + 1 < args.len() { 2 } else { 1 });
+        }
         for (prefix, track_include, track_quote) in [
             ("-I", true, false),
             ("-iquote", false, true),
@@ -321,6 +491,9 @@ impl ParsedCompileEntry {
             ("-isysroot", false, false),
         ] {
             if let Some(rest) = arg.strip_prefix(prefix) {
+                if prefix != "-I" && !rest.is_empty() && rest.starts_with('-') {
+                    return Some(1);
+                }
                 let (raw_opt, step) = inline_or_next(rest, args, i);
                 if let Some(raw) = raw_opt.filter(|s| !s.is_empty()) {
                     let path = resolve_path(dir, raw);

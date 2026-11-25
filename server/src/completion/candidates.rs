@@ -11,13 +11,21 @@ use crate::data::{CsrEntry, Database, InstructionKind, InstructionVariant, Regis
 use crate::index::{CompletionSymbol, SymKind};
 
 use super::snippets::{
-    build_instruction_snippet, deduplicate_and_sort_variants, directive_snippet, syntax_args,
-    trailing_operand_sep, variant_slot_count,
+    build_instruction_snippet, deduplicate_and_sort_variants, directive_snippet,
+    split_top_level_slots, syntax_args, trailing_operand_sep, variant_slot_count,
 };
 use super::{
     CompletionClientCaps, MAX_SYMBOL_CANDIDATES, RichItemSpec, make_item_with_data, make_rich_item,
     match_rank,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ParenKind {
+    None,
+    Relocation,
+    MemoryBase,
+    Expression,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "k")]
@@ -26,6 +34,8 @@ pub(super) enum ResolvePayload {
         m: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         s: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        a: Option<String>,
     },
     Dir {
         n: String,
@@ -35,6 +45,8 @@ pub(super) enum ResolvePayload {
     },
     Csr {
         n: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        a: Option<String>,
     },
     Opt {
         n: String,
@@ -57,16 +69,15 @@ pub(super) fn serialize_payload(payload: &ResolvePayload) -> Option<serde_json::
 pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Option<Documentation> {
     let data = item.data.as_ref()?;
     let payload: ResolvePayload = serde_json::from_value(data.clone()).ok()?;
-    let default_march = MarchSpec::parse("rv64gc");
     match payload {
-        ResolvePayload::Inst { m, s } => {
+        ResolvePayload::Inst { m, s, a } => {
             let inst = db.instruction(&m)?;
-            let md = crate::hover::format_instruction_completion_doc(
-                inst,
-                &default_march,
-                db,
-                s.as_deref(),
-            );
+            let march = a
+                .as_deref()
+                .map(MarchSpec::parse)
+                .unwrap_or_else(|| MarchSpec::parse("rv64gc"));
+            let md =
+                crate::hover::format_instruction_completion_doc(inst, &march, db, s.as_deref());
             Some(markdown_doc(md))
         }
         ResolvePayload::Dir { n } => {
@@ -77,9 +88,13 @@ pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Opt
             let reg = db.register(&n)?;
             Some(markdown_doc(crate::hover::format_register_hover(reg)))
         }
-        ResolvePayload::Csr { n } => {
+        ResolvePayload::Csr { n, a } => {
             let csr = db.csr(&n)?;
-            Some(markdown_doc(crate::hover::format_csr_hover(csr)))
+            let march = a.as_deref().map(MarchSpec::parse);
+            Some(markdown_doc(crate::hover::format_csr_hover(
+                csr,
+                march.as_ref(),
+            )))
         }
         ResolvePayload::Opt { n } => OPTION_SUBCOMMANDS
             .iter()
@@ -125,7 +140,7 @@ pub(super) const OPTION_SUBCOMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-const ROUNDING_MODES: &[(&str, &str)] = &[
+pub(crate) const ROUNDING_MODES: &[(&str, &str)] = &[
     ("rne", "Round to Nearest, ties to Even"),
     ("rtz", "Round towards Zero"),
     ("rdn", "Round Down (towards -infinity)"),
@@ -134,7 +149,7 @@ const ROUNDING_MODES: &[(&str, &str)] = &[
     ("dyn", "Dynamic rounding mode (use frm CSR)"),
 ];
 
-const FENCE_ARGS: &[(&str, &str)] = &[
+pub(crate) const FENCE_ARGS: &[(&str, &str)] = &[
     ("iorw", "Input, Output, Read, Write"),
     ("rw", "Read and Write"),
     ("r", "Read"),
@@ -200,6 +215,7 @@ pub(super) fn collect_instruction_completions(
             let data = serialize_payload(&ResolvePayload::Inst {
                 m: inst.mnemonic.clone(),
                 s: None,
+                a: Some(march.raw.clone()),
             });
             let sort = format!("{rank}_{cat_tier}_{}", inst.mnemonic);
             items.push(make_rich_item(RichItemSpec {
@@ -225,6 +241,7 @@ pub(super) fn collect_instruction_completions(
             let data = serialize_payload(&ResolvePayload::Inst {
                 m: inst.mnemonic.clone(),
                 s: Some(v.syntax.clone()),
+                a: Some(march.raw.clone()),
             });
             let sort = format!("{rank}_{cat_tier}_{}_{idx:02}", inst.mnemonic);
 
@@ -328,12 +345,69 @@ pub(super) fn collect_directive_completions(
     }
 }
 
+pub(super) fn push_option_arch_completions(
+    db: &Database,
+    typed_lower: &str,
+    replace_range: Range,
+    items: &mut Vec<CompletionItem>,
+) {
+    let prefix = if typed_lower.starts_with('-') {
+        '-'
+    } else {
+        '+'
+    };
+    let ext_typed = typed_lower.trim_start_matches(['+', '-']);
+    for ext in &db.raw.extensions {
+        let label = format!("{prefix}{}", ext.march_name);
+        let rank = match_rank(&ext.march_name, ext_typed);
+        items.push(make_rich_item(RichItemSpec {
+            label: label.clone(),
+            filter_text: label.clone(),
+            new_text: label,
+            kind: CompletionItemKind::VALUE,
+            detail: ext.description.clone(),
+            tags: None,
+            data: None,
+            insert_text_format: None,
+            sort_text: format!("{rank}_0_{}", ext.march_name),
+            replace_range,
+        }));
+    }
+}
+
+pub(super) fn has_memory_operand_at(
+    db: &Database,
+    march: &MarchSpec,
+    mnemonic: &str,
+    operand_index: usize,
+) -> bool {
+    let Some(inst) = db.instruction(mnemonic) else {
+        return false;
+    };
+    let matching: Vec<_> = inst
+        .variants
+        .iter()
+        .filter(|v| march.supports_extensions(&v.required_extensions, v.xlen))
+        .collect();
+    let pool: Vec<_> = if matching.is_empty() {
+        inst.variants.iter().collect()
+    } else {
+        matching
+    };
+    pool.into_iter().any(|v| {
+        let slots = split_top_level_slots(syntax_args(mnemonic, &v.syntax));
+        slots
+            .get(operand_index)
+            .is_some_and(|slot| slot.contains('(') && slot.contains(')'))
+    })
+}
+
 pub(super) struct OperandQuery<'a> {
     pub db: &'a Database,
     pub march: &'a MarchSpec,
     pub mnemonic: &'a str,
     pub operand_index: usize,
-    pub inside_parens: bool,
+    pub paren_kind: ParenKind,
     pub next_is_comma: bool,
     pub visible_syms: &'a [CompletionSymbol],
     pub in_macro_body: bool,
@@ -364,7 +438,7 @@ pub(super) fn collect_operand_completions(
             &active_variants,
             q.mnemonic,
             q.operand_index,
-            q.inside_parens,
+            q.paren_kind != ParenKind::None,
             q.next_is_comma,
             hint,
         )
@@ -472,10 +546,25 @@ fn infer_operand_demand<'a>(
 ) -> (OperandDemand, Vec<&'a InstructionVariant>) {
     let mut demand = OperandDemand::default();
     let mut active_variants = Vec::new();
-    if q.inside_parens {
-        demand.int_reg = true;
-        demand.symbol_or_reloc = true;
-    } else if let Some(inst) = q.db.instruction(q.mnemonic) {
+    match q.paren_kind {
+        ParenKind::Relocation => {
+            demand.symbol_or_reloc = true;
+            return (demand, active_variants);
+        }
+        ParenKind::MemoryBase => {
+            demand.int_reg = true;
+            return (demand, active_variants);
+        }
+        ParenKind::Expression => {
+            demand.symbol_or_reloc = true;
+            if q.db.instruction(q.mnemonic).is_none() && !q.mnemonic.starts_with('.') {
+                demand.int_reg = true;
+            }
+            return (demand, active_variants);
+        }
+        ParenKind::None => {}
+    }
+    if let Some(inst) = q.db.instruction(q.mnemonic) {
         let variants: Vec<_> = inst
             .variants
             .iter()
@@ -766,11 +855,112 @@ fn push_csr_completions(
             tags: None,
             data: serialize_payload(&ResolvePayload::Csr {
                 n: csr.name.clone(),
+                a: Some(march.raw.clone()),
             }),
             insert_text_format: None,
             sort_text: format!("{rank}_0_{}", csr.name),
             replace_range,
         }));
+    }
+}
+
+const ELF_SECTION_NAMES: &[(&str, &str)] = &[
+    (".text", "Executable code section"),
+    (".data", "Initialized writable data section"),
+    (".rodata", "Read-only data section"),
+    (".bss", "Zero-initialized writable data section"),
+    (".init", "Initialization code section"),
+    (".fini", "Finalization code section"),
+    (".tdata", "Initialized thread-local data section"),
+    (".tbss", "Zero-initialized thread-local data section"),
+    (".note.GNU-stack", "Stack executability note section"),
+    (".text.startup", "Startup code section"),
+    (".rodata.str1.1", "Mergeable 1-byte aligned string literals"),
+];
+
+const ELF_SECTION_FLAGS: &[(&str, &str)] = &[
+    ("ax", "Allocatable and executable"),
+    ("aw", "Allocatable and writable"),
+    ("a", "Allocatable (read-only)"),
+    ("aMS", "Allocatable, mergeable strings"),
+    ("awT", "Allocatable, writable, TLS"),
+    ("axG", "Allocatable, executable, COMDAT group"),
+];
+
+const ELF_SECTION_TYPES: &[(&str, &str)] = &[
+    ("@progbits", "Section contains program-defined data"),
+    ("@nobits", "Section occupies no file space (e.g. .bss)"),
+    ("@note", "Section contains ELF note records"),
+    ("@init_array", "Array of initialization function pointers"),
+    ("@fini_array", "Array of termination function pointers"),
+];
+
+pub(super) fn push_section_arg_completions(
+    arg_index: usize,
+    in_quotes: bool,
+    typed_lower: &str,
+    replace_range: Range,
+    items: &mut Vec<CompletionItem>,
+) {
+    match arg_index {
+        0 => {
+            for &(name, desc) in ELF_SECTION_NAMES {
+                let rank = match_rank(name, typed_lower);
+                items.push(make_rich_item(RichItemSpec {
+                    label: name.to_owned(),
+                    filter_text: name.to_owned(),
+                    new_text: name.to_owned(),
+                    kind: CompletionItemKind::MODULE,
+                    detail: Some(desc.to_owned()),
+                    tags: None,
+                    data: None,
+                    insert_text_format: None,
+                    sort_text: format!("{rank}_0_{name}"),
+                    replace_range,
+                }));
+            }
+        }
+        1 => {
+            let trimmed = typed_lower.trim_matches('"');
+            for &(flags, desc) in ELF_SECTION_FLAGS {
+                let label = format!("\"{flags}\"");
+                let new_text = if in_quotes {
+                    flags.to_owned()
+                } else {
+                    label.clone()
+                };
+                let rank = match_rank(flags, trimmed);
+                items.push(make_rich_item(RichItemSpec {
+                    label,
+                    filter_text: flags.to_owned(),
+                    new_text,
+                    kind: CompletionItemKind::ENUM_MEMBER,
+                    detail: Some(desc.to_owned()),
+                    tags: None,
+                    data: None,
+                    insert_text_format: None,
+                    sort_text: format!("{rank}_0_{flags}"),
+                    replace_range,
+                }));
+            }
+        }
+        _ => {
+            for &(ty, desc) in ELF_SECTION_TYPES {
+                let rank = match_rank(ty, typed_lower);
+                items.push(make_rich_item(RichItemSpec {
+                    label: ty.to_owned(),
+                    filter_text: ty.to_owned(),
+                    new_text: ty.to_owned(),
+                    kind: CompletionItemKind::TYPE_PARAMETER,
+                    detail: Some(desc.to_owned()),
+                    tags: None,
+                    data: None,
+                    insert_text_format: None,
+                    sort_text: format!("{rank}_0_{ty}"),
+                    replace_range,
+                }));
+            }
+        }
     }
 }
 

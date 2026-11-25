@@ -11,4 +11,4 @@ Operands: `dst`, `rd` integer reg (x0–x31); `src` symbol or relocation; `imm` 
 
 ---
 
-Load address — With `.option nopic` (Default) (expands to `auipc rd, symbol[31:12] addi rd, rd, symbol[11:0]`)
+Load address — With `.option nopic` (Default) (expands to `auipc rd, symbol[31:12] addi rd, rd, symbol[11:0]`).

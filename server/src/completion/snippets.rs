@@ -6,7 +6,7 @@ use crate::data::InstructionVariant;
 
 use super::candidates::{CandidateHint, operand_class_matches_hint};
 
-pub(super) fn syntax_args<'a>(mnemonic: &str, syntax: &'a str) -> &'a str {
+pub(crate) fn syntax_args<'a>(mnemonic: &str, syntax: &'a str) -> &'a str {
     let trimmed = syntax.trim();
     if let Some(rest) = trimmed.strip_prefix(mnemonic) {
         let next = rest.chars().next();
@@ -19,7 +19,7 @@ pub(super) fn syntax_args<'a>(mnemonic: &str, syntax: &'a str) -> &'a str {
         .map_or("", |(_, r)| r.trim())
 }
 
-pub(super) fn deduplicate_and_sort_variants<'a>(
+pub(crate) fn deduplicate_and_sort_variants<'a>(
     mnemonic: &str,
     variants: &[&'a InstructionVariant],
 ) -> Vec<&'a InstructionVariant> {
@@ -44,15 +44,12 @@ pub(super) fn variant_sort_key(
     // 0: primary instruction itself (no non-self `alias_of` and not a special relocation/symbol form),
     // 1: LLVM alias (e.g. `add rd, rs1, imm12` -> `addi`),
     // 2: special TLS / symbol / relocation forms (`tprel_add_symbol`, `bare_symbol`, `.insn`).
+    let is_bare_symbol_exempt = matches!(mnemonic.to_ascii_lowercase().as_str(), "la" | "lla");
     let is_special = v.operands.iter().any(|o| {
         matches!(
             o.class.as_str(),
-            "tprel_add_symbol"
-                | "tlsdesc_call_symbol"
-                | "bare_symbol"
-                | "call_symbol"
-                | "pseudo_jump_symbol"
-        )
+            "tprel_add_symbol" | "tlsdesc_call_symbol" | "call_symbol" | "pseudo_jump_symbol"
+        ) || (!is_bare_symbol_exempt && o.class == "bare_symbol")
     }) || v.syntax.contains(".insn");
     let is_alias = v
         .alias_of
@@ -146,7 +143,7 @@ fn split_mem_slot(slot: &str) -> Option<(&str, &str)> {
     Some((slot[..open].trim(), inside))
 }
 
-fn split_top_level_slots(args_str: &str) -> Vec<&str> {
+pub(crate) fn split_top_level_slots(args_str: &str) -> Vec<&str> {
     if args_str.trim().is_empty() {
         return Vec::new();
     }
@@ -174,7 +171,7 @@ fn split_top_level_slots(args_str: &str) -> Vec<&str> {
     slots
 }
 
-pub(super) fn variant_slot_count(mnemonic: &str, syntax: &str) -> usize {
+pub(crate) fn variant_slot_count(mnemonic: &str, syntax: &str) -> usize {
     split_top_level_slots(syntax_args(mnemonic, syntax)).len()
 }
 

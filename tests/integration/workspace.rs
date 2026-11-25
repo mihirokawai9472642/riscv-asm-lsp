@@ -1,5 +1,5 @@
 use crate::common::{
-    LspClient, completion_labels, fixtures_dir, path_to_uri, workspace_symbol_names,
+    LspClient, completion_labels, fixtures_dir, hover_markdown, path_to_uri, workspace_symbol_names,
 };
 use lsp_types::{Position, Range, TextDocumentSyncCapability, TextDocumentSyncKind};
 use serde_json::json;
@@ -491,6 +491,187 @@ SECTIONS {
 
     let syms_after = workspace_symbol_names(&mut client, "lds_leaked");
     assert!(syms_after.is_empty(), "leaked after open: {syms_after:?}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn non_riscv_target_stays_silent_in_lsp_and_index() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_non_rv_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    let x86_path = tmp.join("boot_x86.S");
+    let x86_src = "x86_hidden_sym:\n    add %eax, %ebx\n    call x86_hidden_sym\n";
+    std::fs::write(&x86_path, x86_src).unwrap();
+
+    let rv_path = tmp.join("boot_rv.S");
+    let rv_src = "rv_visible_sym:\n    nop\n";
+    std::fs::write(&rv_path, rv_src).unwrap();
+
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([
+            {
+                "directory": tmp.to_string_lossy(),
+                "arguments": ["clang", "--target=x86_64-linux-gnu", "-c", x86_path.to_string_lossy()],
+                "file": x86_path.to_string_lossy()
+            },
+            {
+                "directory": tmp.to_string_lossy(),
+                "arguments": ["clang", "--target=riscv64-unknown-elf", "-march=rv64gc", "-c", rv_path.to_string_lossy()],
+                "file": rv_path.to_string_lossy()
+            }
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let x86_uri = path_to_uri(&x86_path);
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+
+    let syms = workspace_symbol_names(&mut client, "");
+    assert!(syms.iter().any(|s| s == "rv_visible_sym"), "syms: {syms:?}");
+    assert!(
+        !syms.iter().any(|s| s == "x86_hidden_sym"),
+        "leaked: {syms:?}"
+    );
+
+    client.open_doc(&x86_uri, 1, x86_src);
+
+    for (method, params) in [
+        (
+            "textDocument/hover",
+            json!({ "textDocument": { "uri": x86_uri.as_str() }, "position": { "line": 1, "character": 5 } }),
+        ),
+        (
+            "textDocument/completion",
+            json!({ "textDocument": { "uri": x86_uri.as_str() }, "position": { "line": 1, "character": 7 } }),
+        ),
+        (
+            "textDocument/definition",
+            json!({ "textDocument": { "uri": x86_uri.as_str() }, "position": { "line": 2, "character": 12 } }),
+        ),
+        (
+            "textDocument/documentSymbol",
+            json!({ "textDocument": { "uri": x86_uri.as_str() } }),
+        ),
+        (
+            "textDocument/semanticTokens/full",
+            json!({ "textDocument": { "uri": x86_uri.as_str() } }),
+        ),
+    ] {
+        let resp = client.send_request(method, params);
+        assert!(
+            resp.result.as_ref().is_none_or(|v| v.is_null()),
+            "expected null for {method} on x86_64 target, got {:?}",
+            resp.result
+        );
+    }
+
+    assert!(
+        client
+            .wait_for_notification(
+                "textDocument/publishDiagnostics",
+                std::time::Duration::from_millis(120),
+            )
+            .is_none(),
+        "unexpected diagnostics published for non-RISC-V target"
+    );
+
+    let syms_after = workspace_symbol_names(&mut client, "x86_hidden");
+    assert!(syms_after.is_empty(), "leaked after open: {syms_after:?}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn workspace_did_change_configuration_compile_flags_and_multi_root() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_cfg_{}", std::process::id()));
+    let root_a = tmp.join("root_a");
+    let root_b = tmp.join("root_b");
+    let inc_a = root_a.join("inc_a");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&inc_a).unwrap();
+    std::fs::create_dir_all(&root_b).unwrap();
+
+    std::fs::write(
+        root_a.join("compile_flags.txt"),
+        "-march=rv32imac\n-Iinc_a\n",
+    )
+    .unwrap();
+    std::fs::write(inc_a.join("hdr.h"), "#define FLAG_VAL 77\n").unwrap();
+    let a_path = root_a.join("a.S");
+    let a_src = "#include \"hdr.h\"\n    fadd.s ft0, ft1, ft2\n    li a0, FLAG_VAL\n";
+    std::fs::write(&a_path, a_src).unwrap();
+
+    let b_path = root_b.join("b.S");
+    let b_src = "b_sym:\n    fadd.s ft0, ft1, ft2\n";
+    std::fs::write(&b_path, b_src).unwrap();
+
+    let root_a_uri = path_to_uri(&root_a);
+    let root_b_uri = path_to_uri(&root_b);
+    let a_uri = path_to_uri(&a_path);
+    let b_uri = path_to_uri(&b_path);
+
+    let mut client = LspClient::start(
+        Some(json!({ "defaultMarch": "rv64gc", "diagnostics": { "enable": false } })),
+        Some(&root_a_uri),
+    );
+    client.open_doc(&a_uri, 1, a_src);
+
+    let h_fadd_a = hover_markdown(&mut client, &a_uri, 1, 6).expect("fadd.s hover in a.S");
+    assert!(
+        h_fadd_a.to_ascii_lowercase().contains("not enabled"),
+        "expected compile_flags.txt rv32imac to warn on fadd.s, got: {h_fadd_a}"
+    );
+    let h_flag_a = hover_markdown(&mut client, &a_uri, 2, 12).expect("FLAG_VAL hover");
+    assert!(
+        h_flag_a.contains("77"),
+        "expected -Iinc_a from compile_flags.txt to resolve hdr.h, got: {h_flag_a}"
+    );
+
+    client.send_notification(
+        "workspace/didChangeWorkspaceFolders",
+        json!({
+            "event": {
+                "added": [{ "uri": root_b_uri.as_str(), "name": "root_b" }],
+                "removed": []
+            }
+        }),
+    );
+
+    let syms = workspace_symbol_names(&mut client, "b_sym");
+    assert!(
+        syms.iter().any(|s| s == "b_sym"),
+        "expected b_sym after adding root_b, got: {syms:?}"
+    );
+
+    client.open_doc(&b_uri, 1, b_src);
+    let h_fadd_b_before =
+        hover_markdown(&mut client, &b_uri, 1, 6).expect("fadd.s hover before config");
+    assert!(
+        !h_fadd_b_before.to_ascii_lowercase().contains("not enabled"),
+        "expected default rv64gc before config change: {h_fadd_b_before}"
+    );
+
+    client.send_notification(
+        "workspace/didChangeConfiguration",
+        json!({ "settings": { "defaultMarch": "rv64imac", "diagnostics": { "enable": false } } }),
+    );
+
+    let h_fadd_b_after =
+        hover_markdown(&mut client, &b_uri, 1, 6).expect("fadd.s hover after config");
+    assert!(
+        h_fadd_b_after.to_ascii_lowercase().contains("not enabled"),
+        "expected didChangeConfiguration rv64imac to disable fadd.s: {h_fadd_b_after}"
+    );
 
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);

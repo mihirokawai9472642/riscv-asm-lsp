@@ -153,6 +153,7 @@ fn push_hash_comment_actions(
 
     let cursor_line = range.start.line;
     if !quickfixed_lines.contains(&cursor_line)
+        && is_hash_comment_line(document, cursor_line as usize)
         && let Some(edit) = make_hash_to_slash_edit(document, cursor_line as usize)
     {
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
@@ -168,6 +169,14 @@ fn push_hash_comment_actions(
 fn is_hash_line(doc: &Document, line_0based: usize) -> bool {
     let (ls, ce, _) = doc.line_index.line_bounds(&doc.text, line_0based);
     doc.text.get(ls..ce).and_then(classify_hash_line).is_some()
+}
+
+fn is_hash_comment_line(doc: &Document, line_0based: usize) -> bool {
+    let (ls, ce, _) = doc.line_index.line_bounds(&doc.text, line_0based);
+    matches!(
+        doc.text.get(ls..ce).and_then(classify_hash_line),
+        Some(crate::preprocessor::HashLineKind::Comment { .. })
+    )
 }
 
 fn make_hash_to_slash_edit(doc: &Document, line_0based: usize) -> Option<TextEdit> {
@@ -235,6 +244,44 @@ mod tests {
         };
         assert_eq!(ca.title, "Replace with `mv`");
         assert_eq!(ca.kind, Some(CodeActionKind::QUICKFIX));
+        // Valid `#include` / `#define` without diagnostics do not emit REFACTOR_REWRITE; `# comment` still does.
+        let mut doc_store = crate::document::DocumentStore::new().expect("store");
+        let pp_uri = Uri::from_str("file:///valid_only.S").expect("uri");
+        let pp_doc = doc_store.open(
+            pp_uri.clone(),
+            1,
+            "#include <regs.h>\n#define OK 1\n# pure comment\n".to_owned(),
+        );
+        assert!(
+            provide_code_actions(
+                &pp_uri,
+                Range::new(Position::new(0, 0), Position::new(0, 0)),
+                Some(pp_doc),
+                true,
+                &cache,
+            )
+            .is_none()
+        );
+        assert!(
+            provide_code_actions(
+                &pp_uri,
+                Range::new(Position::new(1, 0), Position::new(1, 0)),
+                Some(pp_doc),
+                true,
+                &cache,
+            )
+            .is_none()
+        );
+        assert!(
+            provide_code_actions(
+                &pp_uri,
+                Range::new(Position::new(2, 0), Position::new(2, 0)),
+                Some(pp_doc),
+                true,
+                &cache,
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -333,5 +380,19 @@ mod tests {
             )
             .is_none()
         );
+        // Pure `# just a comment` still emits REFACTOR_REWRITE
+        let actions_on_comment = provide_code_actions(
+            &uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+            Some(doc),
+            true,
+            &cache,
+        )
+        .expect("refactor rewrite on # comment");
+        assert!(matches!(
+            &actions_on_comment[0],
+            CodeActionOrCommand::CodeAction(ca)
+                if ca.kind == Some(CodeActionKind::REFACTOR_REWRITE)
+        ));
     }
 }

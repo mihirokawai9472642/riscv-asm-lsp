@@ -312,7 +312,7 @@ fn hover_llvm_mc_and_clang_expansions() {
         "got: {unexp_hover}"
     );
 
-    // Multi-instruction encodings + CSR word hex encoding `0x10529073`
+    // multi-instruction encodings + CSR word hex encoding `0x10529073`
     let exp_uri: lsp_types::Uri = "file:///tmp/exp_test.S".parse().expect("uri");
     client.open_doc(
         &exp_uri,
@@ -331,6 +331,67 @@ fn hover_llvm_mc_and_clang_expansions() {
             "line {line} missing {expected}: {md}"
         );
     }
+
+    // `#ifdef` + multiline `#define`, register alias `#define TMP t0`, and cache isolation
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_hover_exp_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("a.h"), "#define FN(x) ((x) + 1)\n").unwrap();
+    std::fs::write(tmp.join("b.h"), "#define FN(x) ((x) + 100)\n").unwrap();
+    let ifdef_s = tmp.join("ifdef.S");
+    let fa_s = tmp.join("fa.S");
+    let fb_s = tmp.join("fb.S");
+    let ifdef_src = "\
+#ifdef CONFIG_TEST
+#define ADD_ONE(x) \\
+    ((x) + 1)
+    li a0, ADD_ONE(41)
+#endif
+#define TMP t0
+    addi TMP, a0, 1
+";
+    let fa_src = "#include \"a.h\"\n    li a0, FN(1)\n";
+    let fb_src = "#include \"b.h\"\n    li a0, FN(1)\n";
+    std::fs::write(&ifdef_s, ifdef_src).unwrap();
+    std::fs::write(&fa_s, fa_src).unwrap();
+    std::fs::write(&fb_s, fb_src).unwrap();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy(),
+            "arguments": ["clang", "--target=riscv64-unknown-elf", "-march=rv64gc", "-DCONFIG_TEST", "-c", ifdef_s.to_string_lossy()],
+            "file": ifdef_s.to_string_lossy()
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut client2 = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": false } })),
+        Some(&path_to_uri(&tmp)),
+    );
+    let ifdef_uri = path_to_uri(&ifdef_s);
+    let fa_uri = path_to_uri(&fa_s);
+    let fb_uri = path_to_uri(&fb_s);
+    client2.open_doc(&ifdef_uri, 1, ifdef_src);
+    client2.open_doc(&fa_uri, 1, fa_src);
+    client2.open_doc(&fb_uri, 1, fb_src);
+
+    let h_ifdef = hover_markdown(&mut client2, &ifdef_uri, 3, 5).expect("ifdef hover");
+    assert!(
+        h_ifdef.contains("42") && !h_ifdef.contains("unavailable"),
+        "got: {h_ifdef}"
+    );
+    let h_reg = hover_markdown(&mut client2, &ifdef_uri, 6, 5).expect("reg alias hover");
+    assert!(h_reg.contains("addi t0, a0, 1"), "got: {h_reg}");
+
+    let h_fa = hover_markdown(&mut client2, &fa_uri, 1, 5).expect("fa hover");
+    let h_fb = hover_markdown(&mut client2, &fb_uri, 1, 5).expect("fb hover");
+    assert!(h_fa.contains("c.li a0, 2"), "got: {h_fa}");
+    assert!(h_fb.contains("addi a0, zero, 101"), "got: {h_fb}");
+
+    client2.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
 
     client.shutdown_and_exit();
 }
@@ -446,4 +507,175 @@ _start:
 
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn hover_formatting_csr_shadowing_multiline_block_and_decoded_filenames() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_hover_misc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("sub.inc"), "nop\n").unwrap();
+    std::fs::write(tmp.join("sys.h"), "#define SYS 1\n").unwrap();
+
+    let space_file = tmp.join("my file.S");
+    let src = "\
+    .include \"sub.inc\"
+#include <sys.h>
+/*
+.option norvc
+#define GHOST 99
+*/ addi sp, sp, -16
+    c.addi sp, -16
+    csrr a0, tcontrol
+time:
+    ret
+_main:
+    call time
+    csrr a0, time
+";
+    std::fs::write(&space_file, src).unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let uri = path_to_uri(&space_file);
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": false } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&uri, 1, src);
+
+    let h_asm_inc = hover_markdown(&mut client, &uri, 0, 15).expect(".include hover");
+    assert!(
+        h_asm_inc.contains("```riscv\n.include \"sub.inc\"\n```"),
+        "got: {h_asm_inc}"
+    );
+    let h_sys_inc = hover_markdown(&mut client, &uri, 1, 12).expect("#include <...> hover");
+    assert!(
+        h_sys_inc.contains("```c\n#include <sys.h>\n```"),
+        "got: {h_sys_inc}"
+    );
+
+    // `*/ addi sp, sp, -16` still resolves instruction hover, and `.option norvc` inside `/* */` is ignored
+    let h_after_close = hover_markdown(&mut client, &uri, 5, 5).expect("*/ addi hover");
+    assert!(
+        h_after_close.contains("Add immediate"),
+        "got: {h_after_close}"
+    );
+    let h_caddi = hover_markdown(&mut client, &uri, 6, 6).expect("c.addi hover");
+    assert!(
+        !h_caddi.contains("not enabled"),
+        "commented .option leaked: {h_caddi}"
+    );
+
+    // Spec-only CSR shows LLVM notice
+    let h_spec_csr = hover_markdown(&mut client, &uri, 7, 15).expect("tcontrol hover");
+    assert!(
+        h_spec_csr.contains("Not accepted by LLVM 19"),
+        "got: {h_spec_csr}"
+    );
+
+    // `call time` resolves user label with decoded filename (`my file.S`), `csrr a0, time` resolves CSR
+    let h_call_time = hover_markdown(&mut client, &uri, 11, 10).expect("call time hover");
+    assert!(
+        h_call_time.contains("Label · `my file.S:9`"),
+        "got: {h_call_time}"
+    );
+    let h_csr_time = hover_markdown(&mut client, &uri, 12, 15).expect("csrr time hover");
+    assert!(h_csr_time.contains("CSR ·"), "got: {h_csr_time}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn hover_covers_csr_xlen_march_isa_label_operand_keywords_and_unresolved_include() {
+    let uri = "file:///tmp/hover_adv_rv32.S"
+        .parse::<lsp_types::Uri>()
+        .unwrap();
+    let src32 = "\
+#include \"missing_header_xyz.h\"
+    csrr a0, ssp
+    csrr a0, vtype
+    csrr a0, mcycleh
+";
+    let mut client32 = LspClient::start(
+        Some(json!({ "defaultMarch": "rv32gc", "diagnostics": { "enable": false } })),
+        None,
+    );
+    client32.open_doc(&uri, 1, src32);
+
+    let h_inc = hover_markdown(&mut client32, &uri, 0, 14).expect("unresolved include hover");
+    assert!(
+        h_inc.contains("missing_header_xyz.h") && h_inc.contains("not found"),
+        "got: {h_inc}"
+    );
+
+    let h_ssp32 = hover_markdown(&mut client32, &uri, 1, 14).expect("ssp32 hover");
+    assert!(
+        h_ssp32.contains("[31:2]"),
+        "expected RV32 bits in ssp hover, got: {h_ssp32}"
+    );
+
+    let h_vtype32 = hover_markdown(&mut client32, &uri, 2, 14).expect("vtype32 hover");
+    assert!(
+        h_vtype32.contains("Not active") || h_vtype32.contains("-march"),
+        "expected -march warning on vtype without V, got: {h_vtype32}"
+    );
+
+    let h_mcycleh32 = hover_markdown(&mut client32, &uri, 3, 14).expect("mcycleh32 hover");
+    assert!(
+        !h_mcycleh32.contains("Not active under current"),
+        "unexpected inactive warning on RV32 mcycleh: {h_mcycleh32}"
+    );
+    client32.shutdown_and_exit();
+
+    let uri64 = "file:///tmp/hover_adv_rv64.S"
+        .parse::<lsp_types::Uri>()
+        .unwrap();
+    let src64 = "\
+    mret
+    sfence.vma
+    ld a0, 0(sp)
+    csrr a0, mcycleh
+    lui a0, %hi(sym)
+    fadd.s ft0, ft1, ft2, rne
+    fence iorw, iorw
+    vadd.vv v1, v2, v3, v0.t
+";
+    let mut client64 = LspClient::start(
+        Some(json!({ "defaultMarch": "rv64gcv", "diagnostics": { "enable": false } })),
+        None,
+    );
+    client64.open_doc(&uri64, 1, src64);
+
+    let h_mret = hover_markdown(&mut client64, &uri64, 0, 5).expect("mret hover");
+    assert!(h_mret.contains("`Sm`"), "got: {h_mret}");
+
+    let h_sfence = hover_markdown(&mut client64, &uri64, 1, 6).expect("sfence hover");
+    assert!(h_sfence.contains("`S`"), "got: {h_sfence}");
+
+    let h_ld = hover_markdown(&mut client64, &uri64, 2, 5).expect("ld hover");
+    assert!(
+        h_ld.contains("`RV64I`") && !h_ld.contains("Zilsd"),
+        "got: {h_ld}"
+    );
+
+    let h_mcycleh64 = hover_markdown(&mut client64, &uri64, 3, 15).expect("mcycleh64 hover");
+    assert!(
+        h_mcycleh64.contains("RV32"),
+        "expected RV32 notice on RV64 mcycleh, got: {h_mcycleh64}"
+    );
+
+    let h_hi = hover_markdown(&mut client64, &uri64, 4, 14).expect("%hi hover");
+    assert!(h_hi.contains("%hi"), "got: {h_hi}");
+
+    let h_rne = hover_markdown(&mut client64, &uri64, 5, 27).expect("rne hover");
+    assert!(h_rne.to_ascii_lowercase().contains("round"), "got: {h_rne}");
+
+    let h_iorw = hover_markdown(&mut client64, &uri64, 6, 11).expect("iorw hover");
+    assert!(h_iorw.contains("iorw"), "got: {h_iorw}");
+
+    let h_v0t = hover_markdown(&mut client64, &uri64, 7, 25).expect("v0.t hover");
+    assert!(h_v0t.contains("v0.t"), "got: {h_v0t}");
+
+    client64.shutdown_and_exit();
 }

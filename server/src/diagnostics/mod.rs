@@ -263,4 +263,38 @@ INNER
             "`X` expands to `5 is the size` (defined on line 1)"
         );
     }
+
+    #[test]
+    fn included_multibyte_file_converts_related_info_to_utf16_and_skips_builtin() {
+        let tmp =
+            std::env::temp_dir().join(format!("riscv_asm_lsp_rel_u16_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let inc_path = tmp.join("mb.inc");
+        let main_path = tmp.join("main.S");
+        std::fs::write(&inc_path, "/* 日本語 */ mov a0, a1\n").unwrap();
+        let col_1based = "/* 日本語 */ ".len() as u32 + 1;
+        let stderr = format!(
+            "In file included from <stdin>:1:\n{}:1:{col_1based}: error: unrecognized instruction mnemonic\n\
+             In file included from <stdin>:1:\n<built-in>:1:10: fatal error: 'x' file not found\n",
+            inc_path.display()
+        );
+        let main_uri: Uri = format!("file://{}", main_path.display()).parse().unwrap();
+        let diags = parse_clang_output_with_ctx(
+            "    .include \"mb.inc\"\n",
+            &stderr,
+            Some(&main_path),
+            Some(&main_uri),
+            None,
+        );
+        assert_eq!(diags.len(), 2);
+        let rel0 = diags[0]
+            .diagnostic
+            .related_information
+            .as_ref()
+            .expect("related info for mb.inc");
+        assert_eq!(rel0[0].location.range.start, Position::new(0, 10));
+        assert!(diags[1].diagnostic.related_information.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

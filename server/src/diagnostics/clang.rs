@@ -25,10 +25,11 @@ pub(super) fn run_clang_diagnostics(
     } else {
         "assembler".to_owned()
     });
+    let null_sink = if cfg!(windows) { "NUL" } else { "/dev/null" };
     args.extend([
         "-c".to_owned(),
         "-o".to_owned(),
-        "/dev/null".to_owned(),
+        null_sink.to_owned(),
         "-".to_owned(),
     ]);
 

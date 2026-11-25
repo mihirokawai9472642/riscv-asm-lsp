@@ -368,9 +368,10 @@ fn decode_predicates(
             .get(name)
             .and_then(|v| v.get("CondString"))
             .and_then(Value::as_str)
-            && let Some(ext_expr) = cond_to_ext_expr(cond)
         {
-            reqs.insert(ext_expr);
+            for ext_expr in cond_to_ext_reqs(cond) {
+                reqs.insert(ext_expr);
+            }
         }
     }
 
@@ -382,9 +383,21 @@ fn decode_predicates(
     (reqs.into_iter().collect(), xlen)
 }
 
-fn cond_to_ext_expr(cond: &str) -> Option<String> {
+fn cond_to_ext_reqs(cond: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for clause in cond.split("&&") {
+        if let Some(expr) = clause_to_ext_expr(clause)
+            && !out.contains(&expr)
+        {
+            out.push(expr);
+        }
+    }
+    out
+}
+
+fn clause_to_ext_expr(clause: &str) -> Option<String> {
     let mut alts = Vec::new();
-    let mut rest = cond;
+    let mut rest = clause;
     while let Some(idx) = rest.find("Subtarget->") {
         let prefix = &rest[..idx];
         let is_negated = prefix.trim_end().ends_with('!');
@@ -402,9 +415,10 @@ fn cond_to_ext_expr(cond: &str) -> Option<String> {
             for seg in ext.split("Or") {
                 alts.push(seg.to_ascii_lowercase());
             }
-        } else if call.starts_with("hasVInstructions") {
-            alts.push("v".to_owned());
-            alts.push("zve32x".to_owned());
+        } else if let Some(vec_expr) = map_v_predicate(call) {
+            for part in vec_expr.split('|') {
+                alts.push(part.to_owned());
+            }
         } else if call.starts_with("hasHalfFPLoadStoreMove") {
             alts.push("zfh".to_owned());
             alts.push("zfhmin".to_owned());
@@ -423,6 +437,20 @@ fn cond_to_ext_expr(cond: &str) -> Option<String> {
             .filter(|a| seen.insert(a.clone()))
             .collect();
         Some(deduped.join("|"))
+    }
+}
+
+fn map_v_predicate(call: &str) -> Option<&'static str> {
+    match call {
+        "hasVInstructions()" | "hasVInstructionsFullMultiply()" => Some("v|zve32x"),
+        "hasVInstructionsI64()" => Some("v|zve64x"),
+        "hasVInstructionsAnyF()" => Some("v|zve32f"),
+        "hasVInstructionsF64()" => Some("v|zve64d"),
+        "hasVInstructionsF16()" => Some("zvfh"),
+        "hasVInstructionsF16Minimal()" => Some("zvfh|zvfhmin"),
+        "hasVInstructionsBF16()" => Some("zvfbfmin"),
+        _ if call.starts_with("hasVInstructions") => Some("v|zve32x"),
+        _ => None,
     }
 }
 
@@ -688,4 +716,41 @@ fn parse_numbered_reg(name: &str, prefix: char) -> Option<u8> {
         return None;
     }
     rest.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cond_to_ext_reqs_distinguishes_vector_subextensions_and_splits_and() {
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasVInstructionsAnyF()"),
+            vec!["v|zve32f".to_owned()]
+        );
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasVInstructionsI64()"),
+            vec!["v|zve64x".to_owned()]
+        );
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasVInstructionsF64()"),
+            vec!["v|zve64d".to_owned()]
+        );
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasVInstructionsF16Minimal()"),
+            vec!["zvfh|zvfhmin".to_owned()]
+        );
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasVInstructionsBF16()"),
+            vec!["zvfbfmin".to_owned()]
+        );
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasStdExtZcmp() && !Subtarget->hasStdExtC()"),
+            vec!["zcmp".to_owned()]
+        );
+        assert_eq!(
+            cond_to_ext_reqs("Subtarget->hasStdExtM() && Subtarget->hasStdExtZba()"),
+            vec!["m".to_owned(), "zba".to_owned()]
+        );
+    }
 }

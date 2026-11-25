@@ -1,6 +1,6 @@
 use lsp_types::{TextDocumentContentChangeEvent, Uri};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 
 use crate::context::{normalize_path, uri_to_path};
@@ -9,6 +9,7 @@ use crate::position::LineIndex;
 #[derive(Debug, Clone)]
 pub struct Document {
     pub uri: Uri,
+    pub canon_path: Option<PathBuf>,
     pub version: i32,
     pub text: String,
     pub line_index: LineIndex,
@@ -17,10 +18,12 @@ pub struct Document {
 
 impl Document {
     fn new(uri: Uri, version: i32, text: String, parser: &mut Parser) -> Self {
+        let canon_path = uri_to_path(&uri).map(|p| normalize_path(&p));
         let line_index = LineIndex::new(&text);
         let tree = parser.parse(&text, None);
         Self {
             uri,
+            canon_path,
             version,
             text,
             line_index,
@@ -147,7 +150,7 @@ impl DocumentStore {
     pub fn is_open_path(&self, canon_path: &Path) -> bool {
         self.docs
             .values()
-            .any(|doc| uri_to_path(&doc.uri).is_some_and(|p| normalize_path(&p) == canon_path))
+            .any(|doc| doc.canon_path.as_deref() == Some(canon_path))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Document> {

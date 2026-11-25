@@ -126,16 +126,19 @@ missing or fails, only diagnostics or expansions degrade.
 | `preprocessor.rs` | Per-line C preprocessor directive classification and `#define`/`#include` parsing |
 | `ast.rs` | Shared `tree-sitter-riscv` AST visitor and classification helpers |
 | `document.rs` | Open document text store and incremental `tree-sitter` reparsing |
-| `context/` | `march.rs` (`MarchSpec`, `.option` tracking), `compile_db.rs` (`compile_commands.json`, linker-script filter), `uri.rs` (`url`-based symlink-preserving URIs) |
+| `context/` | `march.rs` (`MarchSpec`, `.option` tracking), `compile_db.rs` (`compile_commands.json` / `compile_flags.txt`, multi-root, linker-script filter), `uri.rs` (`url`-based symlink-preserving URIs) |
 | `index/` | Background workspace scanner (`mod.rs`), AST symbol extractor (`parse.rs`), lexical/macro/include scope resolver (`scope.rs`) |
 | `hover/` | Hover orchestration (`mod.rs`), `llvm-mc` expansion (`expand.rs`), operand-class decoder (`operands.rs`), shared Markdown renderer (`format.rs`) |
 | `completion/` | Position classification & text edits (`mod.rs`), candidate collection & lazy resolve (`candidates.rs`), snippet builder (`snippets.rs`) |
+| `signature_help.rs` | Active operand signature help with decoded LLVM operand documentation |
+| `folding.rs` | Block comments, `.macro`/`.if`/`.rept`/`#if` blocks, and label scope folds |
+| `inlay_hint.rs` | CSR number/name and `.equ`/`#define` value inlay hints |
 | `navigation.rs` | Go to definition, find references, document highlight, prepare/execute rename |
 | `symbols.rs` | Document symbols (`DocumentSymbol`) and workspace symbols (`SymbolInformation`) |
 | `semantic_tokens.rs` | Full and range semantic token encoding (including `#` comment/preproc override) |
 | `diagnostics/` | Async debounced `DiagnosticsWorker` (`worker.rs`), `clang` runner (`clang.rs`), stderr/note/include parser (`parse.rs`), `#define` hints (`hints.rs`) |
 | `code_action.rs` | `did you mean` and `Use // comment` quick fixes and rewrite actions |
-| `tools.rs` | External process execution with timeouts and one-shot missing-tool warnings |
+| `tools.rs` | External process execution with timeouts, Clang major-version warning, and one-shot permanent-failure disable |
 
 `xtask/src/`: `main.rs`, `pins.rs`, `fetch.rs`, `llvm.rs`, `udb.rs`, `asm_manual.rs`, `join.rs`, `report.rs`.
 
@@ -179,22 +182,24 @@ waiting for background workspace indexing.
 
 ### 4.3 Compilation context
 
-`CompileContext` searches `compileCommandsDirs` (`["", "build"]` by default) for
-`compile_commands.json` and extracts an allow-list of assembler/preprocessor flags
-(`--target`, `-march`, `-mabi`, `-I`, `-iquote`, `-isystem`, `-D`, `-U`,
-`-include`, `-imacros`, `--sysroot`, `-isysroot`, `-nostdinc`,
-`-Wa,-I/-march/-mabi`, `-x`, PIC flags) plus the working directory. When no entry
-matches, configured defaults (`defaultTarget`, `defaultMarch`) and workspace root
-apply. Per-file preprocessing defaults by suffix (`.S`, `.sx`, headers = on;
-`.s`, `.inc` = off) and is overridden by `-x assembler-with-cpp` or
+`CompileContext` supports multi-root workspace folders, searches
+`compileCommandsDirs` (`["", "build"]` by default) for `compile_commands.json`
+with fallback to `compile_flags.txt`, and extracts an allow-list of
+assembler/preprocessor flags (`--target`, `-march`, `-mabi`, `-I`, `-iquote`,
+`-isystem`, `-D`, `-U`, `-include`, `-imacros`, `--sysroot`, `-isysroot`,
+`-nostdinc`, `-Wa,-I/-march/-mabi`, `-x`, PIC flags) plus the working directory.
+When no entry matches, configured defaults (`defaultTarget`, `defaultMarch`) and
+workspace root apply. Per-file preprocessing defaults by suffix (`.S`, `.sx`,
+headers = on; `.s`, `.inc` = off) and is overridden by `-x assembler-with-cpp` or
 `-x assembler`. `.option push`/`pop`/`rvc`/`norvc`/`arch` directives refine the
 effective `MarchSpec` per line.
 
 ### 4.4 Configuration
 
-Options are read once from `initializationOptions` at startup and apply for the
-lifetime of the server process: `clang`, `llvmMc`, `compileCommandsDirs`,
-`defaultTarget`, `defaultMarch`, `diagnostics.enable`, and `diagnostics.delayMs`.
+Options are read from `initializationOptions` at startup and updated live via
+`workspace/didChangeConfiguration` and `workspace/didChangeWorkspaceFolders`:
+`clang`, `llvmMc`, `compileCommandsDirs`, `defaultTarget`, `defaultMarch`,
+`diagnostics.enable`, and `diagnostics.delayMs`.
 
 ## 5. Robustness rules
 
@@ -253,27 +258,14 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 Only unfinished work is listed here:
 
 - **Environment independence**:
-  - Prebuilt release binaries: `x86_64-unknown-linux-musl` is published on
-    GitHub Releases with checksums and bundled license notices; `aarch64`
-    Linux, macOS (`aarch64`, `x86_64`), and Windows (`x86_64`) are planned.
-  - Auto-download matching release binaries from `zed/src/lib.rs` when neither
-    `lsp.riscv-asm-lsp.binary` nor `PATH` provides `riscv-asm-lsp`.
-  - Cross-OS CI matrix (Linux/macOS/Windows for the tool-less suite; Linux with
-    LLVM for tool tests) and end-to-end Windows path testing (drive letters, UNC
-    paths, case handling).
-  - Multi-version LLVM awareness (`clang --version` detection or versioned data)
-    and native per-OS `clang`/`llvm-mc` install instructions.
+  - End-to-end Windows path testing (drive letters, UNC paths, case handling) on Windows CI runners.
+  - Native per-OS `clang`/`llvm-mc` install instructions and optional versioned LLVM data sets.
   - Evaluate publishing to the Zed extension registry.
 - **Additional LSP features**:
-  - Inlay hints (`.equ` values, CSR numbers), folding ranges, signature help,
-    call hierarchy, `compile_flags.txt` support.
+  - Call hierarchy (`textDocument/prepareCallHierarchy`, incoming/outgoing calls).
 - **Corpus-driven improvements**:
   - Inline labels defined inside C macro argument strings (e.g. Linux
     `ALTERNATIVE(..., __stringify(... label:), ...)`).
-  - Section-name, flag (`"ax"`, `"aw"`) and type (`@progbits`, `@nobits`)
-    completion after `.section`.
-  - Informative hover message for unresolved `#include <...>` headers explaining
-    how to configure `-I` in `compile_commands.json`.
   - Upstream reports / selective workarounds for `tree-sitter-riscv` grammar
     edge cases (`SET_FAULT_HANDLER(x0, a1)`, multiline `\` macro calls, multi-arg
     `.option arch`, `.dc.a`, start-of-line `sym = expr`).

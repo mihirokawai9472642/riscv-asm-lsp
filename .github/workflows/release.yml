@@ -8,15 +8,47 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: ubuntu-24.04
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            ext: tar.gz
+            bin: riscv-asm-lsp
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            ext: tar.gz
+            bin: riscv-asm-lsp
+            musl: true
+          - target: x86_64-apple-darwin
+            os: macos-15
+            ext: tar.gz
+            bin: riscv-asm-lsp
+            musl: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            ext: tar.gz
+            bin: riscv-asm-lsp
+            musl: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            ext: zip
+            bin: riscv-asm-lsp.exe
+            musl: false
+
+    runs-on: ${{ matrix.os }}
     env:
-      TARGET: x86_64-unknown-linux-musl
-      ASSET: riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
+      TARGET: ${{ matrix.target }}
+      ASSET: riscv-asm-lsp-${{ matrix.target }}.${{ matrix.ext }}
+      BIN_NAME: ${{ matrix.bin }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Verify tag matches workspace version
+        shell: bash
         run: |
           python3 - <<'PY'
           import os, sys, tomllib
@@ -31,27 +63,33 @@ jobs:
           print(f"Verified tag {tag} matches Cargo.toml version {version}")
           PY
 
-      - name: Install build and packaging tools
+      - name: Install Linux musl build tools
+        if: matrix.musl
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools file
 
-      - name: Install Rust 1.100 and musl target
-        run: |
-          rustup toolchain install 1.100 --profile minimal --target "${{ env.TARGET }}" --no-self-update
-          rustup default 1.100
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.100"
+          targets: ${{ matrix.target }}
 
       - name: Run non-tool tests
-        run: env PATH="$HOME/.cargo/bin:/usr/bin:/bin" cargo test --locked
+        shell: bash
+        run: cargo test --locked
 
-      - name: Build static musl release binary
-        env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --locked -p riscv-asm-lsp --target "${{ env.TARGET }}"
-
-      - name: Verify static linking and LSP lifecycle
+      - name: Build release binary
+        shell: bash
         run: |
-          bin="target/${{ env.TARGET }}/release/riscv-asm-lsp"
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            export "CC_${TARGET//-/_}=musl-gcc"
+          fi
+          cargo build --release --locked -p riscv-asm-lsp --target "${{ env.TARGET }}"
+
+      - name: Verify static linking (Linux musl)
+        if: matrix.musl
+        run: |
+          bin="target/${{ env.TARGET }}/release/${{ env.BIN_NAME }}"
           file_out="$(file "$bin")"
           echo "$file_out"
           echo "$file_out" | grep -qE "statically linked|static-pie linked"
@@ -59,7 +97,12 @@ jobs:
             echo "error: binary is dynamically linked" >&2
             exit 1
           fi
-          BIN="$bin" python3 - <<'PY'
+
+      - name: Verify LSP lifecycle
+        shell: python
+        env:
+          BIN: target/${{ matrix.target }}/release/${{ matrix.bin }}
+        run: |
           import json, os, subprocess
 
           def frame(msg):
@@ -114,9 +157,9 @@ jobs:
           proc.stdin.flush()
           rc = proc.wait(timeout=10)
           assert rc == 0, f"expected exit code 0, got {rc}"
-          PY
 
       - name: Generate third-party license bundle
+        shell: bash
         run: |
           cargo install --locked --version 0.9.3 --features cli cargo-about
           mkdir -p dist/pkg
@@ -131,34 +174,76 @@ jobs:
             exit 1
           fi
 
-          test -f /usr/share/doc/musl/copyright
-          musl_ver="$(dpkg-query -W -f='${Version}' musl)"
-          {
-            echo "## musl libc (${musl_ver})"
-            echo
-            echo 'Static binaries for `x86_64-unknown-linux-musl` statically link musl libc:'
-            echo
-            echo '````text'
-            cat /usr/share/doc/musl/copyright
-            echo '````'
-          } >> dist/pkg/THIRD_PARTY_LICENSES.md
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            test -f /usr/share/doc/musl/copyright
+            musl_ver="$(dpkg-query -W -f='${Version}' musl)"
+            {
+              echo "## musl libc (${musl_ver})"
+              echo
+              echo 'Static binaries for `'"${{ env.TARGET }}"'` statically link musl libc:'
+              echo
+              echo '````text'
+              cat /usr/share/doc/musl/copyright
+              echo '````'
+            } >> dist/pkg/THIRD_PARTY_LICENSES.md
+          fi
 
           rust_copyright="$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
           test -f "$rust_copyright"
           cp "$rust_copyright" dist/pkg/COPYRIGHT-library.html
 
       - name: Package release archive and SHA-256 checksum
+        shell: python
         run: |
-          install -m 0755 "target/${{ env.TARGET }}/release/riscv-asm-lsp" dist/pkg/riscv-asm-lsp
-          cp LICENSE.md THIRD_PARTY_NOTICES.md dist/pkg/
-          tar --owner=0 --group=0 --numeric-owner -C dist/pkg -czf "dist/${{ env.ASSET }}" \
-            riscv-asm-lsp \
-            LICENSE.md \
-            THIRD_PARTY_NOTICES.md \
-            THIRD_PARTY_LICENSES.md \
-            COPYRIGHT-library.html
-          (cd dist && sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256" && sha256sum -c "${{ env.ASSET }}.sha256")
-          tar -tzvf "dist/${{ env.ASSET }}"
+          import hashlib, os, pathlib, shutil, tarfile, zipfile
+
+          pkg = pathlib.Path("dist/pkg")
+          target = os.environ["TARGET"]
+          bin_name = os.environ["BIN_NAME"]
+          asset = os.environ["ASSET"]
+
+          src_bin = pathlib.Path("target") / target / "release" / bin_name
+          dst_bin = pkg / bin_name
+          shutil.copy2(src_bin, dst_bin)
+          if not bin_name.endswith(".exe"):
+              os.chmod(dst_bin, 0o755)
+          shutil.copy2("LICENSE.md", pkg / "LICENSE.md")
+          shutil.copy2("THIRD_PARTY_NOTICES.md", pkg / "THIRD_PARTY_NOTICES.md")
+
+          archive_path = pathlib.Path("dist") / asset
+          if asset.endswith(".zip"):
+              with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                  for item in sorted(pkg.iterdir()):
+                      zf.write(item, arcname=item.name)
+          else:
+              with tarfile.open(archive_path, "w:gz") as tf:
+                  for item in sorted(pkg.iterdir()):
+                      ti = tf.gettarinfo(item, arcname=item.name)
+                      ti.uid = 0
+                      ti.gid = 0
+                      ti.uname = ""
+                      ti.gname = ""
+                      with open(item, "rb") as fh:
+                          tf.addfile(ti, fh)
+
+          digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+          sha_path = pathlib.Path("dist") / f"{asset}.sha256"
+          sha_path.write_text(f"{digest}  {asset}\n", encoding="utf-8")
+          print(f"Packaged {asset} ({digest})")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/${{ env.ASSET }}*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Create GitHub Release
         env:
@@ -166,5 +251,4 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --generate-notes \
-            "dist/${{ env.ASSET }}" \
-            "dist/${{ env.ASSET }}.sha256"
+            artifacts/*

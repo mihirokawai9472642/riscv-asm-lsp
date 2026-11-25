@@ -186,106 +186,132 @@
   "csrs": [
     {
       "name": "sieh",
+      "required_extensions": ["ssaia"],
       "description": "Supervisor Interrupt Enable High — upper 32 bits of `sie` for RV32 (Ssaia)."
     },
     {
       "name": "siph",
+      "required_extensions": ["ssaia"],
       "description": "Supervisor Interrupt Pending High — upper 32 bits of `sip` for RV32 (Ssaia)."
     },
     {
       "name": "stopei",
+      "required_extensions": ["ssaia"],
       "description": "Supervisor Top External Interrupt — highest-priority pending IMSIC interrupt in S-mode (Ssaia)."
     },
     {
       "name": "vsieh",
+      "required_extensions": ["ssaia"],
       "description": "Virtual Supervisor Interrupt Enable High — upper 32 bits of `vsie` for RV32 (Ssaia)."
     },
     {
       "name": "vsiph",
+      "required_extensions": ["ssaia"],
       "description": "Virtual Supervisor Interrupt Pending High — upper 32 bits of `vsip` for RV32 (Ssaia)."
     },
     {
       "name": "vstopei",
+      "required_extensions": ["ssaia"],
       "description": "Virtual Supervisor Top External Interrupt — highest-priority pending VS IMSIC interrupt (Ssaia)."
     },
     {
       "name": "mvien",
+      "required_extensions": ["smaia"],
       "description": "Machine Virtual Interrupt Enables — M-level virtual interrupts injectable to S-mode (Smaia)."
     },
     {
       "name": "mvip",
+      "required_extensions": ["smaia"],
       "description": "Machine Virtual Interrupt Pending — M-level virtual interrupt pending bits for S-mode (Smaia)."
     },
     {
       "name": "midelegh",
+      "required_extensions": ["smaia"],
       "description": "Machine Interrupt Delegation High — upper 32 bits of `mideleg` for RV32 (Smaia)."
     },
     {
       "name": "mieh",
+      "required_extensions": ["smaia"],
       "description": "Machine Interrupt Enable High — upper 32 bits of `mie` for RV32 (Smaia)."
     },
     {
       "name": "mvienh",
+      "required_extensions": ["smaia"],
       "description": "Machine Virtual Interrupt Enables High — upper 32 bits of `mvien` for RV32 (Smaia)."
     },
     {
       "name": "mviph",
+      "required_extensions": ["smaia"],
       "description": "Machine Virtual Interrupt Pending High — upper 32 bits of `mvip` for RV32 (Smaia)."
     },
     {
       "name": "miph",
+      "required_extensions": ["smaia"],
       "description": "Machine Interrupt Pending High — upper 32 bits of `mip` for RV32 (Smaia)."
     },
     {
       "name": "mtopei",
+      "required_extensions": ["smaia"],
       "description": "Machine Top External Interrupt — highest-priority pending IMSIC interrupt in M-mode (Smaia)."
     },
     {
       "name": "hvien",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Enables — HS-level virtual interrupts injectable to VS-mode (Smaia)."
     },
     {
       "name": "hvictl",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Control — guest interrupt priority and injection control (Smaia)."
     },
     {
       "name": "hidelegh",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Interrupt Delegation High — upper 32 bits of `hideleg` for RV32 (Smaia)."
     },
     {
       "name": "hvienh",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Enables High — upper 32 bits of `hvien` for RV32 (Smaia)."
     },
     {
       "name": "hviprio1",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Priorities 1 — priority numbers for major interrupts (Smaia)."
     },
     {
       "name": "hviprio2",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Priorities 2 — priority numbers for additional interrupts (Smaia)."
     },
     {
       "name": "hviph",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Pending High — upper 32 bits of `hvip` for RV32 (Smaia)."
     },
     {
       "name": "hviprio1h",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Priorities 1 High — upper 32 bits of `hviprio1` for RV32 (Smaia)."
     },
     {
       "name": "hviprio2h",
+      "required_extensions": ["smaia"],
       "description": "Hypervisor Virtual Interrupt Priorities 2 High — upper 32 bits of `hviprio2` for RV32 (Smaia)."
     },
     {
       "name": "stopi",
+      "required_extensions": ["ssaia"],
       "description": "Supervisor Top Interrupt — identity and priority of highest-priority pending S-mode interrupt (Ssaia)."
     },
     {
       "name": "vstopi",
+      "required_extensions": ["ssaia"],
       "description": "Virtual Supervisor Top Interrupt — identity and priority of highest-priority pending VS-mode interrupt (Ssaia)."
     },
     {
       "name": "mtopi",
+      "required_extensions": ["smaia"],
       "description": "Machine Top Interrupt — identity and priority of highest-priority pending M-mode interrupt (Smaia)."
     }
   ],
@@ -351,8 +377,49 @@
       "description": "Emit an identification string into the `.comment` ELF section."
     },
     {
+      "name": ".2byte",
+      "description": "Emit one or more 16-bit integer values without automatic alignment."
+    },
+    {
+      "name": ".4byte",
+      "description": "Emit one or more 32-bit integer values without automatic alignment."
+    },
+    {
+      "name": ".8byte",
+      "description": "Emit one or more 64-bit integer values without automatic alignment."
+    },
+    {
+      "name": ".byte",
+      "description": "Emit one or more 8-bit integer values into the current section."
+    },
+    {
+      "name": ".dword",
+      "description": "Emit one or more 64-bit integer values into the current section."
+    },
+    {
+      "name": ".half",
+      "description": "Emit one or more 16-bit integer values into the current section."
+    },
+    {
       "name": ".insn",
+      "arguments": "format, opcode, ...",
       "description": "Assemble a custom instruction encoding directly from a format template, opcode, and operand fields."
+    },
+    {
+      "name": ".long",
+      "description": "Emit one or more 32-bit integer values into the current section."
+    },
+    {
+      "name": ".quad",
+      "description": "Emit one or more 64-bit integer values into the current section."
+    },
+    {
+      "name": ".short",
+      "description": "Emit one or more 16-bit integer values into the current section."
+    },
+    {
+      "name": ".word",
+      "description": "Emit one or more 32-bit integer values into the current section."
     },
     {
       "name": ".local",

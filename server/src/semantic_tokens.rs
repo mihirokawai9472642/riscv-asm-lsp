@@ -113,9 +113,15 @@ fn collect_semantic_tokens(
 }
 
 fn collect_hash_line_tokens(doc: &Document, preprocessed: bool, raw: &mut Vec<RawToken>) {
+    let mut in_block = false;
     for line_idx in 0..doc.line_index.line_count() {
         let (ls, ce, _) = doc.line_index.line_bounds(&doc.text, line_idx);
         let line = doc.text.get(ls..ce).unwrap_or("");
+        let started_in_block = in_block;
+        let _ = crate::line::strip_comments_with_state(line, &mut in_block, preprocessed);
+        if started_in_block {
+            continue;
+        }
         let Some(kind) = classify_hash_line(line) else {
             continue;
         };
@@ -311,7 +317,9 @@ impl TokenVisitor<'_> {
             return Some(IDX_REGISTER);
         }
         if self.db.csr(name).is_some()
-            && (self.in_csr_stmt || !self.local_non_csr_defs.contains(name))
+            && (self.in_csr_stmt
+                || (!self.local_non_csr_defs.contains(name)
+                    && !self.symbol_kinds.contains_key(name)))
         {
             return Some(IDX_CSR);
         }
