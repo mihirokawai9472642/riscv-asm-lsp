@@ -7,9 +7,12 @@ use std::time::{Duration, Instant};
 use lsp_server::{Message, Notification};
 use lsp_types::{Diagnostic, PublishDiagnosticsParams, Uri};
 
+use crate::config::{DiagnosticsConfig, ExternalDiagnosticsMode};
 use crate::context::{FileContext, uri_key};
+use crate::data::Database;
 use crate::tools::ToolRunner;
 
+use super::builtin::{filter_suppressed, run_builtin_diagnostics};
 use super::clang::run_clang_diagnostics;
 use super::{DiagnosticsCache, MessageSink};
 
@@ -23,10 +26,7 @@ enum WorkerMsg {
     },
     Clear(Uri),
     InvalidateAll,
-    UpdateConfig {
-        enable: bool,
-        delay_ms: u64,
-    },
+    UpdateConfig(DiagnosticsConfig),
     Shutdown,
 }
 
@@ -39,8 +39,8 @@ pub struct DiagnosticsWorker {
 
 impl DiagnosticsWorker {
     pub fn new(
-        enable: bool,
-        delay_ms: u64,
+        config: DiagnosticsConfig,
+        db: Arc<Database>,
         tools: Arc<ToolRunner>,
         lsp_sender: MessageSink,
     ) -> Self {
@@ -51,13 +51,16 @@ impl DiagnosticsWorker {
         let (tx, rx) = mpsc::channel();
         let versions_bg = Arc::clone(&latest_versions);
         let cache_bg = Arc::clone(&cache);
-        let delay = Duration::from_millis(delay_ms);
+        let delay = Duration::from_millis(config.delay_ms);
 
         let handle = thread::spawn(move || {
             let mut runner = DiagnosticsRunner {
                 rx,
-                enable,
+                enable: config.enable,
                 delay,
+                external: config.external,
+                suppress: config.suppress,
+                db,
                 tools,
                 lsp_sender,
                 latest_versions: versions_bg,
@@ -114,9 +117,9 @@ impl DiagnosticsWorker {
         }
     }
 
-    pub fn update_config(&self, enable: bool, delay_ms: u64) {
+    pub fn update_config(&self, config: DiagnosticsConfig) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(WorkerMsg::UpdateConfig { enable, delay_ms });
+            let _ = tx.send(WorkerMsg::UpdateConfig(config));
         }
     }
 
@@ -160,6 +163,9 @@ struct DiagnosticsRunner {
     rx: mpsc::Receiver<WorkerMsg>,
     enable: bool,
     delay: Duration,
+    external: ExternalDiagnosticsMode,
+    suppress: Vec<String>,
+    db: Arc<Database>,
     tools: Arc<ToolRunner>,
     lsp_sender: MessageSink,
     latest_versions: Arc<Mutex<HashMap<String, i32>>>,
@@ -268,11 +274,13 @@ impl DiagnosticsRunner {
                 }
                 true
             }
-            WorkerMsg::UpdateConfig { enable, delay_ms } => {
-                self.enable = enable;
-                self.delay = Duration::from_millis(delay_ms);
+            WorkerMsg::UpdateConfig(cfg) => {
+                self.enable = cfg.enable;
+                self.delay = Duration::from_millis(cfg.delay_ms);
+                self.external = cfg.external;
+                self.suppress = cfg.suppress;
                 self.last_diagnosed.clear();
-                if !enable {
+                if !cfg.enable {
                     let keys: Vec<String> = if let Ok(mut guard) = self.cache.lock() {
                         guard.drain().map(|(k, _)| k).collect()
                     } else {
@@ -336,9 +344,29 @@ impl DiagnosticsRunner {
         if !job.force && self.last_diagnosed.get(&key).copied() == Some(job.version) {
             return;
         }
-        let Some(diags) = run_clang_diagnostics(&self.tools, &job.uri, &job.text, &job.file_ctx)
-        else {
-            return;
+        let diags = match self.external {
+            ExternalDiagnosticsMode::Off => run_builtin_diagnostics(
+                &job.uri,
+                &job.text,
+                &job.file_ctx,
+                &self.db,
+                &self.suppress,
+            ),
+            ExternalDiagnosticsMode::Auto | ExternalDiagnosticsMode::On => {
+                if let Some(ext) =
+                    run_clang_diagnostics(&self.tools, &job.uri, &job.text, &job.file_ctx)
+                {
+                    filter_suppressed(ext, &self.suppress)
+                } else {
+                    run_builtin_diagnostics(
+                        &job.uri,
+                        &job.text,
+                        &job.file_ctx,
+                        &self.db,
+                        &self.suppress,
+                    )
+                }
+            }
         };
         if is_stale(&self.latest_versions, &key, job.version) {
             return;

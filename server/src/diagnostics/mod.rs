@@ -1,3 +1,4 @@
+mod builtin;
 mod clang;
 mod hints;
 mod parse;
@@ -9,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use lsp_server::Message;
 use lsp_types::Diagnostic;
 
+pub use builtin::run_builtin_diagnostics;
 pub use parse::{parse_clang_output, parse_clang_output_with_ctx};
 pub use worker::DiagnosticsWorker;
 
