@@ -3,14 +3,21 @@
   "items": [
     {
       "detail": "x0",
-      "documentation": "Register · Integer\n\n```riscv\nzero (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
+      "documentation": "Register · Integer\n\n```riscv\nzero / null (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
       "insertText": "zero, ",
       "kind": 6,
       "label": "zero"
     },
     {
-      "detail": "zero",
-      "documentation": "Register · Integer\n\n```riscv\nzero (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
+      "detail": "x0",
+      "documentation": "Register · Integer\n\n```riscv\nzero / null (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
+      "insertText": "null, ",
+      "kind": 6,
+      "label": "null"
+    },
+    {
+      "detail": "zero, null",
+      "documentation": "Register · Integer\n\n```riscv\nzero / null (x0)\n```\n\n---\n\nRegister x0 is hardwired with all bits equal to 0.",
       "insertText": "x0, ",
       "kind": 6,
       "label": "x0"
@@ -31,7 +38,7 @@
     },
     {
       "detail": "x2",
-      "documentation": "Register · Integer · callee-saved\n\n```riscv\nsp (x2)\n```\n\n---\n\nStack pointer.",
+      "documentation": null,
       "insertText": "sp, ",
       "kind": 6,
       "label": "sp"
