@@ -1,16 +1,23 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
-use crate::data::Xlen;
+use crate::data::{Xlen, extension_graph};
+
+const COMPRESSED_SUBEXTENSIONS: &[&str] = &["c", "zca", "zcf", "zcd", "zcb", "zcmp", "zcmt"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarchSpec {
     pub raw: String,
     pub xlen: Xlen,
     pub extensions: BTreeSet<String>,
+    pub enable_experimental: bool,
 }
 
 impl MarchSpec {
     pub fn parse(raw: &str) -> Self {
+        Self::parse_with_experimental(raw, false)
+    }
+
+    pub fn parse_with_experimental(raw: &str, enable_experimental: bool) -> Self {
         let lower = raw.trim().to_ascii_lowercase();
         let (xlen, rest) = if let Some(r) = lower.strip_prefix("rv64") {
             (Xlen::Rv64, r)
@@ -36,6 +43,7 @@ impl MarchSpec {
             raw: raw.trim().to_owned(),
             xlen,
             extensions: exts,
+            enable_experimental,
         };
         spec.expand_implications();
         spec
@@ -46,8 +54,8 @@ impl MarchSpec {
             self.extensions.insert("c".to_owned());
             self.expand_implications();
         } else {
-            for ext in ["c", "zca", "zcf", "zcd", "zcb", "zcmp", "zcmt"] {
-                self.extensions.remove(ext);
+            for ext in COMPRESSED_SUBEXTENSIONS {
+                self.extensions.remove(*ext);
             }
         }
     }
@@ -70,7 +78,7 @@ impl MarchSpec {
                 let name = strip_ext_version(ext);
                 self.remove_extension(name);
             } else if t.starts_with("rv32") || t.starts_with("rv64") {
-                *self = Self::parse(t);
+                *self = Self::parse_with_experimental(t, self.enable_experimental);
             }
         }
     }
@@ -80,160 +88,40 @@ impl MarchSpec {
             self.apply_rvc(false);
             return;
         }
+        let graph = extension_graph();
         let mut queue = vec![name.to_owned()];
         while let Some(cur) = queue.pop() {
             if !self.extensions.remove(&cur) {
                 continue;
             }
-            for &dependent in reverse_implications(cur.as_str()) {
-                if self.extensions.contains(dependent) {
-                    queue.push(dependent.to_owned());
+            if let Some(dependents) = graph.reverse_implies.get(&cur) {
+                for dependent in dependents {
+                    if self.extensions.contains(dependent) {
+                        queue.push(dependent.clone());
+                    }
                 }
             }
         }
     }
 
     fn expand_implications(&mut self) {
-        loop {
-            let before = self.extensions.len();
-            if self.extensions.contains("g") {
-                for ext in ["i", "m", "a", "f", "d", "zicsr", "zifencei"] {
-                    self.extensions.insert(ext.to_owned());
+        let graph = extension_graph();
+        if !self.enable_experimental {
+            self.extensions.retain(|e| !graph.experimental.contains(e));
+        }
+
+        let mut queue: VecDeque<String> = self.extensions.iter().cloned().collect();
+        while let Some(cur) = queue.pop_front() {
+            let Some(implied) = graph.implies.get(&cur) else {
+                continue;
+            };
+            for dep in implied {
+                if !self.enable_experimental && graph.experimental.contains(dep) {
+                    continue;
                 }
-            }
-            if self.extensions.contains("m") {
-                self.extensions.insert("zmmul".to_owned());
-            }
-            if self.extensions.contains("a") {
-                for ext in ["zaamo", "zalrsc"] {
-                    self.extensions.insert(ext.to_owned());
+                if self.extensions.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
                 }
-            }
-            if self.extensions.contains("d") {
-                self.extensions.insert("f".to_owned());
-            }
-            if self.extensions.contains("f") {
-                self.extensions.insert("zicsr".to_owned());
-            }
-            if self.extensions.contains("c") {
-                self.extensions.insert("zca".to_owned());
-                if self.extensions.contains("d") {
-                    self.extensions.insert("zcd".to_owned());
-                }
-                if self.xlen == Xlen::Rv32 && self.extensions.contains("f") {
-                    self.extensions.insert("zcf".to_owned());
-                }
-            }
-            if self.extensions.contains("zcd") {
-                for ext in ["zca", "d"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zcf") {
-                for ext in ["zca", "f"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            for ext in ["zcb", "zcmp", "zcmt"] {
-                if self.extensions.contains(ext) {
-                    self.extensions.insert("zca".to_owned());
-                }
-            }
-            if self.extensions.contains("b") {
-                for ext in ["zba", "zbb", "zbs"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("v") {
-                for ext in ["zve64d", "zvl128b"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zve64d") {
-                for ext in ["zve64f", "d"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zve64f") {
-                for ext in ["zve64x", "zve32f"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zve64x") {
-                for ext in ["zve32x", "zvl64b"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zve32f") {
-                for ext in ["zve32x", "f"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zve32x") {
-                for ext in ["zicsr", "zvl32b"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zvl128b") {
-                self.extensions.insert("zvl64b".to_owned());
-            }
-            if self.extensions.contains("zvl64b") {
-                self.extensions.insert("zvl32b".to_owned());
-            }
-            if self.extensions.contains("zvfh") {
-                for ext in ["zvfhmin", "zfhmin"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zvfhmin") {
-                self.extensions.insert("zve32f".to_owned());
-            }
-            if self.extensions.contains("zvfbfwma") {
-                for ext in ["zvfbfmin", "zfbfmin"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zvfbfmin") {
-                self.extensions.insert("zve32f".to_owned());
-            }
-            if self.extensions.contains("zfh") {
-                self.extensions.insert("zfhmin".to_owned());
-            }
-            if self.extensions.contains("zfhmin")
-                || self.extensions.contains("zfbfmin")
-                || self.extensions.contains("zfa")
-            {
-                self.extensions.insert("f".to_owned());
-            }
-            if self.extensions.contains("zdinx") {
-                self.extensions.insert("zfinx".to_owned());
-            }
-            if self.extensions.contains("zhinx") {
-                self.extensions.insert("zhinxmin".to_owned());
-            }
-            if self.extensions.contains("zhinxmin") {
-                self.extensions.insert("zfinx".to_owned());
-            }
-            if self.extensions.contains("zfinx") {
-                self.extensions.insert("zicsr".to_owned());
-            }
-            if self.extensions.contains("zk") {
-                for ext in ["zkn", "zkr", "zkt"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zkn") {
-                for ext in ["zbkb", "zbkc", "zbkx", "zkne", "zknd", "zknh"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.contains("zks") {
-                for ext in ["zbkb", "zbkc", "zbkx", "zksed", "zksh"] {
-                    self.extensions.insert(ext.to_owned());
-                }
-            }
-            if self.extensions.len() == before {
-                break;
             }
         }
     }
@@ -291,36 +179,6 @@ impl MarchSpec {
             Xlen::Rv32 => "riscv32",
             Xlen::Rv64 | Xlen::Both => "riscv64",
         }
-    }
-}
-
-fn reverse_implications(ext: &str) -> &'static [&'static str] {
-    match ext {
-        "m" => &["g"],
-        "zmmul" => &["m"],
-        "a" => &["g"],
-        "zaamo" | "zalrsc" => &["a"],
-        "d" => &["g", "zcd", "zve64d"],
-        "f" => &["d", "zcf", "zve32f", "zfhmin", "zfbfmin", "zfa"],
-        "zicsr" => &["g", "f", "zve32x", "zfinx"],
-        "zifencei" => &["g"],
-        "zca" => &["c", "zcd", "zcf", "zcb", "zcmp", "zcmt"],
-        "zba" | "zbb" | "zbs" => &["b"],
-        "zve64d" | "zvl128b" => &["v"],
-        "zve64f" => &["zve64d"],
-        "zve64x" | "zvl64b" => &["zve64f", "zvl128b"],
-        "zve32f" => &["zve64f", "zvfhmin", "zvfbfmin"],
-        "zve32x" => &["zve32f", "zve64x"],
-        "zfhmin" => &["zfh", "zvfh"],
-        "zvfhmin" => &["zvfh"],
-        "zfbfmin" | "zvfbfmin" => &["zvfbfwma"],
-        "zfinx" => &["zdinx", "zhinxmin"],
-        "zhinxmin" => &["zhinx"],
-        "zkn" | "zkr" | "zkt" => &["zk"],
-        "zbkb" | "zbkc" | "zbkx" => &["zkn", "zks"],
-        "zkne" | "zknd" | "zknh" => &["zkn"],
-        "zksed" | "zksh" => &["zks"],
-        _ => &[],
     }
 }
 

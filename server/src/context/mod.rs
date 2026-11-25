@@ -300,34 +300,41 @@ mod tests {
         assert!(gc.extensions.contains("f"));
         assert!(gc.extensions.contains("d"));
         assert!(gc.extensions.contains("c"));
-        assert!(gc.extensions.contains("zca"));
-        assert!(gc.extensions.contains("zcd"));
         assert!(gc.extensions.contains("zicsr"));
         assert!(gc.extensions.contains("zifencei"));
+        assert!(gc.extensions.contains("zmmul"));
 
         let bv = MarchSpec::parse("rv64gcbv");
         for ext in ["zba", "zbb", "zbs", "zve64d", "zvl128b"] {
             assert!(bv.extensions.contains(ext), "missing {ext}");
         }
 
-        let mut mod_spec = gc.clone();
-        mod_spec.apply_option_arch("-m, -c");
-        assert!(!mod_spec.extensions.contains("m"));
-        assert!(!mod_spec.extensions.contains("c"));
-        assert!(!mod_spec.extensions.contains("zca"));
-        assert!(!mod_spec.extensions.contains("zcd"));
-        assert!(mod_spec.to_llvm_mattr().split(',').any(|a| a == "-zca"));
+        let zcd_spec = MarchSpec::parse("rv64g_zcd");
+        assert!(zcd_spec.extensions.contains("zca"));
+        assert!(zcd_spec.extensions.contains("zcd"));
 
-        let mut no_rvc = gc;
+        let mut mod_spec = zcd_spec;
+        mod_spec.apply_option_arch("-m, -d");
+        assert!(!mod_spec.extensions.contains("m"));
+        assert!(!mod_spec.extensions.contains("d"));
+        assert!(!mod_spec.extensions.contains("zcd"));
+
+        let mut no_rvc = MarchSpec::parse("rv64gc_zcd");
         no_rvc.apply_rvc(false);
         assert!(!no_rvc.extensions.contains("c"));
         assert!(!no_rvc.extensions.contains("zca"));
         assert!(!no_rvc.extensions.contains("zcd"));
+        assert!(no_rvc.to_llvm_mattr().split(',').any(|a| a == "-zca"));
 
         let vendor = MarchSpec::parse("rv32im_xtheadba");
         assert_eq!(vendor.xlen, Xlen::Rv32);
         assert!(vendor.extensions.contains("m"));
         assert!(vendor.extensions.contains("xtheadba"));
+
+        let exp_off = MarchSpec::parse("rv64gc_zicfilp");
+        assert!(!exp_off.extensions.contains("zicfilp"));
+        let exp_on = MarchSpec::parse_with_experimental("rv64gc_zicfilp", true);
+        assert!(exp_on.extensions.contains("zicfilp"));
 
         let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_multi_{}", std::process::id()));
         let root_a = tmp.join("root_a");

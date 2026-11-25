@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,10 +41,20 @@ pub struct DataMeta {
     pub asm_manual_commit: String,
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtensionEntry {
     pub march_name: String,
     pub llvm_feature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implies: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub experimental: bool,
     pub description: Option<String>,
 }
 
@@ -199,6 +209,77 @@ pub struct Database {
 const EMBEDDED_DATA_JSON: &str = include_str!("../../data/riscv.json");
 const EMBEDDED_TEXTS_JSON: &str = include_str!("../../data/texts.json");
 
+#[derive(Debug, Deserialize)]
+struct PartialExtensionsData {
+    extensions: Vec<ExtensionEntry>,
+}
+
+/// Extension implication graph, experimental flags, and parsed versions built from `data/riscv.json`.
+#[derive(Debug, Default)]
+pub struct ExtensionGraph {
+    pub implies: HashMap<String, Vec<String>>,
+    pub reverse_implies: HashMap<String, Vec<String>>,
+    pub experimental: HashSet<String>,
+    pub versions: HashMap<String, (u32, u32)>,
+}
+
+impl ExtensionGraph {
+    pub fn from_extensions(extensions: &[ExtensionEntry]) -> Self {
+        let mut graph = Self::default();
+        for ext in extensions {
+            let name = ext.march_name.to_ascii_lowercase();
+            if ext.experimental {
+                graph.experimental.insert(name.clone());
+            }
+            if let Some(ver) = &ext.version
+                && let Some(parsed) = parse_ext_version(ver)
+            {
+                graph.versions.insert(name.clone(), parsed);
+            }
+            if !ext.implies.is_empty() {
+                let implied: Vec<String> =
+                    ext.implies.iter().map(|s| s.to_ascii_lowercase()).collect();
+                for target in &implied {
+                    let rev = graph.reverse_implies.entry(target.clone()).or_default();
+                    if !rev.contains(&name) {
+                        rev.push(name.clone());
+                    }
+                }
+                graph.implies.insert(name, implied);
+            }
+        }
+        // `g` is ISA-string shorthand for IMAFD + Zicsr + Zifencei, not a SubtargetFeature record.
+        let g_implied: Vec<String> = ["i", "m", "a", "f", "d", "zicsr", "zifencei"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for target in &g_implied {
+            let rev = graph.reverse_implies.entry(target.clone()).or_default();
+            if !rev.iter().any(|s| s == "g") {
+                rev.push("g".to_owned());
+            }
+        }
+        graph.implies.insert("g".to_owned(), g_implied);
+        graph
+    }
+}
+
+fn parse_ext_version(raw: &str) -> Option<(u32, u32)> {
+    let (maj, min) = raw.trim().split_once('.')?;
+    Some((maj.parse().ok()?, min.parse().ok()?))
+}
+
+pub fn extension_graph() -> &'static ExtensionGraph {
+    static GRAPH: OnceLock<ExtensionGraph> = OnceLock::new();
+    GRAPH.get_or_init(|| {
+        let parsed: PartialExtensionsData =
+            serde_json::from_str(EMBEDDED_DATA_JSON).unwrap_or(PartialExtensionsData {
+                extensions: Vec::new(),
+            });
+        ExtensionGraph::from_extensions(&parsed.extensions)
+    })
+}
+
 pub fn texts_data() -> &'static TextsData {
     static TEXTS: OnceLock<TextsData> = OnceLock::new();
     TEXTS.get_or_init(|| serde_json::from_str(EMBEDDED_TEXTS_JSON).unwrap_or_default())
@@ -307,6 +388,23 @@ impl Database {
         };
         let idx = self.directives_by_name.get(&key)?;
         self.raw.directives.get(*idx)
+    }
+
+    pub fn llvm_major_label(&self) -> String {
+        let digits: String = self
+            .raw
+            .meta
+            .llvm_tag
+            .strip_prefix("llvmorg-")
+            .unwrap_or(&self.raw.meta.llvm_tag)
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if digits.is_empty() {
+            "LLVM".to_owned()
+        } else {
+            format!("LLVM {digits}")
+        }
     }
 
     pub fn extension(&self, march_name: &str) -> Option<&ExtensionEntry> {
