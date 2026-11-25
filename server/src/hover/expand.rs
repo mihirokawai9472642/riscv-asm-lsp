@@ -23,9 +23,9 @@ pub(super) struct ExpansionCacheKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ExpandedInstruction {
-    pub(super) asm: String,
-    pub(super) encoding: Option<String>,
+pub struct ExpandedInstruction {
+    pub asm: String,
+    pub encoding: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -318,7 +318,7 @@ pub(super) fn collect_cpp_preamble(text: &str, up_to_line: usize) -> (Vec<String
     (out, if_depth)
 }
 
-fn substitute_constants(stmt: &str, consts: &HashMap<String, String>) -> String {
+pub(super) fn substitute_constants(stmt: &str, consts: &HashMap<String, String>) -> String {
     let mut current = stmt.to_owned();
     for _ in 0..3 {
         let mut changed = false;
