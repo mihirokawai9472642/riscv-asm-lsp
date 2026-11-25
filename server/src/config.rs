@@ -3,9 +3,9 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExternalDiagnosticsMode {
-    #[default]
     Auto,
     On,
+    #[default]
     Off,
 }
 
@@ -176,7 +176,7 @@ mod tests {
         assert_eq!(cfg.default_march, "rv32imac");
         assert!(cfg.diagnostics.enable);
         assert_eq!(cfg.diagnostics.delay_ms, 150);
-        assert_eq!(cfg.diagnostics.external, ExternalDiagnosticsMode::Auto);
+        assert_eq!(cfg.diagnostics.external, ExternalDiagnosticsMode::Off);
         assert!(cfg.diagnostics.suppress.is_empty());
     }
 
