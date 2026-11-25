@@ -92,7 +92,7 @@ pub fn server_capabilities() -> ServerCapabilities {
 }
 
 pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
-    let db = Database::load()?;
+    let db = Arc::new(Database::load()?);
     let (connection, io_threads) = Connection::stdio();
 
     let caps_json = serde_json::to_value(server_capabilities())?;
@@ -127,8 +127,8 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         Some(make_message_sink(&connection)),
     ));
     let diag_worker = DiagnosticsWorker::new(
-        config.diagnostics.enable,
-        config.diagnostics.delay_ms,
+        config.diagnostics.clone(),
+        Arc::clone(&db),
         Arc::clone(&tools),
         make_message_sink(&connection),
     );
@@ -744,8 +744,7 @@ impl ServerState<'_> {
         let new_cfg = Config::from_init_options(Some(settings_val));
         self.tools
             .update_bins(new_cfg.clang.clone(), new_cfg.llvm_mc.clone());
-        self.diag_worker
-            .update_config(new_cfg.diagnostics.enable, new_cfg.diagnostics.delay_ms);
+        self.diag_worker.update_config(new_cfg.diagnostics.clone());
         self.ctx.update_config(new_cfg);
         self.hover_worker.clear_cache();
         self.diag_worker.invalidate_all();

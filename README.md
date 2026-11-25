@@ -120,8 +120,10 @@ Example `.zed/settings.json`:
 | `compileCommandsDirs` | `["", "build"]` | Directories, relative to the project root, searched for `compile_commands.json` |
 | `defaultTarget` | `"riscv64-unknown-elf"` | Target for files without a compilation database entry |
 | `defaultMarch` | `"rv64gc"` | `-march` for files without an entry |
-| `diagnostics.enable` | `true` | Run `clang` for diagnostics |
+| `diagnostics.enable` | `true` | Enable diagnostics |
 | `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
+| `diagnostics.external` | `"auto"` | External `clang` diagnostics mode (`"auto"`, `"on"`, or `"off"`) |
+| `diagnostics.suppress` | `[]` | Built-in diagnostic codes to suppress (e.g. `["gnu-only-directive"]`) |
 
 ## Installing a release
 

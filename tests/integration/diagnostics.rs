@@ -1104,3 +1104,363 @@ fn predefined_macros_match_clang_dm() {
         );
     }
 }
+
+#[test]
+fn builtin_validator_corpus_and_suppression() {
+    use riscv_asm_lsp::config::Config;
+    use riscv_asm_lsp::context::CompileContext;
+    use riscv_asm_lsp::data::Database;
+    use riscv_asm_lsp::diagnostics::run_builtin_diagnostics;
+
+    let db = Database::load().expect("db");
+    let fixtures = fixtures_dir();
+    let mut ctx = CompileContext::new(Some(fixtures.clone()), Config::default());
+
+    for name in ["kernel_entry.S", "other.S", "multibyte.S"] {
+        let path = fixtures.join(name);
+        let uri = path_to_uri(&path);
+        let src = std::fs::read_to_string(&path).expect("read fixture");
+        let file_ctx = ctx.for_uri(&uri);
+        let diags = run_builtin_diagnostics(&uri, &src, &file_ctx, &db, &[]);
+        assert!(
+            diags.is_empty(),
+            "expected zero false positives on {name}, got: {diags:?}"
+        );
+    }
+
+    // Kernel-like sample corpus covering conditionals, relocations, `.option`, `.equ`, macros,
+    // numeric labels, atomics, compressed, vector, and pseudos under rv64gcv.
+    let mut ctx_v = CompileContext::new(
+        None,
+        Config {
+            default_march: "rv64gcv".to_owned(),
+            ..Config::default()
+        },
+    );
+    let kernel_corpus_uri = crate::common::test_uri("corpus_kernel.S");
+    let kernel_corpus_ctx = ctx_v.for_uri(&kernel_corpus_uri);
+    let corpus = "\
+#define FRAME_SIZE 64
+#define SAVE_REG(r, idx) sd r, ((idx) * 8)(sp)
+.equ CSR_SCRATCH, 0x140
+.macro PUSH_TWO r1, r2
+    sd \\r1, 0(sp)
+    sd \\r2, 8(sp)
+.endm
+.section .text
+.globl trap_entry
+trap_entry:
+#if __riscv_xlen == 64
+    addi sp, sp, -FRAME_SIZE
+    SAVE_REG(ra, 0)
+    PUSH_TWO t0, t1
+#else
+    addi sp, sp, -32
+#endif
+.option push
+.option norvc
+    addi a0, zero, 1
+.option pop
+1:
+    csrr t0, CSR_SCRATCH
+    csrw sscratch, t0
+    la a1, sym_table
+    lui a2, %hi(sym_table)
+    addi a2, a2, %lo(sym_table)
+    lr.w a3, 0(a1)
+    amoswap.w zero, a3, (a1)
+    vsetvli t0, a0, e8, m1, ta, ma
+    vadd.vv v8, v10, v12, v0.t
+    fadd.s fa0, fa1, fa2, rne
+    c.addi a0, 1
+    bnez a0, 1b
+    ret
+sym_table:
+    .dword 0
+";
+    let corpus_diags =
+        run_builtin_diagnostics(&kernel_corpus_uri, corpus, &kernel_corpus_ctx, &db, &[]);
+    assert!(
+        corpus_diags.is_empty(),
+        "expected zero false positives on kernel corpus, got: {corpus_diags:?}"
+    );
+
+    // End-to-end LSP JSON-RPC test with `external: "off"` and `diagnostics.suppress`
+    let mut client = LspClient::start(
+        Some(json!({
+            "clang": "/nonexistent/clang",
+            "diagnostics": {
+                "enable": true,
+                "delayMs": 15,
+                "external": "off",
+                "suppress": ["gnu-only-directive"]
+            }
+        })),
+        None,
+    );
+    let err_uri = crate::common::test_uri("builtin_lsp.S");
+    client.open_doc(
+        &err_uri,
+        1,
+        "    .func ignored_gnu\n    mvi a0, 1\n    addi a0, a1, 4096\n",
+    );
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("builtin publishDiagnostics");
+    let published = notif.params["diagnostics"].as_array().unwrap();
+    assert_eq!(published.len(), 2, "published: {published:?}");
+    assert_eq!(published[0]["code"], json!("unknown-mnemonic"));
+    assert_eq!(published[1]["code"], json!("invalid-immediate"));
+    client.shutdown_and_exit();
+}
+
+#[test]
+#[ignore = "requires llvm-mc"]
+fn builtin_validator_oracle_matches_llvm_mc() {
+    assert!(
+        has_tool("llvm-mc"),
+        "llvm-mc must be on PATH for ignored tool tests"
+    );
+
+    use lsp_types::DiagnosticSeverity;
+    use riscv_asm_lsp::config::Config;
+    use riscv_asm_lsp::context::{CompileContext, MarchSpec};
+    use riscv_asm_lsp::data::{Database, InstructionVariant};
+    use riscv_asm_lsp::diagnostics::run_builtin_diagnostics;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let db = Database::load().expect("db");
+
+    fn run_llvm_mc(triple: &str, mattr: &str, input: &str) -> bool {
+        let Ok(mut child) = Command::new("llvm-mc")
+            .args([
+                &format!("-triple={triple}"),
+                &format!("-mattr={mattr}"),
+                "-filetype=null",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(input.as_bytes());
+        }
+        child.wait().map(|s| s.success()).unwrap_or(false)
+    }
+
+    fn oracle_sample_for_class(class: &str) -> Option<&'static str> {
+        match class {
+            "GPR" | "GPRNoX0" | "GPRNoX2" | "GPRNoX0X2" | "GPRC" | "GPRMem" | "GPRCMem"
+            | "BasePtr" | "BasePtrC" | "GPRMemZeroOffset" | "YGPR" => Some("a0"),
+            "GPRX1" | "GPRX1X5" => Some("ra"),
+            "GPRX5" => Some("t0"),
+            "SP" | "SPMem" => Some("sp"),
+            "SR07" => Some("s0"),
+            "GPRPairRV32" | "GPRPairRV64" | "GPRPairCRV32" | "GPRPairNoX0RV32" | "FPR64IN32X" => {
+                Some("a0")
+            }
+            "FPR16" | "FPR32" | "FPR32C" | "FPR64" | "FPR64C" | "FPR128" => Some("fa0"),
+            "FPR16INX" | "FPR32INX" | "FPR64INX" => Some("a0"),
+            "VR" | "VRNoV0" | "VRM2" | "VRM4" | "VRM8" => Some("v8"),
+            "csr_sysreg" => Some("mstatus"),
+            "frmarg" | "frmarglegacy" => Some("rne"),
+            "rtzarg" => Some("rtz"),
+            "fencearg" => Some("iorw"),
+            "bare_symbol"
+            | "call_symbol"
+            | "pseudo_jump_symbol"
+            | "tlsdesc_call_symbol"
+            | "tprel_add_symbol" => Some("sym"),
+            "simm6nonzero"
+            | "uimmlog2xlennonzero"
+            | "c_lui_imm"
+            | "simm5_plus1"
+            | "imm5_zibi"
+            | "uimm4_plus1"
+            | "uimm5_plus1"
+            | "uimm6_plus1" => Some("1"),
+            "uimm8ge32" => Some("32"),
+            "uimm7_eq_xlen" => Some("64"),
+            "simm10_lsb0000nonzero" => Some("16"),
+            "uimm10_lsb00nonzero" => Some("16"),
+            "loadfpimm" => Some("0.5"),
+            "rlist" | "reglist" => Some("{ra}"),
+            "negstackadj" => Some("-16"),
+            "stackadj" => Some("16"),
+            "VMaskOp" => None,
+            "VMaskCarryInOp" => Some("v0"),
+            _ => Some("0"),
+        }
+    }
+
+    fn synth(mnemonic: &str, variant: &InstructionVariant) -> Option<String> {
+        if mnemonic == "c.nop" {
+            return Some("c.nop".to_owned());
+        }
+        let mut line = variant.syntax.clone();
+        let mut ops = variant.operands.clone();
+        ops.sort_by_key(|a| std::cmp::Reverse(a.name.len()));
+        for op in &ops {
+            let s = oracle_sample_for_class(&op.class)?;
+            let mut out = String::with_capacity(line.len());
+            let mut i = 0;
+            let bytes = line.as_bytes();
+            while i < bytes.len() {
+                if line[i..].starts_with(&op.name) {
+                    let before_ok =
+                        i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+                    let after_idx = i + op.name.len();
+                    let after_ok = after_idx >= bytes.len()
+                        || (!bytes[after_idx].is_ascii_alphanumeric() && bytes[after_idx] != b'_');
+                    if before_ok && after_ok {
+                        out.push_str(s);
+                        i = after_idx;
+                        continue;
+                    }
+                }
+                if let Some(ch) = line[i..].chars().next() {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            line = out;
+        }
+        Some(line)
+    }
+
+    // 1. Valid instruction sweep across multiple -march configurations: zero false positives on
+    // any instruction variant accepted by `llvm-mc`.
+    for march_str in [
+        "rv64gc",
+        "rv32imac",
+        "rv64gcv",
+        "rv64gb",
+        "rv32imaf_zca_zcf_zcmp",
+    ] {
+        let spec = MarchSpec::parse(march_str);
+        let triple = spec.llvm_triple();
+        let mattr = spec.to_llvm_mattr();
+
+        let mut valid_doc = String::from("sym:\n");
+        let mut ctx = CompileContext::new(
+            None,
+            Config {
+                default_march: march_str.to_owned(),
+                ..Config::default()
+            },
+        );
+        let uri = crate::common::test_uri("oracle_valid.S");
+        let file_ctx = ctx.for_uri(&uri);
+
+        let mut samples = Vec::new();
+        for inst in &db.raw.instructions {
+            if !inst.llvm_supported || inst.mnemonic.starts_with(".insn") {
+                continue;
+            }
+            for v in &inst.variants {
+                if spec.supports_extensions(&v.required_extensions, v.xlen)
+                    && let Some(line) = synth(&inst.mnemonic, v)
+                {
+                    samples.push(line);
+                }
+            }
+        }
+        assert!(samples.len() > 150, "too few samples for {march_str}");
+
+        let batch: String = std::iter::once("sym:\n".to_owned())
+            .chain(samples.iter().map(|l| format!("    {l}\n")))
+            .collect();
+        let accepted = if run_llvm_mc(triple, &mattr, &batch) {
+            samples
+        } else {
+            samples
+                .into_iter()
+                .filter(|l| run_llvm_mc(triple, &mattr, &format!("sym:\n    {l}\n")))
+                .collect()
+        };
+        assert!(!accepted.is_empty());
+        for l in &accepted {
+            valid_doc.push_str("    ");
+            valid_doc.push_str(l);
+            valid_doc.push('\n');
+        }
+        let diags = run_builtin_diagnostics(&uri, &valid_doc, &file_ctx, &db, &[]);
+        assert!(
+            diags.is_empty(),
+            "false positive(s) under {march_str}: {diags:#?}"
+        );
+    }
+
+    // 2. Mutated invalid samples: `llvm-mc` rejects each and built-in validator reports expected error code.
+    let invalid_cases: &[(&str, &str, &str)] = &[
+        ("rv64gc", "    c.lwsp x0, 0(sp)\n", "invalid-register"),
+        ("rv64gc", "    c.addi4spn t0, sp, 4\n", "invalid-register"),
+        ("rv64gc", "    fadd.s a0, f1, f2\n", "invalid-register"),
+        ("rv64gc", "    c.lui sp, 1\n", "invalid-register"),
+        ("rv64gc", "    c.jr x0\n", "invalid-register"),
+        ("rv64gc", "    addi a0, a1, 4096\n", "invalid-immediate"),
+        ("rv64gc", "    addi a0, a1, -2049\n", "invalid-immediate"),
+        ("rv64gc", "    slli a0, a1, 64\n", "invalid-immediate"),
+        ("rv32imac", "    slli a0, a1, 32\n", "invalid-immediate"),
+        (
+            "rv64gc",
+            "    csrrwi a0, mstatus, 32\n",
+            "invalid-immediate",
+        ),
+        ("rv64gc", "    beq a0, a1, 3\n", "invalid-immediate"),
+        ("rv64gc", "    c.lwsp a0, 2(sp)\n", "invalid-immediate"),
+        ("rv64gc", "    lr.w a0, 4(a1)\n", "invalid-immediate"),
+        ("rv64gc", "    sh1add a0, a1, a2\n", "extension-disabled"),
+        ("rv64gc", "    vadd.vv v1, v2, v3\n", "extension-disabled"),
+        (
+            "rv32imac",
+            "    fadd.s fa0, fa1, fa2\n",
+            "extension-disabled",
+        ),
+        ("rv32imac", "    addiw a0, a1, 1\n", "xlen-mismatch"),
+        ("rv32imac", "    ld a0, 0(sp)\n", "extension-disabled"),
+        ("rv64gc", "    csrr a0, mcycleh\n", "invalid-csr"),
+        ("rv64gc", "    csrr a0, mrmcfg\n", "invalid-csr"),
+        ("rv64gc", "    csrr a0, not_a_csr\n", "invalid-csr"),
+        ("rv64gc", "    addi a0, 1\n", "operand-count"),
+        ("rv64gc", "    add a0, a1\n", "operand-count"),
+        ("rv64gc", "    mvi a0, 1\n", "unknown-mnemonic"),
+    ];
+
+    for &(march_str, line, expected_code) in invalid_cases {
+        let spec = MarchSpec::parse(march_str);
+        assert!(
+            !run_llvm_mc(spec.llvm_triple(), &spec.to_llvm_mattr(), line),
+            "expected llvm-mc to reject `{}` under {march_str}",
+            line.trim()
+        );
+        let mut ctx = CompileContext::new(
+            None,
+            Config {
+                default_march: march_str.to_owned(),
+                ..Config::default()
+            },
+        );
+        let uri = crate::common::test_uri("oracle_invalid.S");
+        let file_ctx = ctx.for_uri(&uri);
+        let diags = run_builtin_diagnostics(&uri, line, &file_ctx, &db, &[]);
+        assert!(
+            diags.iter().any(|d| {
+                d.diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+                    && d.diagnostic.code
+                        == Some(lsp_types::NumberOrString::String(expected_code.to_owned()))
+            }),
+            "expected code `{expected_code}` for `{}` under {march_str}, got: {diags:?}",
+            line.trim()
+        );
+    }
+}
