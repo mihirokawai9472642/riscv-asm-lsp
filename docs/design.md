@@ -148,7 +148,7 @@ missing or fails, only diagnostics or expansions degrade.
 | `navigation.rs` | Go to definition, find references, document highlight, prepare/execute rename |
 | `symbols.rs` | Document symbols (`DocumentSymbol`) and workspace symbols (`SymbolInformation`) |
 | `semantic_tokens.rs` | Full and range semantic token encoding (including `#` comment/preproc override) |
-| `diagnostics/` | Async debounced `DiagnosticsWorker` (`worker.rs`), `clang` runner (`clang.rs`), stderr/note/include parser (`parse.rs`), `#define` hints (`hints.rs`) |
+| `diagnostics/` | Async debounced `DiagnosticsWorker` (`worker.rs`), pure-Rust built-in validator (`builtin.rs`), `clang` runner (`clang.rs`), stderr/note/include parser (`parse.rs`), `#define` hints (`hints.rs`) |
 | `code_action.rs` | `did you mean` and `Use // comment` quick fixes and rewrite actions |
 | `tools.rs` | Version-independent external process discovery, RISC-V target verification, configured-tool warnings, timeouts, and one-shot permanent-failure disable |
 
@@ -211,7 +211,7 @@ effective `MarchSpec` per line.
 Options are read from `initializationOptions` at startup and updated live via
 `workspace/didChangeConfiguration` and `workspace/didChangeWorkspaceFolders`:
 `clang`, `llvmMc`, `compileCommandsDirs`, `defaultTarget`, `defaultMarch`,
-`diagnostics.enable`, and `diagnostics.delayMs`. External tool paths (`clang`,
+`diagnostics.enable`, `diagnostics.delayMs`, `diagnostics.external`, and `diagnostics.suppress`. External tool paths (`clang`,
 `llvmMc`) come strictly from user/client configuration, `PATH`, or standard
 system install directories — never from compilers named inside
 `compile_commands.json` (which is inspected solely for allow-listed assembler and

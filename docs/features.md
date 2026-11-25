@@ -154,6 +154,33 @@ Supports `textDocument/definition`, `textDocument/references`,
 
 ## Diagnostics and code actions
 
+- **Built-in validator (`diagnostics/builtin.rs`)**: runs purely in Rust on
+  active lines produced by the built-in preprocessor, tracking `.option`,
+  `.equ`/`.equiv`/`.set`/`=`, `.macro`/`.irp`/`.irpc`/`.rept`, and local
+  `.include` definitions. It emits stable, suppressible diagnostic codes
+  (`diagnostics.suppress`):
+
+  | Code | Severity | Meaning |
+  | --- | --- | --- |
+  | `unknown-mnemonic` | Error | Unrecognized instruction mnemonic (with edit-distance suggestions) |
+  | `extension-disabled` | Error | Instruction valid for XLEN but requires a disabled extension |
+  | `xlen-mismatch` | Error | Instruction requires a different XLEN (RV32 vs RV64) |
+  | `operand-count` | Error | Wrong number of operands for all active variants |
+  | `invalid-register` | Error | Register missing or fails operand register-class constraints |
+  | `invalid-immediate` | Error | Immediate out of range or misaligned for the operand class |
+  | `invalid-csr` | Error | Unknown CSR, disabled CSR, or address out of 12-bit range |
+  | `gnu-only-directive` | Warning | Directive accepted by GNU `as` but not LLVM |
+
+  To avoid false positives, lines that are inactive or uncertain (from an
+  unresolved `#include`), lines with unexpanded macros, `.macro`/`.irp`/`.rept`
+  bodies, `%` relocation expressions, and expressions containing unresolved
+  symbols are skipped conservatively.
+
+- **External `clang` diagnostics (`diagnostics.external`: `"auto"` | `"on"` | `"off"`)**:
+  when enabled and a RISC-V `clang` binary is found, `DiagnosticsWorker` runs
+  `clang` and prefers its results; otherwise it falls back to the built-in
+  validator (`"off"` runs the built-in validator directly).
+
 - **Toolchain discovery**: when `clang` or `llvmMc` is omitted, the server
   searches in order:
   1. `clang` / `llvm-mc` on `PATH`;
