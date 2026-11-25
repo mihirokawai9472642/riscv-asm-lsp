@@ -1,4 +1,24 @@
-use crate::data::Database;
+use crate::data::{Database, Xlen};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ImmSpec {
+    pub signed: bool,
+    pub min: i64,
+    pub max: i64,
+    pub step: i64,
+    pub nonzero: bool,
+}
+
+struct ParsedImmParts {
+    signed: bool,
+    bits: u32,
+    is_pc_rel: bool,
+    plus1: bool,
+    nonzero: bool,
+    step: i64,
+    min: i64,
+    max: i64,
+}
 
 /// Decode an LLVM operand class name (77 total: 51 register/special classes from `data/texts.json`
 /// plus 26 mechanically decoded immediate constraint classes).
@@ -9,6 +29,95 @@ pub fn describe_operand_class(class: &str, db: &Database) -> Option<String> {
     decode_immediate_class(class)
 }
 
+pub(crate) fn parse_immediate_spec(class: &str, xlen: Xlen) -> Option<ImmSpec> {
+    let shamt_max = if xlen == Xlen::Rv32 { 31 } else { 63 };
+    let eq_xlen = if xlen == Xlen::Rv32 { 32 } else { 64 };
+    match class {
+        "uimmlog2xlen" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 0,
+                max: shamt_max,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        "uimmlog2xlennonzero" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 1,
+                max: shamt_max,
+                step: 1,
+                nonzero: true,
+            });
+        }
+        "uimm8ge32" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 32,
+                max: 255,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        "rnum" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 0,
+                max: 10,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        "byteselect" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 0,
+                max: 3,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        "TileLambdaOp" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 0,
+                max: 7,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        "uimm7_eq_xlen" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: eq_xlen,
+                max: eq_xlen,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        "ybndsw_imm" => {
+            return Some(ImmSpec {
+                signed: false,
+                min: 0,
+                max: 511,
+                step: 1,
+                nonzero: false,
+            });
+        }
+        _ => {}
+    }
+
+    let p = parse_simm_uimm_parts(class)?;
+    Some(ImmSpec {
+        signed: p.signed,
+        min: p.min,
+        max: p.max,
+        step: p.step,
+        nonzero: p.nonzero,
+    })
+}
+
 fn decode_immediate_class(class: &str) -> Option<String> {
     match class {
         "uimmlog2xlen" => return Some("unsigned, 0..XLEN-1".to_owned()),
@@ -17,6 +126,30 @@ fn decode_immediate_class(class: &str) -> Option<String> {
         _ => {}
     }
 
+    let p = parse_simm_uimm_parts(class)?;
+    let sign_label = if p.signed { "signed" } else { "unsigned" };
+    let mut desc = format!("{sign_label} {}-bit", p.bits);
+    if p.is_pc_rel {
+        desc.push_str(" PC-rel");
+    }
+    if p.step > 1 {
+        desc.push_str(&format!(", {}-byte aligned", p.step));
+    }
+    if p.plus1 {
+        desc.push_str(" + 1");
+    }
+    if p.nonzero {
+        desc.push_str(", nonzero");
+    }
+    if p.signed && p.nonzero && !p.plus1 {
+        desc.push_str(&format!(" ({}..{}, ≠ 0)", p.min, p.max));
+    } else {
+        desc.push_str(&format!(" ({}..{})", p.min, p.max));
+    }
+    Some(desc)
+}
+
+fn parse_simm_uimm_parts(class: &str) -> Option<ParsedImmParts> {
     let normalized = class.strip_prefix("bare_").unwrap_or(class);
     let (signed, mut rest) = if let Some(r) = normalized.strip_prefix("simm") {
         (true, r)
@@ -84,26 +217,16 @@ fn decode_immediate_class(class: &str) -> Option<String> {
         min_val
     };
 
-    let sign_label = if signed { "signed" } else { "unsigned" };
-    let mut desc = format!("{sign_label} {bits}-bit");
-    if is_pc_rel {
-        desc.push_str(" PC-rel");
-    }
-    if step > 1 {
-        desc.push_str(&format!(", {step}-byte aligned"));
-    }
-    if plus1 {
-        desc.push_str(" + 1");
-    }
-    if nonzero {
-        desc.push_str(", nonzero");
-    }
-    if signed && nonzero && !plus1 {
-        desc.push_str(&format!(" ({min_out}..{max_val}, ≠ 0)"));
-    } else {
-        desc.push_str(&format!(" ({min_out}..{max_val})"));
-    }
-    Some(desc)
+    Some(ParsedImmParts {
+        signed,
+        bits,
+        is_pc_rel,
+        plus1,
+        nonzero,
+        step,
+        min: min_out,
+        max: max_val,
+    })
 }
 
 #[cfg(test)]

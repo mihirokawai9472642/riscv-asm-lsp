@@ -1,10 +1,31 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExternalDiagnosticsMode {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl ExternalDiagnosticsMode {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" => Some(Self::On),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticsConfig {
     pub enable: bool,
     pub delay_ms: u64,
+    pub external: ExternalDiagnosticsMode,
+    pub suppress: Vec<String>,
 }
 
 impl Default for DiagnosticsConfig {
@@ -12,6 +33,8 @@ impl Default for DiagnosticsConfig {
         Self {
             enable: true,
             delay_ms: 300,
+            external: ExternalDiagnosticsMode::default(),
+            suppress: Vec::new(),
         }
     }
 }
@@ -44,6 +67,8 @@ impl Default for Config {
 struct RawDiagnosticsConfig {
     enable: Option<bool>,
     delay_ms: Option<u64>,
+    external: Option<String>,
+    suppress: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -106,6 +131,18 @@ impl Config {
             if let Some(delay_ms) = diag.delay_ms {
                 cfg.diagnostics.delay_ms = delay_ms;
             }
+            if let Some(ext_raw) = diag.external.as_deref()
+                && let Some(mode) = ExternalDiagnosticsMode::parse(ext_raw)
+            {
+                cfg.diagnostics.external = mode;
+            }
+            if let Some(suppress) = diag.suppress {
+                cfg.diagnostics.suppress = suppress
+                    .into_iter()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
         }
         cfg
     }
@@ -139,5 +176,26 @@ mod tests {
         assert_eq!(cfg.default_march, "rv32imac");
         assert!(cfg.diagnostics.enable);
         assert_eq!(cfg.diagnostics.delay_ms, 150);
+        assert_eq!(cfg.diagnostics.external, ExternalDiagnosticsMode::Auto);
+        assert!(cfg.diagnostics.suppress.is_empty());
+    }
+
+    #[test]
+    fn parses_external_diagnostics_mode_and_suppress() {
+        for (raw, expected) in [
+            ("auto", ExternalDiagnosticsMode::Auto),
+            ("ON", ExternalDiagnosticsMode::On),
+            ("off", ExternalDiagnosticsMode::Off),
+            ("unknown", ExternalDiagnosticsMode::default()),
+        ] {
+            let cfg = Config::from_init_options(Some(json!({
+                "diagnostics": {
+                    "external": raw,
+                    "suppress": ["gnu-only-directive", " "]
+                }
+            })));
+            assert_eq!(cfg.diagnostics.external, expected, "raw={raw}");
+            assert_eq!(cfg.diagnostics.suppress, vec!["gnu-only-directive"]);
+        }
     }
 }
