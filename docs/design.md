@@ -78,7 +78,7 @@ release).
 | --- | --- | --- |
 | Scope | RISC-V only (RV32 and RV64) | Architecture-specific data, CSRs and grammar stay coherent and maintainable |
 | Syntax | GNU assembler syntax (`#` / `//` / `/* */` comments, `;` statements, `.` directives) | Standard syntax for RISC-V assembly; accepted by LLVM |
-| Reference implementation | Bundled data generated from one pinned LLVM release (currently `19` / `llvmorg-19.1.7`, moving to latest stable LLVM), supplemented optionally by external `clang`/`llvm-mc` | Matches `clangd`'s single-reference model without per-version data maintenance; reference LLVM acts as CI oracle |
+| Reference implementation | Bundled data generated from one pinned LLVM release (`23` / `llvmorg-23.1.6`), supplemented optionally by external `clang`/`llvm-mc` | Matches `clangd`'s single-reference model without per-version data maintenance; reference LLVM acts as CI oracle |
 | External tools | Optional, any recent LLVM version with `riscv32`/`riscv64` targets; never run compilers from `compile_commands.json` | Avoids brittle host-version coupling and security risks; transitions to opt-in once the built-in validator is complete |
 | Built-in engine (planned) | Pure-Rust preprocessor + approximate validator + `RISCVMatInt` / tblgen encoding in the server | Avoids C++ LLVM MC bindings and 5-target LLVM C++ builds; keeps binary small and static |
 | Built-in diagnostics rule (planned) | Report only when certain (skip unexpanded macros, `.macro`/`.irp`/`.rept` bodies, unresolved expressions); GNU-only constructs warn with stable codes | Avoids false positives that erode trust while providing stable suppressible diagnostic codes |
@@ -120,7 +120,7 @@ missing or fails, only diagnostics or expansions degrade.
 | `zed/` | Zed extension (`wasm32-wasip2`, queries, `config.toml`) |
 | `tests/` | Integration tests, JSON-RPC client harness, fixtures, and `tests/snapshots/` |
 | `docs/` | Contributor and user documentation (`design.md`, `features.md`, `data.md`, `zed.md`) |
-| `Dockerfile`, `compose.yaml` | Optional development container with Rust and LLVM 19 |
+| `Dockerfile`, `compose.yaml` | Optional development container with Rust and LLVM 23 |
 | `THIRD_PARTY_NOTICES.md` | Attribution and license notices |
 
 ### Crate module map
@@ -273,7 +273,7 @@ via Dependabot.
 | Regression inputs | Multibyte UTF-8/UTF-16 characters, positions past line ends, empty lines, closed/open block comments |
 | Data validation | Generated RV64GC instructions assemble with `llvm-mc` (`#[ignore]` tool test) |
 
-Tool-dependent tests are marked `#[ignore]` and run in CI/container with LLVM 19
+Tool-dependent tests are marked `#[ignore]` and run in CI/container with LLVM 23
 via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 `llvm-mc` absent from `PATH`.
 
@@ -282,11 +282,9 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 Only unfinished work is listed here:
 
 - **Distribution verification & publishing**:
-  - Verify multi-platform `release.yml` dry-run archives, test clean Zed GUI installation/settings/features, tag `v0.2.0`, and publish to the Zed extension registry (`zed-industries/extensions`).
+  - Test clean Zed GUI installation/settings/features, tag `v0.2.0` once the initial built-in milestones are ready, and publish to the Zed extension registry (`zed-industries/extensions`).
   - Additional optional install channels (`crates.io` after moving embedded `data/` into `server/`, `cargo-binstall`, Neovim/Helix configs).
 - **Built-in `clangd`-style engine**:
-  - Generate extension implications, versions, and experimental markers from tblgen `Implies` in `xtask`, replacing hand-written tables in `march.rs`.
-  - Advance the bundled reference data and container from LLVM 19 straight to the latest stable LLVM release.
   - Implement a built-in C preprocessor in `preprocessor.rs` (`#define`/`#undef`, predefined `__riscv*` macros, `#if` expression evaluator, active/inactive/uncertain classification, UTF-16 source mapping).
   - Implement a built-in instruction/directive validator (`diagnostics/builtin.rs`) with stable suppressible codes and CI oracle validation against reference `llvm-mc`, then switch external `clang`/`llvm-mc` to opt-in (`off` by default) while avoiding duplicate mixed diagnostics.
   - Port LLVM `RISCVMatInt` for `li`, add fixed pseudo expansions, and generate tblgen `Inst` encoding templates for hover `This line:` without `llvm-mc`.
@@ -309,21 +307,21 @@ Only unfinished work is listed here:
 | --- | --- |
 | `.asm` suffix | Shared across many architectures; currently left unclaimed |
 
-## Appendix A. Directive support in LLVM 19
+## Appendix A. Directive support in LLVM 23
 
-Checked against `llvm-mc` 19.1.7:
+Checked against `llvm-mc` 23.1.6:
 
 | Status | Directives |
 | --- | --- |
-| Not supported | `.eqv`, `.func`/`.endfunc`, `.float16`, `.bfloat16`, `.base64`, `.dtprelword`, `.linkonce`, `.stabs`, listing directives (`.list`, `.nolist`, `.title`, `.sbttl`, `.psize`, `.mri`) |
-| Supported (representative) | `.macro` (including `\@`), `.altmacro`, `.irp`, `.rept`, `.equ`, `.set`, `=`, `.equiv`, `.option` (`arch`, `push`, `pop`, `exact`), `.insn`, `.attribute`, `.variant_cc`, `.cfi_*`, `.pushsection`, `.incbin`, `.ifc`, `.ifb`, `.reloc`, `.print`, `.warning`, `.int`, `.weakref`, `.line`, `.version`, `.dc`, `.dcb`, `.ds`, `.ifnotdef`, `.bundle_*` |
+| Not supported | `.eqv`, `.func`/`.endfunc`, `.float16`, `.bfloat16`, `.dtprelword`, `.linkonce`, `.stabs`, listing directives (`.list`, `.nolist`, `.title`, `.sbttl`, `.psize`, `.mri`) |
+| Supported (representative) | `.macro` (including `\@`), `.altmacro`, `.irp`, `.rept`, `.equ`, `.set`, `=`, `.equiv`, `.option` (`arch`, `push`, `pop`, `exact`), `.insn`, `.attribute`, `.variant_cc`, `.cfi_*`, `.pushsection`, `.incbin`, `.ifc`, `.ifb`, `.reloc`, `.print`, `.warning`, `.int`, `.weakref`, `.line`, `.version`, `.dc`, `.dcb`, `.ds`, `.ifnotdef`, `.bundle_*`, `.base64` |
 
-For example, `riscv-asm-manual` lists `.dtprelword` while LLVM 19 rejects it,
+For example, `riscv-asm-manual` lists `.dtprelword` while LLVM 23 rejects it,
 so LLVM remains authoritative for directive acceptance.
 
 ## Appendix B. References
 
-- LLVM RISC-V target: https://github.com/llvm/llvm-project/tree/llvmorg-19.1.7/llvm/lib/Target/RISCV
+- LLVM RISC-V target: https://github.com/llvm/llvm-project/tree/llvmorg-23.1.6/llvm/lib/Target/RISCV
 - riscv-unified-db: https://github.com/riscv/riscv-unified-db
 - riscv-asm-manual: https://github.com/riscv-non-isa/riscv-asm-manual
 - tree-sitter-riscv: https://github.com/omeyenburg/tree-sitter-riscv

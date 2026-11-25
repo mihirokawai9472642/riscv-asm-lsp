@@ -9,7 +9,7 @@ behaviour, generated data, and the Zed extension.
 
 `riscv-asm-lsp` is a language server for RISC-V assembly in the GNU assembler
 syntax, written in Rust, with a Zed extension that uses it. The LLVM
-integrated assembler (`clang`, `llvm-mc`, version 19) is the reference: what it
+integrated assembler (`clang`, `llvm-mc`, version 23) is the reference: what it
 accepts is what the server offers.
 
 | Path | Contents |
