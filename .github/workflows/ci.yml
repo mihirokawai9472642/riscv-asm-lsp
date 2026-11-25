@@ -11,10 +11,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Clang 19 and LLVM 19
+      - name: Install Clang 23 and LLVM 23
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-19 llvm-19
+          sudo apt-get install -y --no-install-recommends curl gnupg ca-certificates
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-snapshot.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" | sudo tee /etc/apt/sources.list.d/llvm-23.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 llvm-23
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -43,9 +47,9 @@ jobs:
       - name: Run tests without clang or llvm-mc
         run: env PATH="$HOME/.cargo/bin:/usr/bin:/bin" cargo test
 
-      - name: Run LLVM 19 and clang 19 tests
+      - name: Run LLVM 23 and clang 23 tests
         run: |
-          export PATH="/usr/lib/llvm-19/bin:$HOME/.cargo/bin:/usr/bin:/bin"
+          export PATH="/usr/lib/llvm-23/bin:$HOME/.cargo/bin:/usr/bin:/bin"
           clang --version
           llvm-mc --version
           out="$(cargo test --test integration -- --ignored)"
