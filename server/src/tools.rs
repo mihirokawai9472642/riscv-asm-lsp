@@ -480,3 +480,65 @@ pub(crate) fn has_riscv_target(output: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_bins_order_for_explicit_and_auto() {
+        assert_eq!(
+            candidate_bins_for_os(ToolKind::Clang, Some(" /custom/clang-18 "), false),
+            vec!["/custom/clang-18"]
+        );
+        assert_eq!(
+            candidate_bins_for_os(ToolKind::Clang, Some("  "), false),
+            candidate_bins_for_os(ToolKind::Clang, None, false)
+        );
+        assert_eq!(
+            candidate_bins_for_os(ToolKind::Clang, None, false),
+            vec![
+                "clang-19",
+                "clang",
+                "/usr/lib/llvm-19/bin/clang",
+                "/opt/homebrew/opt/llvm@19/bin/clang",
+                "/usr/local/opt/llvm@19/bin/clang",
+            ]
+        );
+        assert_eq!(
+            candidate_bins_for_os(ToolKind::LlvmMc, None, true),
+            vec![
+                "llvm-mc-19",
+                "llvm-mc",
+                "/usr/lib/llvm-19/bin/llvm-mc",
+                "/opt/homebrew/opt/llvm@19/bin/llvm-mc",
+                "/usr/local/opt/llvm@19/bin/llvm-mc",
+                r"C:\Program Files\LLVM\bin\llvm-mc.exe",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_llvm_major_version_and_riscv_targets() {
+        assert_eq!(
+            parse_llvm_major_version("Debian clang version 19.1.7 (3+b1)"),
+            Some(19)
+        );
+        assert_eq!(
+            parse_llvm_major_version("Apple clang version 16.0.0 (clang-1600.0.26.3)"),
+            Some(16)
+        );
+        assert_eq!(
+            parse_llvm_major_version("Debian LLVM version 18.1.3\n  Optimized build."),
+            Some(18)
+        );
+
+        let rv_targets =
+            "\n  Registered Targets:\n    riscv32 - 32-bit RISC-V\n    x86-64 - 64-bit X86\n";
+        assert!(has_riscv_target(rv_targets));
+
+        let x86_only = "\n  Host CPU: riscv64\n  Registered Targets:\n    x86-64 - 64-bit X86\n";
+        assert!(!has_riscv_target(x86_only));
+        assert!(!has_riscv_target("no target table here"));
+    }
+}
