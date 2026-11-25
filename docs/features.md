@@ -176,10 +176,11 @@ Supports `textDocument/definition`, `textDocument/references`,
   bodies, `%` relocation expressions, and expressions containing unresolved
   symbols are skipped conservatively.
 
-- **External `clang` diagnostics (`diagnostics.external`: `"auto"` | `"on"` | `"off"`)**:
-  when enabled and a RISC-V `clang` binary is found, `DiagnosticsWorker` runs
-  `clang` and prefers its results; otherwise it falls back to the built-in
-  validator (`"off"` runs the built-in validator directly).
+- **External `clang` diagnostics (`diagnostics.external`: `"off"` | `"auto"` | `"on"`, default `"off"`)**:
+  by default (`"off"`), `DiagnosticsWorker` runs only the built-in validator so
+  diagnostics never invoke external `clang`. When opted in via `"auto"` or
+  `"on"` and a RISC-V `clang` binary is found, `DiagnosticsWorker` prefers
+  `clang` results and falls back to the built-in validator when unavailable.
 
 - **Toolchain discovery**: when `clang` or `llvmMc` is omitted, the server
   searches in order:

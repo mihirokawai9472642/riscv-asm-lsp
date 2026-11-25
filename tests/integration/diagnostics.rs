@@ -7,7 +7,7 @@ fn missing_tools_disable_only_tool_features_and_keep_server_alive() {
         Some(json!({
             "clang": "/nonexistent/clang-binary",
             "llvmMc": "/nonexistent/llvm-mc-binary",
-            "diagnostics": { "enable": true, "delayMs": 20 }
+            "diagnostics": { "enable": true, "delayMs": 20, "external": "on" }
         })),
         None,
     );
@@ -43,7 +43,7 @@ fn unsaved_diagnostics_and_code_actions_with_clang() {
 
     let mut client = LspClient::start(
         Some(json!({
-            "diagnostics": { "enable": true, "delayMs": 30 }
+            "diagnostics": { "enable": true, "delayMs": 30, "external": "on" }
         })),
         None,
     );
@@ -115,7 +115,7 @@ fn macro_and_included_file_diagnostics_and_compile_working_dir() {
     let root_uri = path_to_uri(&tmp);
     let main_uri = path_to_uri(&main_s);
     let mut client = LspClient::start(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20, "external": "on" } })),
         Some(&root_uri),
     );
     client.open_doc(&main_uri, 1, main_src);
@@ -167,7 +167,7 @@ fn macro_and_included_file_diagnostics_and_compile_working_dir() {
     .unwrap();
 
     let mut client2 = LspClient::start(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20, "external": "on" } })),
         Some(&root_uri),
     );
     let sub_uri = path_to_uri(&sub_main);
@@ -225,7 +225,7 @@ fn macro_and_included_file_diagnostics_and_compile_working_dir() {
     client2.shutdown_and_exit();
 
     let mut client3 = LspClient::start(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20, "external": "on" } })),
         Some(&root_uri),
     );
     let mb_uri = path_to_uri(&mb_main);
@@ -586,7 +586,7 @@ fn preprocessor_hash_lines_table_and_x_override_with_clang() {
     let forced_uri = path_to_uri(&forced_s);
 
     let mut client = LspClient::start(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 20, "external": "on" } })),
         Some(&root_uri),
     );
 
@@ -807,7 +807,7 @@ fn fake_clang_discovery_version_independent_and_warns_only_when_configured() {
 
     // 1. Auto-discovered clang of another LLVM major version works with zero showMessage warnings
     let mut client18 = LspClient::start_with_env(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15, "external": "auto" } })),
         None,
         &[("PATH", bin_v18.to_str().unwrap())],
     );
@@ -844,7 +844,7 @@ fn fake_clang_discovery_version_independent_and_warns_only_when_configured() {
     );
 
     let mut client_fb = LspClient::start_with_env(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15, "external": "auto" } })),
         None,
         &[("PATH", bin_fallback.to_str().unwrap())],
     );
@@ -878,7 +878,7 @@ fn fake_clang_discovery_version_independent_and_warns_only_when_configured() {
     );
 
     let mut client_auto_norv = LspClient::start_with_env(
-        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15, "external": "auto" } })),
         None,
         &[("PATH", bin_no_rv.to_str().unwrap())],
     );
@@ -897,7 +897,7 @@ fn fake_clang_discovery_version_independent_and_warns_only_when_configured() {
     let mut client_cfg_norv = LspClient::start_with_env(
         Some(json!({
             "clang": clang_no_rv.to_str().unwrap(),
-            "diagnostics": { "enable": true, "delayMs": 15 }
+            "diagnostics": { "enable": true, "delayMs": 15, "external": "auto" }
         })),
         None,
         &[("PATH", bin_no_rv.to_str().unwrap())],
@@ -1463,4 +1463,48 @@ fn builtin_validator_oracle_matches_llvm_mc() {
             line.trim()
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn default_diagnostics_uses_builtin_without_spawning_clang() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp =
+        std::env::temp_dir().join(format!("riscv_asm_lsp_default_off_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let bin_dir = tmp.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let marker = tmp.join("clang_was_invoked");
+    let fake_clang = bin_dir.join("clang");
+    std::fs::write(
+        &fake_clang,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.to_string_lossy()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_clang, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let doc_uri = crate::common::test_uri("default_off.S");
+    let mut client = LspClient::start_with_env(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
+        None,
+        &[("PATH", bin_dir.to_str().unwrap())],
+    );
+    client.open_doc(&doc_uri, 1, "    mvi a0, 1\n");
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("default built-in publishDiagnostics");
+    let diags = notif.params["diagnostics"].as_array().unwrap();
+    assert_eq!(diags.len(), 1, "diags: {diags:?}");
+    assert_eq!(diags[0]["code"], json!("unknown-mnemonic"));
+    assert!(
+        !marker.exists(),
+        "external clang must not run when diagnostics.external defaults to off"
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
 }
