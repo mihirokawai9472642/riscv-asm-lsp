@@ -24,8 +24,9 @@ fn missing_tools_disable_only_tool_features_and_keep_server_alive() {
     assert_eq!(msg.params["type"], json!(2));
     let txt = msg.params["message"].as_str().unwrap_or("");
     assert!(
-        txt.contains("#installing-llvm-19")
-            && (txt.contains("settings.clang") || txt.contains("settings.llvmMc")),
+        txt.contains("#optional-llvm-for-clang-based-diagnostics-and-expansions")
+            && (txt.contains("settings.clang") || txt.contains("settings.llvmMc"))
+            && !txt.contains("LLVM 19"),
         "unexpected showMessage text: {txt}"
     );
 
@@ -777,28 +778,32 @@ _start:
 
 #[cfg(unix)]
 #[test]
-fn fake_clang_discovery_warns_once_for_wrong_version_and_missing_riscv_target() {
+fn fake_clang_discovery_version_independent_and_warns_only_when_configured() {
     use std::os::unix::fs::PermissionsExt;
 
     let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_fake_llvm_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     let bin_v18 = tmp.join("bin_v18");
+    let bin_fallback = tmp.join("bin_fallback");
     let bin_no_rv = tmp.join("bin_no_rv");
     std::fs::create_dir_all(&bin_v18).unwrap();
+    std::fs::create_dir_all(&bin_fallback).unwrap();
     std::fs::create_dir_all(&bin_no_rv).unwrap();
 
-    let clang_v18 = bin_v18.join("clang-19");
-    std::fs::write(
-        &clang_v18,
+    let write_exe = |path: &std::path::Path, body: &str| {
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+
+    write_exe(
+        &bin_v18.join("clang"),
         "#!/bin/sh\ncase \"$1\" in\n--version) echo 'clang version 18.1.3'; exit 0 ;;\n-print-targets) printf '  Registered Targets:\\n    riscv64 - 64-bit RISC-V\\n'; exit 0 ;;\nesac\ncat >/dev/null\necho '<stdin>:1:5: error: fake_v18_diag' >&2\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&clang_v18, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
     let doc_path = tmp.join("test.S");
     let uri = path_to_uri(&doc_path);
 
-    // 1. Auto-discovered clang-19 with version 18 warns once, keeps diagnostics enabled
+    // 1. Auto-discovered clang of another LLVM major version works with zero showMessage warnings
     let mut client18 = LspClient::start_with_env(
         Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
         None,
@@ -806,91 +811,128 @@ fn fake_clang_discovery_warns_once_for_wrong_version_and_missing_riscv_target() 
     );
     client18.open_doc(&uri, 1, "    mvi a0, 1\n");
 
-    let show18 = client18
-        .wait_for_notification("window/showMessage", std::time::Duration::from_secs(3))
-        .expect("version warning showMessage");
-    assert_eq!(show18.params["type"], json!(2));
-    let msg18 = show18.params["message"].as_str().unwrap_or("");
-    assert!(
-        msg18.contains("18")
-            && msg18.contains("settings.clang")
-            && msg18.contains("#installing-llvm-19"),
-        "got: {msg18}"
-    );
-
     let diag1 = client18
         .wait_for_notification(
             "textDocument/publishDiagnostics",
             std::time::Duration::from_secs(3),
         )
-        .expect("diagnostics still enabled on wrong LLVM version");
+        .expect("diagnostics enabled on LLVM 18");
     assert!(
         diag1.params["diagnostics"][0]["message"]
             .as_str()
             .unwrap_or("")
             .contains("fake_v18_diag")
     );
-
-    // Second edit must not re-send the showMessage warning
-    client18.change_doc_incremental(
-        &uri,
-        2,
-        lsp_types::Range::new(
-            lsp_types::Position::new(0, 4),
-            lsp_types::Position::new(0, 7),
-        ),
-        "mvx",
-    );
-    let _diag2 = client18
-        .wait_for_notification(
-            "textDocument/publishDiagnostics",
-            std::time::Duration::from_secs(3),
-        )
-        .expect("second diagnostics pass");
     assert!(
         client18
             .wait_for_notification("window/showMessage", std::time::Duration::from_millis(80))
             .is_none(),
-        "expected at most one showMessage per tool per config"
+        "auto-discovered LLVM 18 must not send a version warning"
     );
     client18.shutdown_and_exit();
 
-    // 2. Auto-discovered clang-19 without RISC-V target disables diagnostics, sends one warning, keeps hover alive
-    let clang_no_rv = bin_no_rv.join("clang-19");
-    std::fs::write(
+    // 2. Auto-discovered bare clang without RISC-V target falls through to clang-20 with RISC-V
+    write_exe(
+        &bin_fallback.join("clang"),
+        "#!/bin/sh\ncase \"$1\" in\n--version) echo 'Apple clang version 16.0.0'; exit 0 ;;\n-print-targets) printf '  Registered Targets:\\n    x86-64 - 64-bit X86\\n'; exit 0 ;;\nesac\nexit 1\n",
+    );
+    write_exe(
+        &bin_fallback.join("clang-20"),
+        "#!/bin/sh\ncase \"$1\" in\n--version) echo 'clang version 20.1.0'; exit 0 ;;\n-print-targets) printf '  Registered Targets:\\n    riscv64 - 64-bit RISC-V\\n'; exit 0 ;;\nesac\ncat >/dev/null\necho '<stdin>:1:5: error: fake_v20_diag' >&2\nexit 1\n",
+    );
+
+    let mut client_fb = LspClient::start_with_env(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
+        None,
+        &[("PATH", bin_fallback.to_str().unwrap())],
+    );
+    client_fb.open_doc(&uri, 1, "    mvi a0, 1\n");
+
+    let diag_fb = client_fb
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("fallback clang-20 diagnostics");
+    assert!(
+        diag_fb.params["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("fake_v20_diag")
+    );
+    assert!(
+        client_fb
+            .wait_for_notification("window/showMessage", std::time::Duration::from_millis(80))
+            .is_none(),
+        "fallback auto-discovery must not send showMessage"
+    );
+    client_fb.shutdown_and_exit();
+
+    // 3. Auto-discovered clang without RISC-V and no usable fallback disables diagnostics quietly
+    let clang_no_rv = bin_no_rv.join("clang");
+    write_exe(
         &clang_no_rv,
         "#!/bin/sh\ncase \"$1\" in\n--version) echo 'Apple clang version 16.0.0'; exit 0 ;;\n-print-targets) printf '  Registered Targets:\\n    x86-64 - 64-bit X86\\n'; exit 0 ;;\nesac\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&clang_no_rv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
-    let mut client_norv = LspClient::start_with_env(
+    let mut client_auto_norv = LspClient::start_with_env(
         Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
         None,
         &[("PATH", bin_no_rv.to_str().unwrap())],
     );
-    client_norv.open_doc(&uri, 1, "    addi a0, a1, 1\n");
+    client_auto_norv.open_doc(&uri, 1, "    addi a0, a1, 1\n");
+    assert!(
+        client_auto_norv
+            .wait_for_notification("window/showMessage", std::time::Duration::from_millis(120))
+            .is_none(),
+        "auto-discovery without RISC-V tool must stay silent in showMessage"
+    );
+    let hv_auto = hover_markdown(&mut client_auto_norv, &uri, 0, 5).expect("hover keeps working");
+    assert!(hv_auto.contains("Add immediate"), "got: {hv_auto}");
+    client_auto_norv.shutdown_and_exit();
 
-    let show_norv = client_norv
+    // 4. Explicitly configured clang without RISC-V target disables diagnostics and warns once
+    let mut client_cfg_norv = LspClient::start_with_env(
+        Some(json!({
+            "clang": clang_no_rv.to_str().unwrap(),
+            "diagnostics": { "enable": true, "delayMs": 15 }
+        })),
+        None,
+        &[("PATH", bin_no_rv.to_str().unwrap())],
+    );
+    client_cfg_norv.open_doc(&uri, 1, "    addi a0, a1, 1\n");
+
+    let show_norv = client_cfg_norv
         .wait_for_notification("window/showMessage", std::time::Duration::from_secs(3))
-        .expect("missing riscv target showMessage");
+        .expect("configured missing riscv target showMessage");
+    assert_eq!(show_norv.params["type"], json!(2));
     let msg_norv = show_norv.params["message"].as_str().unwrap_or("");
     assert!(
-        msg_norv.contains("riscv32/riscv64") && msg_norv.contains("#installing-llvm-19"),
+        msg_norv.contains("riscv32/riscv64")
+            && msg_norv.contains("settings.clang")
+            && msg_norv.contains("#optional-llvm-for-clang-based-diagnostics-and-expansions")
+            && !msg_norv.contains("LLVM 19"),
         "got: {msg_norv}"
     );
-    assert!(
-        client_norv
-            .wait_for_notification(
-                "textDocument/publishDiagnostics",
-                std::time::Duration::from_millis(80),
-            )
-            .is_none(),
-        "diagnostics should stay disabled without RISC-V target"
+    // Second edit must not re-send the showMessage warning
+    client_cfg_norv.change_doc_incremental(
+        &uri,
+        2,
+        lsp_types::Range::new(
+            lsp_types::Position::new(0, 4),
+            lsp_types::Position::new(0, 8),
+        ),
+        "mv  ",
     );
-    let hv = hover_markdown(&mut client_norv, &uri, 0, 5).expect("hover keeps working");
-    assert!(hv.contains("Add immediate"), "got: {hv}");
+    assert!(
+        client_cfg_norv
+            .wait_for_notification("window/showMessage", std::time::Duration::from_millis(80))
+            .is_none(),
+        "expected at most one showMessage per configured tool"
+    );
+    let hv_cfg = hover_markdown(&mut client_cfg_norv, &uri, 0, 5).expect("hover keeps working");
+    assert!(hv_cfg.contains("mv rd, rs"), "got: {hv_cfg}");
 
-    client_norv.shutdown_and_exit();
+    client_cfg_norv.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
