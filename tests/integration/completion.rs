@@ -6,7 +6,7 @@ use serde_json::json;
 #[test]
 fn completion_respects_march_and_operand_position() {
     let mut client = LspClient::start(Some(json!({ "defaultMarch": "rv32i" })), None);
-    let uri: lsp_types::Uri = "file:///tmp/comp_test.S".parse().expect("uri");
+    let uri = crate::common::test_uri("comp_test.S");
     client.open_doc(&uri, 1, "    \n    csrw \n");
 
     let resp = client.send_request(
@@ -457,7 +457,7 @@ fn completion_caps_large_symbol_lists_with_is_incomplete_and_prefix_filter() {
 #[test]
 fn completion_inside_block_and_line_comments_via_lsp() {
     let mut client = LspClient::start(None, None);
-    let uri: lsp_types::Uri = "file:///tmp/block_comments.S".parse().expect("uri");
+    let uri = crate::common::test_uri("block_comments.S");
     let src = "\
 /* single line ad */
     /* indented ad */
@@ -532,7 +532,7 @@ fn completion_rv32_resolve_option_arch_and_paren_contexts() {
         Some(json!({ "defaultMarch": "rv32imac_zacas", "diagnostics": { "enable": false } })),
         None,
     );
-    let uri: lsp_types::Uri = "file:///tmp/comp_ctx_edge.S".parse().expect("uri");
+    let uri = crate::common::test_uri("comp_ctx_edge.S");
     client.open_doc(
         &uri,
         1,
@@ -620,7 +620,7 @@ my_sym:
 
 #[test]
 fn completion_covers_sd_order_section_directives_and_vector_subextensions() {
-    let uri = "file:///tmp/comp_adv.S".parse::<lsp_types::Uri>().unwrap();
+    let uri = crate::common::test_uri("comp_adv.S");
     let src = "\
 sd
 .section 

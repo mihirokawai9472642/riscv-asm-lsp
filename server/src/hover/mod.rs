@@ -682,7 +682,6 @@ mod tests {
     use crate::config::Config;
     use crate::document::DocumentStore;
     use expand::{ExpandedInstruction, parse_llvm_mc_output};
-    use std::str::FromStr;
 
     fn test_ctx_and_index() -> (CompileContext, WorkspaceIndex) {
         (
@@ -695,7 +694,7 @@ mod tests {
     fn hovers_registers_pseudos_csrs_and_directives() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///test.S").expect("uri");
+        let uri = crate::context::test_uri("hover_test.S");
         let doc = store.open(
             uri,
             1,
@@ -777,7 +776,7 @@ mod tests {
     fn hover_explains_march_disabled_and_formats_ext_alternatives() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///disabled.S").expect("uri");
+        let uri = crate::context::test_uri("hover_disabled.S");
         let doc = store.open(
             uri,
             1,
@@ -826,7 +825,7 @@ mod tests {
     fn hover_works_for_define_in_assembly_file() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///defs.S").expect("uri");
+        let uri = crate::context::test_uri("hover_defs.S");
         let doc = store.open(
             uri,
             1,
@@ -858,7 +857,7 @@ mod tests {
     fn hover_warns_on_doc_only_instruction() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///q.S").expect("uri");
+        let uri = crate::context::test_uri("hover_q.S");
         let doc = store.open(uri, 1, "    fadd.q f0, f1, f2\n".to_owned());
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
@@ -914,7 +913,7 @@ mod tests {
     fn hover_handles_numeric_csr_set_reassignment_irp_and_macro_counter() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///extra.S").expect("uri");
+        let uri = crate::context::test_uri("hover_extra.S");
         let src = "\
 .set CNT, 1
     li t0, CNT
@@ -983,10 +982,29 @@ loop_\\@:
     #[test]
     fn cancel_skips_pending_hover_job() {
         let (tx_out, rx_out) = std::sync::mpsc::channel();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let started_tx = Mutex::new(Some(started_tx));
+        let release_rx = Mutex::new(Some(release_rx));
         let tools = Arc::new(ToolRunner::new("clang".to_owned(), "llvm-mc".to_owned()));
         let worker = HoverWorker::new(
             tools,
             Arc::new(move |msg| {
+                // Hold the worker on job 1 until job 2 is submitted and cancelled.
+                if let Message::Response(r) = &msg
+                    && r.id == RequestId::from(1)
+                {
+                    if let Ok(mut guard) = started_tx.lock()
+                        && let Some(tx) = guard.take()
+                    {
+                        let _ = tx.send(());
+                    }
+                    if let Ok(mut guard) = release_rx.lock()
+                        && let Some(rx) = guard.take()
+                    {
+                        let _ = rx.recv();
+                    }
+                }
                 let _ = tx_out.send(msg);
             }),
         );
@@ -1017,10 +1035,20 @@ loop_\\@:
                 known_consts: HashMap::new(),
             },
         };
+        let blocker_id = RequestId::from(1);
         let id = RequestId::from(99);
         worker.cancel(&id); // canceling unknown id is a no-op
+        worker.submit(blocker_id, dummy.clone());
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("blocker job started");
         worker.submit(id.clone(), dummy);
         worker.cancel(&id);
+        let _ = release_tx.send(());
+
+        let _ = rx_out
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("blocker response");
         let msg = rx_out
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("cancelled response");

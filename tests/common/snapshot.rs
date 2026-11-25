@@ -24,11 +24,10 @@ pub fn normalize_text(input: &str, replacements: &[(&str, &str)]) -> String {
 }
 
 pub fn assert_text_snapshot(rel_path: &str, actual: &str) {
-    let normalized = if actual.ends_with('\n') {
-        actual.to_owned()
-    } else {
-        format!("{actual}\n")
-    };
+    let mut normalized = actual.replace("\r\n", "\n");
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
     let path = snapshots_dir().join(rel_path);
     if std::env::var("UPDATE_SNAPSHOTS").as_deref() == Ok("1") {
         if let Some(parent) = path.parent() {
@@ -38,12 +37,14 @@ pub fn assert_text_snapshot(rel_path: &str, actual: &str) {
         return;
     }
 
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "missing snapshot {}: {e} (run with UPDATE_SNAPSHOTS=1 to create)",
-            path.display()
-        )
-    });
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| {
+            panic!(
+                "missing snapshot {}: {e} (run with UPDATE_SNAPSHOTS=1 to create)",
+                path.display()
+            )
+        })
+        .replace("\r\n", "\n");
     if expected != normalized {
         let diff = format_line_diff(&expected, &normalized);
         panic!("snapshot mismatch for {rel_path}:\n{diff}");

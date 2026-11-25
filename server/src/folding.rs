@@ -207,12 +207,11 @@ fn collect_directive_blocks(text: &str, preprocessed: bool, out: &mut BTreeSet<(
 mod tests {
     use super::*;
     use crate::document::DocumentStore;
-    use std::str::FromStr;
 
     #[test]
     fn collects_macro_if_comment_and_label_folds() {
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///fold.S").expect("uri");
+        let uri = crate::context::test_uri("fold.S");
         let doc = store.open(
             uri,
             1,

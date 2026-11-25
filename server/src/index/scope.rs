@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use lsp_types::{Range, Uri};
 
-use crate::context::{CompileContext, normalize_path, path_to_uri};
+use crate::context::{CompileContext, path_key, path_to_uri};
 use crate::position::word_range_at;
 
 use super::parse::{parse_asm_include_line, parse_cpp_include_line, resolve_include_path};
@@ -118,27 +118,38 @@ impl WorkspaceIndex {
         start_path: &Path,
         ctx: &mut CompileContext,
     ) -> Vec<PathBuf> {
-        let start_norm = normalize_path(start_path);
+        let start_key = path_key(start_path);
         let mut visited = HashSet::new();
         let mut ordered = Vec::new();
         let mut queue = VecDeque::new();
-        visited.insert(start_norm.clone());
-        queue.push_back(start_norm);
+        visited.insert(start_key.clone());
+        queue.push_back(start_key);
 
-        while let Some(cur) = queue.pop_front() {
-            let pre = ctx.is_preprocessed_path(&cur);
-            self.sync_preprocessed_path(&cur, pre);
-            ordered.push(cur.clone());
-            let includes = self
+        while let Some(cur_key) = queue.pop_front() {
+            let pre = self
                 .files
-                .get(&cur)
-                .map(|f| f.includes.clone())
-                .unwrap_or_default();
+                .get(&cur_key)
+                .map(|f| ctx.for_uri(&f.uri).preprocessed)
+                .unwrap_or_else(|| ctx.is_preprocessed_path(&cur_key));
+            self.sync_preprocessed_path(&cur_key, pre);
+            ordered.push(cur_key.clone());
+            let (includes, cur_uri, cur_dir) = match self.files.get(&cur_key) {
+                Some(f) => {
+                    let disk_dir = crate::context::uri_to_path(&f.uri)
+                        .and_then(|p| p.parent().map(Path::to_path_buf))
+                        .or_else(|| cur_key.parent().map(Path::to_path_buf));
+                    (f.includes.clone(), Some(f.uri.clone()), disk_dir)
+                }
+                None => (
+                    Vec::new(),
+                    path_to_uri(&cur_key),
+                    cur_key.parent().map(Path::to_path_buf),
+                ),
+            };
             if includes.is_empty() {
                 continue;
             }
-            let file_ctx = path_to_uri(&cur).map(|u| ctx.for_uri(&u));
-            let cur_dir = cur.parent().map(Path::to_path_buf);
+            let file_ctx = cur_uri.as_ref().map(|u| ctx.for_uri(u));
 
             for inc in includes {
                 if let Some(resolved) = resolve_include_path(
@@ -154,13 +165,13 @@ impl WorkspaceIndex {
                         .unwrap_or(&[]),
                     self.workspace_root.as_deref(),
                 ) {
-                    let res_norm = normalize_path(&resolved);
-                    let res_pre = ctx.is_preprocessed_path(&res_norm);
-                    if !self.files.contains_key(&res_norm) {
-                        self.index_path_from_disk_with_preprocessed(&res_norm, Some(res_pre));
+                    let res_key = path_key(&resolved);
+                    let res_pre = ctx.is_preprocessed_path(&resolved);
+                    if !self.files.contains_key(&res_key) {
+                        self.index_path_from_disk_with_preprocessed(&resolved, Some(res_pre));
                     }
-                    if visited.insert(res_norm.clone()) {
-                        queue.push_back(res_norm);
+                    if visited.insert(res_key.clone()) {
+                        queue.push_back(res_key);
                     }
                 }
             }
@@ -174,17 +185,17 @@ impl WorkspaceIndex {
         target_path: &Path,
         ctx: &mut CompileContext,
     ) -> Vec<PathBuf> {
-        let target_norm = normalize_path(target_path);
+        let target_key = path_key(target_path);
         let candidate_paths: Vec<PathBuf> = self
             .files
             .iter()
-            .filter(|(p, f)| **p == target_norm || !f.includes.is_empty())
+            .filter(|(p, f)| **p == target_key || !f.includes.is_empty())
             .map(|(p, _)| p.clone())
             .collect();
         let mut matching = Vec::new();
         for p in candidate_paths {
             let closure = self.resolve_include_closure(&p, ctx);
-            if closure.contains(&target_norm) {
+            if closure.contains(&target_key) {
                 matching.push(p);
             }
         }
@@ -195,8 +206,8 @@ impl WorkspaceIndex {
         let Some(norm_root) = &self.canon_workspace_root else {
             return true;
         };
-        let norm_path = normalize_path(path);
-        norm_path.starts_with(norm_root)
+        let key = path_key(path);
+        crate::context::path_starts_with(&key, norm_root)
     }
 
     pub fn token_hover_info(

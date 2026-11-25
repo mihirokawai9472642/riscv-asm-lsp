@@ -31,9 +31,7 @@ pub type DiagnosticsCache = Arc<Mutex<HashMap<String, Vec<StoredDiagnostic>>>>;
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use lsp_types::{DiagnosticSeverity, Position, Uri};
+    use lsp_types::{DiagnosticSeverity, Position};
 
     use super::*;
 
@@ -69,23 +67,28 @@ mod tests {
 .endm
     TWICE
 ";
-        let stderr = "\
-Included from /tmp/--0bca6a.s:8:
-/tmp/proj/bad.inc:1:5: error: unrecognized instruction mnemonic, did you mean: mv?
-    mov a0, a1
-    ^
-In file included from <stdin>:2:
-/tmp/proj/bad.h:1:2: error: bad header
-    1 | #error bad header
-      |  ^
-<instantiation>:2:5: error: unrecognized instruction mnemonic, did you mean: mv?
-    mvx a0, a1
-    ^
-<stdin>:7:5: note: while in macro instantiation
-    TWICE
-    ^
-";
-        let diags = parse_clang_output(src, stderr);
+        let proj_dir = std::env::temp_dir().join("riscv_asm_lsp_diag_proj");
+        let bad_inc = proj_dir.join("bad.inc");
+        let bad_h = proj_dir.join("bad.h");
+        let stderr = format!(
+            "Included from --0bca6a.s:8:\n\
+             {}:1:5: error: unrecognized instruction mnemonic, did you mean: mv?\n\
+                 mov a0, a1\n\
+                 ^\n\
+             In file included from <stdin>:2:\n\
+             {}:1:2: error: bad header\n\
+                 1 | #error bad header\n\
+                   |  ^\n\
+             <instantiation>:2:5: error: unrecognized instruction mnemonic, did you mean: mv?\n\
+                 mvx a0, a1\n\
+                 ^\n\
+             <stdin>:7:5: note: while in macro instantiation\n\
+                 TWICE\n\
+                 ^\n",
+            bad_inc.display(),
+            bad_h.display()
+        );
+        let diags = parse_clang_output(src, &stderr);
         assert_eq!(diags.len(), 3, "diags: {diags:?}");
 
         // 0: `.include "bad.inc"` on line 0
@@ -180,14 +183,9 @@ INNER
         let src = "# define X 5 is the size\n_start:\n    li a0, X\n";
         let stderr =
             "<stdin>:3:14: error: unexpected token\n    li a0, 5 is the size\n             ^\n";
-        let uri: Uri = "file:///tmp/spaced.S".parse().expect("uri");
-        let diags = parse_clang_output_with_ctx(
-            src,
-            stderr,
-            Some(Path::new("/tmp/spaced.S")),
-            Some(&uri),
-            None,
-        );
+        let uri = crate::context::test_uri("spaced.S");
+        let path = crate::context::uri_to_path(&uri).expect("path");
+        let diags = parse_clang_output_with_ctx(src, stderr, Some(&path), Some(&uri), None);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].diagnostic.range.start.line, 2);
         assert_eq!(diags[0].macro_def_hints.len(), 1);
@@ -217,14 +215,9 @@ INNER
     CZ a0, a1
 ";
         let stderr = "<stdin>:6:5: error: instruction requires the following: 'Zbb' (Basic Bit-Manipulation)\n    ctz a0, a1\n    ^\n";
-        let uri: Uri = "file:///tmp/cz.S".parse().expect("uri");
-        let diags = parse_clang_output_with_ctx(
-            src,
-            stderr,
-            Some(Path::new("/tmp/cz.S")),
-            Some(&uri),
-            None,
-        );
+        let uri = crate::context::test_uri("cz.S");
+        let path = crate::context::uri_to_path(&uri).expect("path");
+        let diags = parse_clang_output_with_ctx(src, stderr, Some(&path), Some(&uri), None);
         assert_eq!(diags.len(), 1);
         assert!(
             diags[0].macro_def_hints.is_empty(),
@@ -243,14 +236,9 @@ INNER
         // Even with a prose define, an error whose column is before the macro usage stays neutral
         let src2 = "# define X 5 is the size\n_start:\n    mvi a0, X\n";
         let stderr2 = "<stdin>:3:5: error: unrecognized instruction mnemonic, did you mean: mv?\n    mvi a0, 5 is the size\n    ^\n";
-        let uri2: Uri = "file:///tmp/col_before.S".parse().expect("uri");
-        let diags2 = parse_clang_output_with_ctx(
-            src2,
-            stderr2,
-            Some(Path::new("/tmp/col_before.S")),
-            Some(&uri2),
-            None,
-        );
+        let uri2 = crate::context::test_uri("col_before.S");
+        let path2 = crate::context::uri_to_path(&uri2).expect("path");
+        let diags2 = parse_clang_output_with_ctx(src2, stderr2, Some(&path2), Some(&uri2), None);
         assert_eq!(diags2.len(), 1);
         assert!(diags2[0].macro_def_hints.is_empty());
         let rel2 = diags2[0]
@@ -279,7 +267,7 @@ INNER
              In file included from <stdin>:1:\n<built-in>:1:10: fatal error: 'x' file not found\n",
             inc_path.display()
         );
-        let main_uri: Uri = format!("file://{}", main_path.display()).parse().unwrap();
+        let main_uri = crate::context::path_to_uri(&main_path).expect("main uri");
         let diags = parse_clang_output_with_ctx(
             "    .include \"mb.inc\"\n",
             &stderr,

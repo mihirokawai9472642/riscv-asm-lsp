@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use lsp_server::{Message, Notification};
 use lsp_types::{Diagnostic, PublishDiagnosticsParams, Uri};
 
-use crate::context::FileContext;
+use crate::context::{FileContext, uri_key};
 use crate::tools::ToolRunner;
 
 use super::clang::run_clang_diagnostics;
@@ -64,6 +64,7 @@ impl DiagnosticsWorker {
                 cache: cache_bg,
                 pending: HashMap::new(),
                 last_diagnosed: HashMap::new(),
+                cache_uris: HashMap::new(),
                 logged_panic: false,
             };
             runner.run();
@@ -94,7 +95,7 @@ impl DiagnosticsWorker {
         immediate: bool,
     ) {
         if let Ok(mut map) = self.latest_versions.lock() {
-            map.insert(uri.as_str().to_owned(), version);
+            map.insert(uri_key(&uri), version);
         }
         if let Some(tx) = &self.tx {
             let _ = tx.send(WorkerMsg::Check {
@@ -120,7 +121,7 @@ impl DiagnosticsWorker {
     }
 
     pub fn clear(&self, uri: &Uri) {
-        let key = uri.as_str().to_owned();
+        let key = uri_key(uri);
         let had_version = self
             .latest_versions
             .lock()
@@ -165,6 +166,7 @@ struct DiagnosticsRunner {
     cache: DiagnosticsCache,
     pending: HashMap<String, PendingJob>,
     last_diagnosed: HashMap<String, i32>,
+    cache_uris: HashMap<String, Uri>,
     logged_panic: bool,
 }
 
@@ -229,7 +231,7 @@ impl DiagnosticsRunner {
                 if !self.enable {
                     return true;
                 }
-                let key = uri.as_str().to_owned();
+                let key = uri_key(&uri);
                 if immediate && self.last_diagnosed.get(&key).copied() == Some(version) {
                     return true;
                 }
@@ -252,9 +254,10 @@ impl DiagnosticsRunner {
                 true
             }
             WorkerMsg::Clear(uri) => {
-                let key = uri.as_str().to_owned();
+                let key = uri_key(&uri);
                 self.pending.remove(&key);
                 self.last_diagnosed.remove(&key);
+                self.cache_uris.remove(&key);
                 publish_diagnostics(&self.lsp_sender, uri, Vec::new(), None);
                 true
             }
@@ -270,17 +273,18 @@ impl DiagnosticsRunner {
                 self.delay = Duration::from_millis(delay_ms);
                 self.last_diagnosed.clear();
                 if !enable {
-                    let uris: Vec<Uri> = if let Ok(mut guard) = self.cache.lock() {
-                        guard
-                            .drain()
-                            .filter_map(|(k, _)| k.parse::<Uri>().ok())
-                            .collect()
+                    let keys: Vec<String> = if let Ok(mut guard) = self.cache.lock() {
+                        guard.drain().map(|(k, _)| k).collect()
                     } else {
                         Vec::new()
                     };
                     self.pending.clear();
-                    for uri in uris {
-                        publish_diagnostics(&self.lsp_sender, uri, Vec::new(), None);
+                    for k in keys {
+                        if let Some(uri) =
+                            self.cache_uris.remove(&k).or_else(|| k.parse::<Uri>().ok())
+                        {
+                            publish_diagnostics(&self.lsp_sender, uri, Vec::new(), None);
+                        }
                     }
                 }
                 true
@@ -342,6 +346,7 @@ impl DiagnosticsRunner {
 
         let lsp_diags: Vec<Diagnostic> = diags.iter().map(|d| d.diagnostic.clone()).collect();
         self.last_diagnosed.insert(key.clone(), job.version);
+        self.cache_uris.insert(key.clone(), job.uri.clone());
         if let Ok(mut guard) = self.cache.lock() {
             guard.insert(key, diags);
         }

@@ -435,18 +435,33 @@ fn find_include_line_in_source(text: &str, target_file: &str, preprocessed: bool
             continue;
         };
         let inc_norm = inc_target.replace('\\', "/");
-        if target_norm == inc_norm || target_norm.ends_with(&format!("/{inc_norm}")) {
+        if paths_match(&target_norm, &inc_norm) {
             return Some(idx);
         }
         let inc_name = Path::new(&inc_norm)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(&inc_norm);
-        if fallback.is_none() && inc_name == target_name {
+        let name_eq = if cfg!(windows) {
+            inc_name.eq_ignore_ascii_case(target_name)
+        } else {
+            inc_name == target_name
+        };
+        if fallback.is_none() && name_eq {
             fallback = Some(idx);
         }
     }
     fallback
+}
+
+fn paths_match(target_norm: &str, inc_norm: &str) -> bool {
+    if cfg!(windows) {
+        let t = target_norm.to_lowercase();
+        let i = inc_norm.to_lowercase();
+        t == i || t.ends_with(&format!("/{i}"))
+    } else {
+        target_norm == inc_norm || target_norm.ends_with(&format!("/{inc_norm}"))
+    }
 }
 
 fn extract_include_target(line: &str, preprocessed: bool) -> Option<String> {

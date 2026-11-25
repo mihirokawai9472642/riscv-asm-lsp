@@ -253,7 +253,7 @@ _start:
 #[test]
 fn semantic_tokens_prefer_user_symbols_over_non_csr_positions_and_skip_block_comments() {
     let mut client = LspClient::start(None, None);
-    let uri: lsp_types::Uri = "file:///tmp/sem_csr_and_blk.S".parse().expect("uri");
+    let uri = crate::common::test_uri("sem_csr_and_blk.S");
     let src = "\
 /*
 #define GHOST_CONST 1

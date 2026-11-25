@@ -676,3 +676,121 @@ fn workspace_did_change_configuration_compile_flags_and_multi_root() {
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn cross_directory_include_resolution_via_compile_commands() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_xdir_inc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let src_dir = tmp.join("arch").join("riscv");
+    let inc_dir = tmp.join("include").join("generated");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::create_dir_all(&inc_dir).unwrap();
+
+    let hdr = inc_dir.join("defs.h");
+    std::fs::write(&hdr, "#define XDIR_MAGIC 123\n").unwrap();
+    let main_s = src_dir.join("entry.S");
+    let main_src = "#include \"generated/defs.h\"\n_start:\n    li a0, XDIR_MAGIC\n";
+    std::fs::write(&main_s, main_src).unwrap();
+
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy(),
+            "arguments": [
+                "clang",
+                "--target=riscv64-unknown-elf",
+                "-march=rv64gc",
+                "-Iinclude",
+                "-c",
+                "arch/riscv/entry.S"
+            ],
+            "file": "arch/riscv/entry.S"
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let main_uri = path_to_uri(&main_s);
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": false } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&main_uri, 1, main_src);
+
+    let hv = hover_markdown(&mut client, &main_uri, 2, 14).expect("XDIR_MAGIC hover");
+    assert!(hv.contains("123"), "got: {hv}");
+
+    let def = client.send_request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": main_uri.as_str() },
+            "position": { "line": 0, "character": 14 }
+        }),
+    );
+    let def_str = serde_json::to_string(&def.result.expect("def result")).unwrap();
+    assert!(def_str.contains("defs.h"), "got: {def_str}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_drive_mixed_case_compile_db_and_encoded_colon_uri() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_win_case_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let sub_upper = tmp.join("SubDir");
+    std::fs::create_dir_all(&sub_upper).unwrap();
+    let file_upper = sub_upper.join("MainFile.S");
+    let src = "_start:\n    fadd.s ft0, ft1, ft2\n";
+    std::fs::write(&file_upper, src).unwrap();
+
+    // Write compile_commands.json with inverted path case
+    let lower_file = file_upper.to_string_lossy().to_lowercase();
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy().to_lowercase(),
+            "arguments": ["clang", "--target=riscv32-unknown-elf", "-march=rv32imac", "-c", lower_file],
+            "file": file_upper.to_string_lossy().to_lowercase()
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let uri_normal = path_to_uri(&file_upper);
+    let raw = uri_normal.as_str();
+    let encoded_str = if let Some(rest) = raw.strip_prefix("file:///") {
+        let mut chars = rest.chars();
+        if let (Some(drive), Some(':')) = (chars.next(), chars.next()) {
+            format!(
+                "file:///{}%3A{}",
+                drive.to_ascii_lowercase(),
+                chars.as_str()
+            )
+        } else {
+            raw.to_owned()
+        }
+    } else {
+        raw.to_owned()
+    };
+    let uri_encoded: lsp_types::Uri = encoded_str.parse().expect("encoded uri");
+
+    let mut client = LspClient::start(
+        Some(json!({ "defaultMarch": "rv64gc", "diagnostics": { "enable": false } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&uri_normal, 1, src);
+
+    // Querying hover via `%3A` lowercase-drive URI hits the same open document & mixed-case compile DB entry (`rv32imac` warns on `fadd.s`)
+    let hv = hover_markdown(&mut client, &uri_encoded, 1, 6).expect("hover via encoded colon URI");
+    assert!(
+        hv.to_ascii_lowercase().contains("not enabled"),
+        "expected mixed-case compile DB rv32imac to apply via encoded URI: {hv}"
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

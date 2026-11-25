@@ -143,13 +143,12 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::document::DocumentStore;
-    use std::str::FromStr;
 
     #[test]
     fn signature_help_tracks_active_operand_and_variants() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///sig.S").expect("uri");
+        let uri = crate::context::test_uri("sig.S");
         let doc = store.open(uri, 1, "    addi a0, a1, \n// addi a0, \n".to_owned());
         let mut ctx = CompileContext::new(None, Config::default());
 

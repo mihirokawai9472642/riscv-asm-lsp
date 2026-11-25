@@ -532,7 +532,6 @@ mod tests {
     use lsp_types::Documentation;
     use std::collections::BTreeSet;
     use std::fmt::Write;
-    use std::str::FromStr;
 
     fn ctx_and_index(march: &str) -> (CompileContext, WorkspaceIndex) {
         let cfg = Config {
@@ -560,7 +559,7 @@ mod tests {
     fn statement_start_filters_by_march_and_excludes_udb_only() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///test.S").expect("uri");
+        let uri = crate::context::test_uri("comp_test.S");
         let doc = store.open(uri, 1, "    \n".to_owned());
 
         let (mut ctx32, mut idx32) = ctx_and_index("rv32i");
@@ -591,7 +590,7 @@ mod tests {
     fn operand_completion_offers_csrs_registers_options_and_macro_params() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///test.S").expect("uri");
+        let uri = crate::context::test_uri("comp_test.S");
         let doc = store.open(
             uri,
             1,
@@ -637,7 +636,7 @@ mod tests {
     fn completion_provides_text_edits_and_percent_relocations_only() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///edit.S").expect("uri");
+        let uri = crate::context::test_uri("comp_edit.S");
         let doc = store.open(
             uri,
             1,
@@ -684,7 +683,7 @@ mod tests {
     fn snippet_variants_sort_real_before_alias_before_special_and_differentiate_labels() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///snip.S").expect("uri");
+        let uri = crate::context::test_uri("comp_snip.S");
         let doc = store.open(uri, 1, "    \n    .\n".to_owned());
         let (mut ctx, mut index) = ctx_and_index("rv64gc");
         index.upsert_open_document(doc);
@@ -818,7 +817,7 @@ mod tests {
     fn trailing_separators_outside_snippets() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///sep.S").expect("uri");
+        let uri = crate::context::test_uri("comp_sep.S");
         let doc = store.open(
             uri,
             1,
@@ -875,7 +874,7 @@ mod tests {
     fn symbol_cap_sets_is_incomplete_and_filters_by_prefix() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///many_syms.S").expect("uri");
+        let uri = crate::context::test_uri("comp_many_syms.S");
         let mut src = String::new();
         for i in 0..260 {
             let _ = writeln!(src, "sym_{i:03}:\n    nop");
@@ -920,7 +919,7 @@ mod tests {
     fn no_completion_inside_block_and_line_comments_but_completes_after_closed_block() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///comments.S").expect("uri");
+        let uri = crate::context::test_uri("comp_comments.S");
         let src = "\
 /* single line ad */
     /* indented ad */

@@ -311,13 +311,12 @@ mod tests {
     use crate::config::Config;
     use crate::document::DocumentStore;
     use lsp_types::Position;
-    use std::str::FromStr;
 
     #[test]
     fn inlay_hints_show_csr_numbers_and_constant_values() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///hint.S").expect("uri");
+        let uri = crate::context::test_uri("hint.S");
         let doc = store.open(
             uri.clone(),
             1,

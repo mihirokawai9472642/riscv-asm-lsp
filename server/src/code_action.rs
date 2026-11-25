@@ -5,6 +5,7 @@ use lsp_types::{
     Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use crate::context::uri_key;
 use crate::diagnostics::{DiagnosticsCache, StoredDiagnostic};
 use crate::document::Document;
 use crate::preprocessor::{classify_hash_line, hash_to_slash_replacement};
@@ -26,7 +27,7 @@ pub fn provide_code_actions(
     let stored: Vec<StoredDiagnostic> = cache
         .lock()
         .ok()
-        .and_then(|guard| guard.get(uri.as_str()).cloned())
+        .and_then(|guard| guard.get(&uri_key(uri)).cloned())
         .unwrap_or_default();
     let mut actions = Vec::new();
     let mut hash_diags_by_line: HashMap<u32, Vec<Diagnostic>> = HashMap::new();
@@ -207,12 +208,11 @@ mod tests {
     use super::*;
     use crate::diagnostics::StoredDiagnostic;
     use lsp_types::{Diagnostic, DiagnosticSeverity};
-    use std::str::FromStr;
     use std::sync::{Arc, Mutex};
 
     #[test]
     fn produces_quickfix_for_overlapping_diagnostic() {
-        let uri = Uri::from_str("file:///test.S").expect("uri");
+        let uri = crate::context::test_uri("ca_test.S");
         let diag = Diagnostic {
             range: Range::new(Position::new(4, 4), Position::new(4, 7)),
             severity: Some(DiagnosticSeverity::ERROR),
@@ -222,7 +222,7 @@ mod tests {
         };
         let mut map = HashMap::new();
         map.insert(
-            uri.as_str().to_owned(),
+            crate::context::uri_key(&uri),
             vec![StoredDiagnostic {
                 diagnostic: diag,
                 suggestions: vec!["mv".to_owned()],
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(ca.kind, Some(CodeActionKind::QUICKFIX));
         // Valid `#include` / `#define` without diagnostics do not emit REFACTOR_REWRITE; `# comment` still does.
         let mut doc_store = crate::document::DocumentStore::new().expect("store");
-        let pp_uri = Uri::from_str("file:///valid_only.S").expect("uri");
+        let pp_uri = crate::context::test_uri("ca_valid_only.S");
         let pp_doc = doc_store.open(
             pp_uri.clone(),
             1,
@@ -290,7 +290,7 @@ mod tests {
         use crate::document::DocumentStore;
 
         let mut store = DocumentStore::new().expect("store");
-        let uri = Uri::from_str("file:///pp.S").expect("uri");
+        let uri = crate::context::test_uri("ca_pp.S");
         let doc = store.open(
             uri.clone(),
             1,
@@ -299,7 +299,7 @@ mod tests {
         );
         let mut map = HashMap::new();
         map.insert(
-            uri.as_str().to_owned(),
+            crate::context::uri_key(&uri),
             vec![
                 StoredDiagnostic {
                     diagnostic: Diagnostic {

@@ -9,7 +9,9 @@ use serde::Deserialize;
 use crate::config::Config;
 
 use super::march::MarchSpec;
-use super::uri::{lexical_normalize_path, normalize_path, resolve_path, uri_to_path};
+use super::uri::{
+    lexical_normalize_path, normalize_path, path_key, path_starts_with, resolve_path, uri_to_path,
+};
 
 #[derive(Debug, Clone)]
 pub struct FileContext {
@@ -141,7 +143,7 @@ impl CompileContext {
         let norm = normalize_path(path);
         self.root_states
             .iter()
-            .filter(|s| norm.starts_with(&s.canon_root) || path.starts_with(&s.root))
+            .filter(|s| path_starts_with(&norm, &s.canon_root) || path_starts_with(path, &s.root))
             .max_by_key(|s| s.canon_root.as_os_str().len())
             .map(|s| (Some(s.root.as_path()), Some(s.canon_root.as_path())))
             .unwrap_or_else(|| {
@@ -157,14 +159,15 @@ impl CompileContext {
         path: &Path,
         norm: &Path,
     ) -> Option<(&ParsedCompileEntry, &RootCompileState)> {
+        let key = path_key(norm);
         for state in &self.root_states {
-            if let Some(entry) = state.entries.get(norm).or_else(|| state.entries.get(path)) {
+            if let Some(entry) = state.entries.get(&key).or_else(|| state.entries.get(norm)) {
                 return Some((entry, state));
             }
         }
         self.root_states
             .iter()
-            .filter(|s| norm.starts_with(&s.canon_root) || path.starts_with(&s.root))
+            .filter(|s| path_starts_with(norm, &s.canon_root) || path_starts_with(path, &s.root))
             .max_by_key(|s| s.canon_root.as_os_str().len())
             .and_then(|s| s.fallback_entry.as_ref().map(|e| (e, s)))
     }
@@ -382,7 +385,7 @@ fn build_compile_entries(
         } else {
             Vec::new()
         };
-        entries.insert(file_path, extract_relevant_flags(&dir, &args));
+        entries.insert(path_key(&file_path), extract_relevant_flags(&dir, &args));
     }
     entries
 }
