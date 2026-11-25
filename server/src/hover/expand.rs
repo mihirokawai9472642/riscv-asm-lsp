@@ -9,6 +9,8 @@ pub(super) const MAX_EXPANSION_CACHE_ENTRIES: usize = 512;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct ExpansionCacheKey {
     pub(super) stmt: String,
+    pub(super) builtin_preprocessed_stmt: Option<String>,
+    pub(super) builtin_had_unresolved_include: bool,
     pub(super) triple: String,
     pub(super) mattr: String,
     pub(super) option_lines: Vec<String>,
@@ -90,8 +92,20 @@ pub(super) fn resolve_expansion(pending: &PendingExpansion, tools: &ToolRunner) 
         }
     }
 
-    // 3. Preprocess with `clang -E -P -x assembler-with-cpp` when preprocessor directives exist
-    if !key.cpp_preamble.is_empty()
+    // 3. Try the built-in pure-Rust C preprocessor result before spawning external `clang -E`
+    if let Some(pre) = key.builtin_preprocessed_stmt.as_deref() {
+        let resolved = substitute_constants(pre, &pending.known_consts);
+        if !resolved.is_empty()
+            && resolved != key.stmt
+            && let Some(exp) =
+                run_llvm_mc_expand(&resolved, &key.triple, &key.mattr, &key.option_lines, tools)
+        {
+            return CachedExpansion::Expanded(exp);
+        }
+    }
+
+    // 4. Fallback to `clang -E -P -x assembler-with-cpp` when external tool is available
+    if (!key.cpp_preamble.is_empty() || key.builtin_had_unresolved_include)
         && !tools.is_disabled(ToolKind::Clang)
         && let Some(pre) = preprocess_with_clang(
             &key.stmt,

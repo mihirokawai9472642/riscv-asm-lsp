@@ -450,7 +450,31 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
         .collect();
     const_pairs.sort();
 
-    let file_dir = uri_to_path(&c.doc.uri).and_then(|p| p.parent().map(Path::to_path_buf));
+    let file_path = uri_to_path(&c.doc.uri);
+    let file_dir = file_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    let (builtin_preprocessed_stmt, builtin_had_unresolved_include) = if c.file_ctx.preprocessed {
+        let pre = crate::preprocessor::preprocess_document_up_to(
+            &c.doc.text,
+            &crate::preprocessor::PreprocessOptions {
+                file_path: file_path.as_deref(),
+                file_ctx: c.file_ctx,
+                db: c.db,
+                open_files: None,
+            },
+            Some(c.pos.line as usize),
+        );
+        let stmt_opt = pre
+            .line_for_source(c.pos.line as usize)
+            .filter(|pl| pl.state != crate::preprocessor::LineState::Inactive)
+            .map(|pl| extract_expanded_stmt_at(pl, c.pos))
+            .filter(|s| !s.is_empty());
+        (stmt_opt, pre.has_unresolved_include)
+    } else {
+        (None, false)
+    };
     let (cpp_preamble, open_if_depth) = if c.file_ctx.preprocessed {
         collect_cpp_preamble(&c.doc.text, c.pos.line as usize)
     } else {
@@ -459,6 +483,8 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
 
     let key = ExpansionCacheKey {
         stmt,
+        builtin_preprocessed_stmt,
+        builtin_had_unresolved_include,
         triple: c.file_ctx.march.llvm_triple().to_owned(),
         mattr: c.file_ctx.march.to_llvm_mattr(),
         option_lines: c.option_lines,
@@ -482,6 +508,25 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
         range: c.range,
         pending: PendingExpansion { key, known_consts },
     }))
+}
+
+fn extract_expanded_stmt_at(pl: &crate::preprocessor::PreprocessedLine, pos: Position) -> String {
+    let target_line = pos.line as usize;
+    let target_col = pos.character;
+    let exp_offset = pl
+        .spans
+        .iter()
+        .find(|s| {
+            s.source_line == target_line
+                && target_col >= s.source_utf16.0
+                && target_col <= s.source_utf16.1
+        })
+        .map(|s| s.expanded.0)
+        .unwrap_or(0);
+
+    let trimmed =
+        crate::line::extract_statement_at(&pl.text, exp_offset).unwrap_or_else(|| pl.text.clone());
+    trimmed.trim().to_owned()
 }
 
 /// Synchronous convenience wrapper for unit tests.
@@ -771,6 +816,42 @@ mod tests {
             panic!("expected markup");
         };
         assert!(m.value.contains("`I` · RV32/RV64"));
+    }
+
+    #[test]
+    fn builtin_preprocessor_prepares_statement_for_hover_without_clang() {
+        let db = Database::load().expect("db");
+        let mut ctx = CompileContext::new(None, Config::default());
+        let uri = crate::context::test_uri("hover_macro_prep.S");
+        let mut file_ctx = ctx.for_uri(&uri);
+        file_ctx
+            .macro_flags
+            .push(crate::context::MacroFlag::Define {
+                name: "CONFIG_TEST".to_owned(),
+                value: None,
+            });
+        let src = "\
+#ifdef CONFIG_TEST
+#define ADD_ONE(x) ((x) + 1)
+    li a0, ADD_ONE(41)
+#endif
+";
+        let pre = crate::preprocessor::preprocess_document_up_to(
+            src,
+            &crate::preprocessor::PreprocessOptions {
+                file_path: None,
+                file_ctx: &file_ctx,
+                db: &db,
+                open_files: None,
+            },
+            Some(2),
+        );
+        let pl = pre.line_for_source(2).expect("line 2");
+        assert_eq!(pl.state, crate::preprocessor::LineState::Active);
+        assert_eq!(
+            extract_expanded_stmt_at(pl, Position::new(2, 5)),
+            "li a0, ((41) + 1)"
+        );
     }
 
     #[test]
@@ -1085,6 +1166,8 @@ loop_\\@:
             pending: PendingExpansion {
                 key: ExpansionCacheKey {
                     stmt: "nop".to_owned(),
+                    builtin_preprocessed_stmt: None,
+                    builtin_had_unresolved_include: false,
                     triple: "riscv64".to_owned(),
                     mattr: String::new(),
                     option_lines: Vec::new(),
