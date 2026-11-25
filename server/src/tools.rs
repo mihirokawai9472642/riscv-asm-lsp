@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::fs;
 use std::io::{ErrorKind, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -10,8 +13,7 @@ use lsp_types::{MessageType, ShowMessageParams};
 
 use crate::diagnostics::MessageSink;
 
-const LLVM_INSTALL_URL: &str =
-    "https://github.com/mihirokawai9472642/riscv-asm-lsp#installing-llvm-19";
+const LLVM_INSTALL_URL: &str = "https://github.com/mihirokawai9472642/riscv-asm-lsp#optional-llvm-for-clang-based-diagnostics-and-expansions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
@@ -20,10 +22,17 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    fn default_name(self) -> &'static str {
+    fn base_name(self) -> &'static str {
         match self {
             Self::Clang => "clang",
             Self::LlvmMc => "llvm-mc",
+        }
+    }
+
+    fn exe_name(self) -> &'static str {
+        match self {
+            Self::Clang => "clang.exe",
+            Self::LlvmMc => "llvm-mc.exe",
         }
     }
 
@@ -160,87 +169,46 @@ impl ToolRunner {
         let candidates = candidate_bins(kind, slot.explicit.as_deref());
         let is_explicit = slot.explicit.is_some();
 
-        let mut chosen: Option<(String, String)> = None;
         let mut last_err: Option<String> = None;
 
         for cand in &candidates {
             if !is_explicit && looks_like_path(cand) && !Path::new(cand).is_file() {
                 continue;
             }
-            match Command::new(cand).arg("--version").output() {
-                Ok(out) if out.status.success() => {
-                    let combined = combine_output(&out.stdout, &out.stderr);
-                    chosen = Some((cand.clone(), combined));
-                    break;
-                }
+            let version_out = match Command::new(cand).arg("--version").output() {
+                Ok(out) if out.status.success() => combine_output(&out.stdout, &out.stderr),
                 Ok(out) => {
                     last_err = Some(format!("`{cand} --version` exited with {}", out.status));
+                    continue;
                 }
                 Err(err) => {
                     last_err = Some(format!("failed to execute `{cand}`: {err}"));
+                    continue;
                 }
+            };
+
+            if supports_riscv_target(kind, cand, &version_out) {
+                slot.resolved_bin = Some(cand.clone());
+                return;
             }
+            last_err = Some(format!("`{cand}` does not include riscv32/riscv64 targets"));
         }
 
-        let Some((bin, version_out)) = chosen else {
-            slot.disabled = true;
-            let requested = slot
-                .explicit
-                .as_deref()
-                .unwrap_or_else(|| kind.default_name());
-            let detail = last_err.unwrap_or_else(|| "executable not found".to_owned());
+        slot.disabled = true;
+        let requested = slot.explicit.as_deref().unwrap_or_else(|| kind.base_name());
+        let detail = last_err.unwrap_or_else(|| "executable not found".to_owned());
+        eprintln!(
+            "riscv-asm-lsp: disabling {} ({requested}): {detail}",
+            kind.feature_name()
+        );
+
+        // Only notify the user via LSP when an explicitly configured binary fails.
+        // Auto-discovery falling short is normal when no external toolchain is installed.
+        if is_explicit {
             let msg = format!(
-                "RISC-V Assembly: {} disabled — `{requested}` not found ({detail}). Configure `lsp.riscv-asm-lsp.settings.{}` or install LLVM 19: {LLVM_INSTALL_URL}",
+                "RISC-V Assembly: {} disabled — configured `{requested}` unusable ({detail}). Check `lsp.riscv-asm-lsp.settings.{}` or see {LLVM_INSTALL_URL}",
                 kind.feature_name(),
                 kind.setting_name(),
-            );
-            eprintln!(
-                "riscv-asm-lsp: disabling {} ({requested}): {detail}",
-                kind.feature_name()
-            );
-            self.notify_warning(&msg);
-            return;
-        };
-
-        let major = parse_llvm_major_version(&version_out);
-        let targets_ok = match kind {
-            ToolKind::LlvmMc => has_riscv_target(&version_out),
-            ToolKind::Clang => Command::new(&bin)
-                .arg("-print-targets")
-                .output()
-                .ok()
-                .filter(|out| out.status.success())
-                .is_some_and(|out| has_riscv_target(&combine_output(&out.stdout, &out.stderr))),
-        };
-
-        if !targets_ok {
-            slot.disabled = true;
-            let ver_note = major
-                .map(|m| format!(" (LLVM {m}; expected LLVM 19)"))
-                .unwrap_or_default();
-            let msg = format!(
-                "RISC-V Assembly: {} disabled — `{bin}`{ver_note} does not include riscv32/riscv64 targets. Configure `lsp.riscv-asm-lsp.settings.{}` or install LLVM 19: {LLVM_INSTALL_URL}",
-                kind.feature_name(),
-                kind.setting_name(),
-            );
-            eprintln!(
-                "riscv-asm-lsp: disabling {} ({bin}): missing riscv32/riscv64 target support{ver_note}",
-                kind.feature_name()
-            );
-            self.notify_warning(&msg);
-            return;
-        }
-
-        slot.resolved_bin = Some(bin.clone());
-        if let Some(m) = major
-            && m != 19
-        {
-            let msg = format!(
-                "RISC-V Assembly: `{bin}` reports LLVM major version {m}; expected LLVM 19 (diagnostics or expansions may differ). Configure `lsp.riscv-asm-lsp.settings.{}` or see {LLVM_INSTALL_URL}",
-                kind.setting_name(),
-            );
-            eprintln!(
-                "riscv-asm-lsp: warning: `{bin}` reports LLVM major version {m}; expected LLVM 19"
             );
             self.notify_warning(&msg);
         }
@@ -414,33 +382,194 @@ impl ToolRunner {
     }
 }
 
-pub fn candidate_bins(kind: ToolKind, explicit: Option<&str>) -> Vec<String> {
-    candidate_bins_for_os(kind, explicit, cfg!(windows))
+pub(crate) struct SystemRoots<'a> {
+    pub linux_usr_lib: &'a Path,
+    pub homebrew_opt: &'a Path,
+    pub usr_local_opt: &'a Path,
+    pub windows_llvm_bin: &'a Path,
 }
 
-pub(crate) fn candidate_bins_for_os(
+impl Default for SystemRoots<'static> {
+    fn default() -> Self {
+        Self {
+            linux_usr_lib: Path::new("/usr/lib"),
+            homebrew_opt: Path::new("/opt/homebrew/opt"),
+            usr_local_opt: Path::new("/usr/local/opt"),
+            windows_llvm_bin: Path::new(r"C:\Program Files\LLVM\bin"),
+        }
+    }
+}
+
+/// Ordered tool candidates for auto-discovery or explicit configuration.
+pub fn candidate_bins(kind: ToolKind, explicit: Option<&str>) -> Vec<String> {
+    let path_var = std::env::var_os("PATH");
+    discover_candidates(
+        kind,
+        explicit,
+        path_var.as_deref(),
+        &SystemRoots::default(),
+        cfg!(windows),
+    )
+}
+
+pub(crate) fn discover_candidates(
     kind: ToolKind,
     explicit: Option<&str>,
+    path_var: Option<&OsStr>,
+    roots: &SystemRoots<'_>,
     is_windows: bool,
 ) -> Vec<String> {
     if let Some(p) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         return vec![p.to_owned()];
     }
-    let (v19, bare, exe) = match kind {
-        ToolKind::Clang => ("clang-19", "clang", "clang.exe"),
-        ToolKind::LlvmMc => ("llvm-mc-19", "llvm-mc", "llvm-mc.exe"),
-    };
-    let mut out = vec![
-        v19.to_owned(),
-        bare.to_owned(),
-        format!("/usr/lib/llvm-19/bin/{bare}"),
-        format!("/opt/homebrew/opt/llvm@19/bin/{bare}"),
-        format!("/usr/local/opt/llvm@19/bin/{bare}"),
-    ];
-    if is_windows {
-        out.push(format!(r"C:\Program Files\LLVM\bin\{exe}"));
+
+    let bare = kind.base_name();
+    let exe = kind.exe_name();
+    let mut out = vec![bare.to_owned()];
+    let mut seen: HashSet<String> = HashSet::from([bare.to_owned()]);
+
+    if let Some(path_os) = path_var {
+        for name in collect_versioned_on_path(bare, is_windows, path_os) {
+            if seen.insert(name.clone()) {
+                out.push(name);
+            }
+        }
     }
+
+    for path in collect_standard_install_bins(bare, exe, roots, is_windows) {
+        if seen.insert(path.clone()) {
+            out.push(path);
+        }
+    }
+
     out
+}
+
+fn collect_versioned_on_path(bare: &str, is_windows: bool, path_os: &OsStr) -> Vec<String> {
+    let prefix = format!("{bare}-");
+    let mut found: Vec<(u32, String)> = Vec::new();
+    for dir in std::env::split_paths(path_os) {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(name_os) = entry.file_name().into_string().ok() else {
+                continue;
+            };
+            if let Some(ver) = parse_versioned_tool_name(&name_os, &prefix, is_windows)
+                && entry.path().is_file()
+            {
+                found.push((ver, name_os));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
+fn parse_versioned_tool_name(name: &str, prefix: &str, is_windows: bool) -> Option<u32> {
+    let stem = if is_windows {
+        name.strip_suffix(".exe").unwrap_or(name)
+    } else {
+        name
+    };
+    let rest = stem.strip_prefix(prefix)?;
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok()
+}
+
+fn collect_standard_install_bins(
+    bare: &str,
+    exe: &str,
+    roots: &SystemRoots<'_>,
+    is_windows: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+
+    if is_windows {
+        let candidate = roots.windows_llvm_bin.join(exe);
+        if candidate.is_file() || roots.windows_llvm_bin == Path::new(r"C:\Program Files\LLVM\bin")
+        {
+            out.push(candidate.to_string_lossy().into_owned());
+        }
+        return out;
+    }
+
+    // Linux distro packages: /usr/lib/llvm-<N>/bin/<tool>, newest major first.
+    for dir in sorted_versioned_subdirs(roots.linux_usr_lib, "llvm-") {
+        let bin = dir.join("bin").join(bare);
+        if bin.is_file() {
+            out.push(bin.to_string_lossy().into_owned());
+        }
+    }
+
+    // macOS Homebrew formulas: unversioned `llvm` then versioned `llvm@<N>`, newest first.
+    for opt_root in [roots.homebrew_opt, roots.usr_local_opt] {
+        let unversioned = opt_root.join("llvm").join("bin").join(bare);
+        if unversioned.is_file() {
+            out.push(unversioned.to_string_lossy().into_owned());
+        }
+        for dir in sorted_versioned_subdirs(opt_root, "llvm@") {
+            let bin = dir.join("bin").join(bare);
+            if bin.is_file() {
+                out.push(bin.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    out
+}
+
+fn sorted_versioned_subdirs(parent: &Path, prefix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<(Vec<u32>, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().into_string().ok() else {
+            continue;
+        };
+        let Some(ver_str) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some(parts) = parse_version_tuple(ver_str) else {
+            continue;
+        };
+        let path = entry.path();
+        if path.is_dir() {
+            dirs.push((parts, path));
+        }
+    }
+    dirs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    dirs.into_iter().map(|(_, p)| p).collect()
+}
+
+fn parse_version_tuple(s: &str) -> Option<Vec<u32>> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for seg in s.split('.') {
+        if seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        parts.push(seg.parse::<u32>().ok()?);
+    }
+    Some(parts)
+}
+
+fn supports_riscv_target(kind: ToolKind, bin: &str, version_out: &str) -> bool {
+    match kind {
+        ToolKind::LlvmMc => has_riscv_target(version_out),
+        ToolKind::Clang => Command::new(bin)
+            .arg("-print-targets")
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .is_some_and(|out| has_riscv_target(&combine_output(&out.stdout, &out.stderr))),
+    }
 }
 
 fn looks_like_path(s: &str) -> bool {
@@ -456,13 +585,6 @@ fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
         out.push_str(&String::from_utf8_lossy(stderr));
     }
     out
-}
-
-pub(crate) fn parse_llvm_major_version(output: &str) -> Option<u32> {
-    let idx = output.find("version ")?;
-    let after = &output[idx + "version ".len()..];
-    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
 }
 
 pub(crate) fn has_riscv_target(output: &str) -> bool {
@@ -484,55 +606,118 @@ pub(crate) fn has_riscv_target(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
-    #[test]
-    fn candidate_bins_order_for_explicit_and_auto() {
-        assert_eq!(
-            candidate_bins_for_os(ToolKind::Clang, Some(" /custom/clang-18 "), false),
-            vec!["/custom/clang-18"]
-        );
-        assert_eq!(
-            candidate_bins_for_os(ToolKind::Clang, Some("  "), false),
-            candidate_bins_for_os(ToolKind::Clang, None, false)
-        );
-        assert_eq!(
-            candidate_bins_for_os(ToolKind::Clang, None, false),
-            vec![
-                "clang-19",
-                "clang",
-                "/usr/lib/llvm-19/bin/clang",
-                "/opt/homebrew/opt/llvm@19/bin/clang",
-                "/usr/local/opt/llvm@19/bin/clang",
-            ]
-        );
-        assert_eq!(
-            candidate_bins_for_os(ToolKind::LlvmMc, None, true),
-            vec![
-                "llvm-mc-19",
-                "llvm-mc",
-                "/usr/lib/llvm-19/bin/llvm-mc",
-                "/opt/homebrew/opt/llvm@19/bin/llvm-mc",
-                "/usr/local/opt/llvm@19/bin/llvm-mc",
-                r"C:\Program Files\LLVM\bin\llvm-mc.exe",
-            ]
-        );
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"").unwrap();
     }
 
     #[test]
-    fn parses_llvm_major_version_and_riscv_targets() {
+    fn discover_candidates_order_for_explicit_path_and_standard_dirs() {
+        let tmp = std::env::temp_dir().join(format!(
+            "riscv_asm_lsp_tool_candidates_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        let path_dir1 = tmp.join("p1");
+        let path_dir2 = tmp.join("p2");
+        let linux_lib = tmp.join("usr_lib");
+        let brew_opt = tmp.join("brew_opt");
+        let local_opt = tmp.join("local_opt");
+        let win_bin = tmp.join("win_llvm_bin");
+
+        touch(&path_dir1.join("clang-18"));
+        touch(&path_dir1.join("clang-foo"));
+        touch(&path_dir2.join("clang-21"));
+        touch(&path_dir2.join("clang-19"));
+        touch(&linux_lib.join("llvm-18/bin/clang"));
+        touch(&linux_lib.join("llvm-20/bin/clang"));
+        touch(&brew_opt.join("llvm/bin/clang"));
+        touch(&brew_opt.join("llvm@19/bin/clang"));
+        touch(&brew_opt.join("llvm@20/bin/clang"));
+        touch(&local_opt.join("llvm@18/bin/clang"));
+        touch(&win_bin.join("llvm-mc.exe"));
+
+        let roots = SystemRoots {
+            linux_usr_lib: &linux_lib,
+            homebrew_opt: &brew_opt,
+            usr_local_opt: &local_opt,
+            windows_llvm_bin: &win_bin,
+        };
+        let path_os = std::env::join_paths([&path_dir1, &path_dir2]).unwrap();
+
         assert_eq!(
-            parse_llvm_major_version("Debian clang version 19.1.7 (3+b1)"),
-            Some(19)
-        );
-        assert_eq!(
-            parse_llvm_major_version("Apple clang version 16.0.0 (clang-1600.0.26.3)"),
-            Some(16)
-        );
-        assert_eq!(
-            parse_llvm_major_version("Debian LLVM version 18.1.3\n  Optimized build."),
-            Some(18)
+            discover_candidates(
+                ToolKind::Clang,
+                Some(" /custom/clang-18 "),
+                Some(&path_os),
+                &roots,
+                false
+            ),
+            vec!["/custom/clang-18"]
         );
 
+        let expected = vec![
+            "clang".to_owned(),
+            "clang-21".to_owned(),
+            "clang-19".to_owned(),
+            "clang-18".to_owned(),
+            linux_lib
+                .join("llvm-20/bin/clang")
+                .to_string_lossy()
+                .into_owned(),
+            linux_lib
+                .join("llvm-18/bin/clang")
+                .to_string_lossy()
+                .into_owned(),
+            brew_opt
+                .join("llvm/bin/clang")
+                .to_string_lossy()
+                .into_owned(),
+            brew_opt
+                .join("llvm@20/bin/clang")
+                .to_string_lossy()
+                .into_owned(),
+            brew_opt
+                .join("llvm@19/bin/clang")
+                .to_string_lossy()
+                .into_owned(),
+            local_opt
+                .join("llvm@18/bin/clang")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        assert_eq!(
+            discover_candidates(ToolKind::Clang, Some("  "), Some(&path_os), &roots, false),
+            expected
+        );
+        assert_eq!(
+            discover_candidates(ToolKind::Clang, None, Some(&path_os), &roots, false),
+            expected
+        );
+
+        assert_eq!(
+            discover_candidates(
+                ToolKind::LlvmMc,
+                None,
+                Some(&OsString::from("")),
+                &roots,
+                true
+            ),
+            vec![
+                "llvm-mc".to_owned(),
+                win_bin.join("llvm-mc.exe").to_string_lossy().into_owned(),
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn has_riscv_target_checks_registered_targets_section() {
         let rv_targets =
             "\n  Registered Targets:\n    riscv32 - 32-bit RISC-V\n    x86-64 - 64-bit X86\n";
         assert!(has_riscv_target(rv_targets));
