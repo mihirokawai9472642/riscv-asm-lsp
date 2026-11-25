@@ -135,7 +135,7 @@ missing or fails, only diagnostics or expansions degrade.
 | `data.rs` | Embedded `riscv.json` / `texts.json` structs and lookup indices |
 | `position.rs` | Incremental `LineIndex`, UTF-16 <-> UTF-8 byte offsets, `clang` column conversion |
 | `line.rs` | Shared line scanner for comments (`//`, `#`, `/* */`), strings, `;` statements and statement heads |
-| `preprocessor.rs` | Per-line C preprocessor directive classification and `#define`/`#include` parsing |
+| `preprocessor/` | Built-in pure-Rust C preprocessor (`mod.rs`), RISC-V predefined macros (`predefined.rs`), `#if` expression evaluator (`expr.rs`), and macro expander with UTF-16 source mapping (`expand.rs`), plus per-line directive classification |
 | `ast.rs` | Shared `tree-sitter-riscv` AST visitor and classification helpers |
 | `document.rs` | Open document text store and incremental `tree-sitter` reparsing |
 | `context/` | `march.rs` (`MarchSpec`, `.option` tracking), `compile_db.rs` (`compile_commands.json` / `compile_flags.txt`, multi-root, linker-script filter), `uri.rs` (`url`-based symlink-preserving URIs) |
@@ -197,7 +197,7 @@ waiting for background workspace indexing.
 `CompileContext` supports multi-root workspace folders, searches
 `compileCommandsDirs` (`["", "build"]` by default) for `compile_commands.json`
 with fallback to `compile_flags.txt`, and extracts an allow-list of
-assembler/preprocessor flags (`--target`, `-march`, `-mabi`, `-I`, `-iquote`,
+assembler/preprocessor flags (`--target`, `-march`, `-mabi`, `-mcmodel`, `-I`, `-iquote`,
 `-isystem`, `-D`, `-U`, `-include`, `-imacros`, `--sysroot`, `-isysroot`,
 `-nostdinc`, `-Wa,-I/-march/-mabi`, `-x`, PIC flags) plus the working directory.
 When no entry matches, configured defaults (`defaultTarget`, `defaultMarch`) and
