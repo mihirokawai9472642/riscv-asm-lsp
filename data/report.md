@@ -14,7 +14,7 @@
 
 | Metric | Count |
 | --- | ---: |
-| Extensions | 154 |
+| Extensions | 144 |
 | Instructions & aliases (LLVM supported; `.insn_*` excluded) | 1432 |
 | Instructions in both LLVM and riscv-unified-db | 1381 |
 | Instructions only in LLVM vs riscv-unified-db (total) | 51 |

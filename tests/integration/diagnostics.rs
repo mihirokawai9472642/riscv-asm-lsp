@@ -936,3 +936,75 @@ fn fake_clang_discovery_version_independent_and_warns_only_when_configured() {
     client_cfg_norv.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+#[ignore = "requires clang"]
+fn march_implications_match_clang_print_enabled_extensions() {
+    assert!(
+        has_tool("clang"),
+        "clang must be on PATH for ignored tool tests"
+    );
+
+    use riscv_asm_lsp::context::MarchSpec;
+    use std::collections::BTreeSet;
+    use std::process::Command;
+
+    let cases = [
+        ("riscv64-unknown-elf", "rv64gc"),
+        ("riscv32-unknown-elf", "rv32gc"),
+        ("riscv64-unknown-elf", "rv64imac"),
+        ("riscv64-unknown-elf", "rv64gcv"),
+        ("riscv64-unknown-elf", "rv64gb"),
+        ("riscv64-unknown-elf", "rv64g_zk"),
+        ("riscv64-unknown-elf", "rv64g_zks"),
+        ("riscv64-unknown-elf", "rv64g_zcd"),
+        ("riscv32-unknown-elf", "rv32imafc"),
+        ("riscv64-unknown-elf", "rv64g_zfh"),
+    ];
+
+    for (target, march) in cases {
+        let out = Command::new("clang")
+            .args([
+                &format!("--target={target}"),
+                &format!("-march={march}"),
+                "--print-enabled-extensions",
+            ])
+            .output()
+            .expect("run clang --print-enabled-extensions");
+        assert!(
+            out.status.success(),
+            "clang failed for {march}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut clang_exts = BTreeSet::new();
+        let mut in_table = false;
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Name ") {
+                in_table = true;
+                continue;
+            }
+            if trimmed.starts_with("ISA String:") {
+                break;
+            }
+            if !in_table || trimmed.is_empty() || trimmed == "Experimental extensions" {
+                continue;
+            }
+            if let Some(name) = trimmed.split_whitespace().next() {
+                clang_exts.insert(name.to_ascii_lowercase());
+            }
+        }
+        assert!(
+            !clang_exts.is_empty(),
+            "parsed no extensions from clang for {march}:\n{stdout}"
+        );
+
+        let mut ours = MarchSpec::parse(march).extensions;
+        ours.remove("g");
+        assert_eq!(
+            ours, clang_exts,
+            "extension set mismatch for {march}: ours={ours:?} vs clang={clang_exts:?}"
+        );
+    }
+}

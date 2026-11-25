@@ -529,7 +529,7 @@ addi a0, a1, 1 /* ad */
 #[test]
 fn completion_rv32_resolve_option_arch_and_paren_contexts() {
     let mut client = LspClient::start_with_snippets(
-        Some(json!({ "defaultMarch": "rv32imac_zacas", "diagnostics": { "enable": false } })),
+        Some(json!({ "defaultMarch": "rv32imac_zdinx", "diagnostics": { "enable": false } })),
         None,
     );
     let uri = crate::common::test_uri("comp_ctx_edge.S");
@@ -538,7 +538,7 @@ fn completion_rv32_resolve_option_arch_and_paren_contexts() {
         1,
         "\
 my_sym:
-    amocas.d
+    fadd.d
     .option arch, +zb
     .option rvc 
     ld a0, 0(
@@ -551,13 +551,13 @@ my_sym:
         "textDocument/completion",
         json!({
             "textDocument": { "uri": uri.as_str() },
-            "position": { "line": 1, "character": 12 }
+            "position": { "line": 1, "character": 10 }
         }),
     );
     let amo_item = completion_items_vec(&amo_comp.result)
         .into_iter()
-        .find(|i| i["filterText"] == "amocas.d")
-        .expect("amocas.d");
+        .find(|i| i["filterText"] == "fadd.d")
+        .expect("fadd.d");
     let resolved = client
         .send_request("completionItem/resolve", amo_item)
         .result
