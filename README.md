@@ -6,16 +6,18 @@ syntax, with an extension for the Zed editor.
 Prebuilt binaries for Linux (`x86_64` and `aarch64` musl), macOS (`aarch64`
 and `x86_64`), and Windows (`x86_64`) are published on
 [GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases),
-or you can build from source. It targets LLVM 19 (`llvmorg-19.1.7`).
+or you can build from source.
 
-The LLVM integrated assembler is the reference: instruction data is generated
-from LLVM's own definitions with descriptions from the RISC-V specifications,
-and diagnostics and expansions come from running `clang` and `llvm-mc`.
+Like `clangd`, the server's reference is its bundled data generated from one
+pinned LLVM release (currently `llvmorg-19.1.7`, updated with each server
+release). External `clang` and `llvm-mc` tools are optional supplements and are
+not required for editing, hover documentation, completion, navigation, or
+symbols.
 
 ## Quick Start
 
-1. Install the **RISC-V Assembly** extension from Zed Extensions (`zed: extensions`) — it downloads `riscv-asm-lsp` automatically.
-2. Optionally install LLVM 19 (`clang` and `llvm-mc`) for diagnostics and live instruction expansion (see [Installing LLVM 19](#installing-llvm-19)).
+1. Install `zed/` as a dev extension (`zed: install dev extension`; registry publication is pending — see [Developing the Extension](docs/zed.md#developing-the-extension)).
+2. Optionally install LLVM (`clang` and `llvm-mc`) for clang-based diagnostics and live instruction expansion (see [Optional: LLVM for clang-based diagnostics and expansions](#optional-llvm-for-clang-based-diagnostics-and-expansions)).
 3. Open a `.S` or `.s` file (see [Recommended Settings](docs/zed.md#recommended-settings) to enable `document_symbols` and `semantic_tokens`, which Zed extensions cannot enable by default in `config.toml`).
 
 ## Features
@@ -49,34 +51,41 @@ are off and everything else works.
 
 See [docs/features.md](docs/features.md) for detailed feature behaviour.
 
-## Installing LLVM 19
+## Optional: LLVM for clang-based diagnostics and expansions
 
-`riscv-asm-lsp` auto-discovers `clang` and `llvm-mc` when they are not set
-explicitly, checking in order:
+External `clang` and `llvm-mc` tools are completely optional, and any recent
+LLVM version with RISC-V (`riscv32`/`riscv64`) target support works. No
+specific LLVM version is required.
 
-1. `clang-19` / `llvm-mc-19` on `PATH`
-2. `clang` / `llvm-mc` on `PATH`
-3. Standard LLVM 19 install directories:
-   - Linux: `/usr/lib/llvm-19/bin`
-   - macOS: `/opt/homebrew/opt/llvm@19/bin`, `/usr/local/opt/llvm@19/bin`
+When `clang` or `llvmMc` are not set explicitly, `riscv-asm-lsp` searches in
+order:
+
+1. `clang` / `llvm-mc` on `PATH`
+2. Highest versioned `clang-<N>` / `llvm-mc-<N>` found on `PATH`
+3. Standard install directories (newest version first):
+   - Linux: `/usr/lib/llvm-*/bin`
+   - macOS (Homebrew): `/opt/homebrew/opt/llvm/bin`, `/usr/local/opt/llvm/bin`,
+     and versioned `llvm@*` formulas
    - Windows: `C:\Program Files\LLVM\bin`
 
-If a tool is missing or lacks the RISC-V target, only the feature that needs
-it (diagnostics for `clang`, live encoding expansion for `llvm-mc`) is disabled
-and a one-time warning is shown.
+Candidates that lack RISC-V targets (such as Apple's system `clang`) are
+skipped automatically. When automatic discovery finds no usable binary, the
+dependent feature is disabled quietly in the UI (logged once to stderr); warning
+popups are shown only when an explicitly configured path fails or lacks RISC-V
+targets.
 
 - **Debian / Ubuntu**:
   ```bash
-  sudo apt install clang-19 llvm-19
+  sudo apt install clang llvm
   ```
 - **macOS (Homebrew)**:
   ```bash
-  brew install llvm@19
+  brew install llvm
   ```
   Apple's system `clang` does not include the RISC-V target and is not enough
   for RISC-V diagnostics or `llvm-mc` expansion.
-- **Windows**: install LLVM 19 using the official LLVM 19 installer (which
-  installs tools under `C:\Program Files\LLVM\bin` by default).
+- **Windows**: install LLVM using the official LLVM installer (which installs
+  tools under `C:\Program Files\LLVM\bin` by default).
 
 ## Configuration
 
@@ -106,8 +115,8 @@ Example `.zed/settings.json`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `clang` | Auto-discover (`clang-19` -> `clang` -> standard LLVM 19 dirs) | Path to `clang` (overrides auto-discovery) |
-| `llvmMc` | Auto-discover (`llvm-mc-19` -> `llvm-mc` -> standard LLVM 19 dirs) | Path to `llvm-mc` (overrides auto-discovery) |
+| `clang` | Auto-discover (`PATH` -> versioned -> standard dirs) | Path to `clang` (overrides auto-discovery) |
+| `llvmMc` | Auto-discover (`PATH` -> versioned -> standard dirs) | Path to `llvm-mc` (overrides auto-discovery) |
 | `compileCommandsDirs` | `["", "build"]` | Directories, relative to the project root, searched for `compile_commands.json` |
 | `defaultTarget` | `"riscv64-unknown-elf"` | Target for files without a compilation database entry |
 | `defaultMarch` | `"rv64gc"` | `-march` for files without an entry |
