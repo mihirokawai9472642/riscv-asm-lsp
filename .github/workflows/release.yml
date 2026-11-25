@@ -212,8 +212,13 @@ jobs:
           assert rc == 0, f"expected exit code 0, got {rc}"
 
       - uses: taiki-e/install-action@v2
+        if: matrix.target != 'x86_64-apple-darwin'
         with:
           tool: cargo-about@0.9.3
+
+      - name: Install cargo-about CLI (Intel macOS)
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: cargo install --locked --version 0.9.3 --features cli cargo-about
 
       - name: Generate third-party license bundle
         shell: python
@@ -227,7 +232,9 @@ jobs:
           out_path = pkg / "THIRD_PARTY_LICENSES.md"
           subprocess.check_call([
               "cargo", "about", "generate", "--locked",
-              "-c", "about.toml", "-m", "server/Cargo.toml", "about.hbs",
+              "-c", "about.toml", "-m", "server/Cargo.toml",
+              "--target", os.environ["TARGET"],
+              "about.hbs",
               "-o", str(out_path),
           ])
 
