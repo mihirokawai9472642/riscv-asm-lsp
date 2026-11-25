@@ -1,11 +1,15 @@
 use std::fs;
 use zed_extension_api::lsp::{Completion, CompletionKind};
+use zed_extension_api::serde_json::{self, json};
+use zed_extension_api::settings::LspSettings;
 use zed_extension_api::{
     self as zed, Architecture, CodeLabel, CodeLabelSpan, Command, DownloadedFileType,
     GithubReleaseOptions, LanguageServerId, LanguageServerInstallationStatus, Os, Result, Worktree,
 };
 
 const GITHUB_REPO: &str = "mihirokawai9472642/riscv-asm-lsp";
+const INSTALL_DOCS_URL: &str =
+    "https://github.com/mihirokawai9472642/riscv-asm-lsp#installing-a-release";
 
 struct RiscvAssemblyExtension {
     cached_binary_path: Option<String>,
@@ -35,6 +39,7 @@ impl RiscvAssemblyExtension {
             &LanguageServerInstallationStatus::CheckingForUpdate,
         );
 
+        // Track the newest non-prerelease release; server configuration keys remain backwards-compatible across 0.x releases.
         let release = match zed::latest_github_release(
             GITHUB_REPO,
             GithubReleaseOptions {
@@ -70,7 +75,7 @@ impl RiscvAssemblyExtension {
                 .find(|a| a.name == asset_name)
                 .ok_or_else(|| {
                     let msg = format!(
-                        "no release asset `{asset_name}` found in {}",
+                        "no release asset `{asset_name}` found in {} (see {INSTALL_DOCS_URL})",
                         release.version
                     );
                     zed::set_language_server_installation_status(
@@ -141,24 +146,27 @@ fn target_asset_spec(
             "riscv-asm-lsp.exe",
         )),
         _ => Err(format!(
-            "unsupported platform for riscv-asm-lsp prebuilt binary: {platform:?}/{arch:?}; install riscv-asm-lsp on PATH"
+            "unsupported platform for riscv-asm-lsp prebuilt binary: {platform:?}/{arch:?}; install riscv-asm-lsp on PATH ({INSTALL_DOCS_URL})"
         )),
     }
 }
 
 fn find_existing_downloaded_binary(exe_name: &str) -> Option<String> {
     let entries = fs::read_dir(".").ok()?;
+    let mut candidates = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
         if name_str.starts_with("riscv-asm-lsp-") {
             let candidate = format!("{name_str}/{exe_name}");
             if fs::metadata(&candidate).is_ok_and(|s| s.is_file()) {
-                return Some(candidate);
+                candidates.push(candidate);
             }
         }
     }
-    None
+    // Prefer the highest version directory lexicographically on offline fallback.
+    candidates.sort_by(|a, b| b.cmp(a));
+    candidates.into_iter().next()
 }
 
 fn cleanup_old_versions(keep_dir: &str) {
@@ -186,12 +194,45 @@ impl zed::Extension for RiscvAssemblyExtension {
         language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> Result<Command> {
+        if let Ok(lsp_settings) = LspSettings::for_worktree("riscv-asm-lsp", worktree)
+            && let Some(binary) = lsp_settings.binary
+            && let Some(path) = binary.path
+        {
+            return Ok(Command {
+                command: path,
+                args: binary.arguments.unwrap_or_default(),
+                env: binary.env.unwrap_or_default().into_iter().collect(),
+            });
+        }
+
         let path = self.language_server_binary_path(language_server_id, worktree)?;
         Ok(Command {
             command: path,
             args: Vec::new(),
             env: Vec::new(),
         })
+    }
+
+    fn language_server_initialization_options(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &Worktree,
+    ) -> Result<Option<serde_json::Value>> {
+        let options = LspSettings::for_worktree("riscv-asm-lsp", worktree)
+            .ok()
+            .and_then(|s| s.initialization_options);
+        Ok(options)
+    }
+
+    fn language_server_workspace_configuration(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &Worktree,
+    ) -> Result<Option<serde_json::Value>> {
+        let settings = LspSettings::for_worktree("riscv-asm-lsp", worktree)
+            .ok()
+            .and_then(|s| s.settings);
+        Ok(settings.map(|s| json!({ "riscv-asm-lsp": s })))
     }
 
     fn label_for_completion(
