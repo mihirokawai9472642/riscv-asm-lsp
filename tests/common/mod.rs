@@ -441,6 +441,12 @@ pub fn lexical_path_to_uri(path: &std::path::Path) -> Uri {
 }
 
 #[allow(dead_code)]
+pub fn test_uri(name: &str) -> Uri {
+    let p = std::env::temp_dir().join("riscv_asm_lsp_it").join(name);
+    lexical_path_to_uri(&p)
+}
+
+#[allow(dead_code)]
 pub fn has_tool(name: &str) -> bool {
     Command::new(name)
         .arg("--version")

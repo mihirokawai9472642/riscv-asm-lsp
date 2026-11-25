@@ -995,7 +995,6 @@ mod tests {
     use super::*;
     use crate::context::CompileContext;
     use crate::document::DocumentStore;
-    use std::str::FromStr;
 
     #[test]
     fn indexes_kernel_entry_symbols_and_hierarchy() {
@@ -1092,7 +1091,7 @@ mod tests {
     #[test]
     fn indexes_define_directives_in_assembly_files() {
         let mut store = DocumentStore::new().unwrap();
-        let uri = Uri::from_str("file:///zed_check.S").unwrap();
+        let uri = crate::context::test_uri("zed_check.S");
         let doc = store.open(
             uri.clone(),
             1,
@@ -1147,7 +1146,7 @@ mod tests {
     #[test]
     fn indexes_irp_irpc_scopes_and_reassigned_set_symbols() {
         let mut store = DocumentStore::new().unwrap();
-        let uri = Uri::from_str("file:///irp_set.S").unwrap();
+        let uri = crate::context::test_uri("irp_set.S");
         let src = "\
 .set CNT, 1
     li t0, CNT

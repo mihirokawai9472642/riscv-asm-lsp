@@ -313,7 +313,7 @@ fn hover_llvm_mc_and_clang_expansions() {
     );
 
     // multi-instruction encodings + CSR word hex encoding `0x10529073`
-    let exp_uri: lsp_types::Uri = "file:///tmp/exp_test.S".parse().expect("uri");
+    let exp_uri = crate::common::test_uri("exp_test.S");
     client.open_doc(
         &exp_uri,
         1,
@@ -588,9 +588,7 @@ _main:
 
 #[test]
 fn hover_covers_csr_xlen_march_isa_label_operand_keywords_and_unresolved_include() {
-    let uri = "file:///tmp/hover_adv_rv32.S"
-        .parse::<lsp_types::Uri>()
-        .unwrap();
+    let uri = crate::common::test_uri("hover_adv_rv32.S");
     let src32 = "\
 #include \"missing_header_xyz.h\"
     csrr a0, ssp
@@ -628,9 +626,7 @@ fn hover_covers_csr_xlen_march_isa_label_operand_keywords_and_unresolved_include
     );
     client32.shutdown_and_exit();
 
-    let uri64 = "file:///tmp/hover_adv_rv64.S"
-        .parse::<lsp_types::Uri>()
-        .unwrap();
+    let uri64 = crate::common::test_uri("hover_adv_rv64.S");
     let src64 = "\
     mret
     sfence.vma

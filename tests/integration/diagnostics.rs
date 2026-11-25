@@ -11,7 +11,7 @@ fn missing_tools_disable_only_tool_features_and_keep_server_alive() {
         })),
         None,
     );
-    let uri: lsp_types::Uri = "file:///tmp/missing_tools.S".parse().expect("uri");
+    let uri = crate::common::test_uri("missing_tools.S");
     client.open_doc(&uri, 1, "    mv a0, a1\n    mvi a0, 1\n");
 
     let md = hover_markdown(&mut client, &uri, 0, 5).expect("hover");

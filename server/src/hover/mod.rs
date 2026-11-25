@@ -682,7 +682,6 @@ mod tests {
     use crate::config::Config;
     use crate::document::DocumentStore;
     use expand::{ExpandedInstruction, parse_llvm_mc_output};
-    use std::str::FromStr;
 
     fn test_ctx_and_index() -> (CompileContext, WorkspaceIndex) {
         (
@@ -695,7 +694,7 @@ mod tests {
     fn hovers_registers_pseudos_csrs_and_directives() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///test.S").expect("uri");
+        let uri = crate::context::test_uri("hover_test.S");
         let doc = store.open(
             uri,
             1,
@@ -777,7 +776,7 @@ mod tests {
     fn hover_explains_march_disabled_and_formats_ext_alternatives() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///disabled.S").expect("uri");
+        let uri = crate::context::test_uri("hover_disabled.S");
         let doc = store.open(
             uri,
             1,
@@ -826,7 +825,7 @@ mod tests {
     fn hover_works_for_define_in_assembly_file() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///defs.S").expect("uri");
+        let uri = crate::context::test_uri("hover_defs.S");
         let doc = store.open(
             uri,
             1,
@@ -858,7 +857,7 @@ mod tests {
     fn hover_warns_on_doc_only_instruction() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///q.S").expect("uri");
+        let uri = crate::context::test_uri("hover_q.S");
         let doc = store.open(uri, 1, "    fadd.q f0, f1, f2\n".to_owned());
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
@@ -914,7 +913,7 @@ mod tests {
     fn hover_handles_numeric_csr_set_reassignment_irp_and_macro_counter() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = lsp_types::Uri::from_str("file:///extra.S").expect("uri");
+        let uri = crate::context::test_uri("hover_extra.S");
         let src = "\
 .set CNT, 1
     li t0, CNT

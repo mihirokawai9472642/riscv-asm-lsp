@@ -169,12 +169,11 @@ impl DocumentStore {
 mod tests {
     use super::*;
     use lsp_types::{Position, Range};
-    use std::str::FromStr;
 
     #[test]
     fn incremental_edits_preserve_tree_and_multibyte_positions() {
         let mut store = DocumentStore::new().expect("parser must initialize");
-        let uri = Uri::from_str("file:///test.S").expect("valid uri");
+        let uri = crate::context::test_uri("test.S");
         store.open(uri.clone(), 1, "# 日本語 🚀\naddi a0, zero, 1\n".to_owned());
 
         // Replace `1` with `42` on line 1

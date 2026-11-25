@@ -192,6 +192,12 @@ pub(crate) fn strip_prefix_case_insensitive_str(path: &str, base: &str) -> Optio
 }
 
 #[cfg(test)]
+pub(crate) fn test_uri(rel: &str) -> Uri {
+    let p = std::env::temp_dir().join("riscv_asm_lsp_unit").join(rel);
+    path_to_uri(&p).expect("valid test file URI")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

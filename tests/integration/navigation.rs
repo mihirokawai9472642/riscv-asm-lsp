@@ -1,6 +1,6 @@
-use crate::common::{
-    LspClient, fixtures_dir, lexical_path_to_uri, path_to_uri, workspace_symbol_names,
-};
+use crate::common::{LspClient, fixtures_dir, path_to_uri};
+#[cfg(unix)]
+use crate::common::{lexical_path_to_uri, workspace_symbol_names};
 use serde_json::json;
 
 #[test]
@@ -671,7 +671,7 @@ _start:
 #[test]
 fn location_counter_dot_excluded_from_symbols_refs_and_semantic_tokens() {
     let mut client = LspClient::start(None, None);
-    let uri: lsp_types::Uri = "file:///tmp/location_counter.S".parse().expect("uri");
+    let uri = crate::common::test_uri("location_counter.S");
     let src = "\
 .equ ALIGN_BYTES, 8
 . = ALIGN_BYTES
@@ -759,7 +759,7 @@ fn location_counter_dot_excluded_from_symbols_refs_and_semantic_tokens() {
 #[test]
 fn rename_allows_directive_stem_labels_rejects_instructions_and_ignores_comments() {
     let mut client = LspClient::start(None, None);
-    let uri: lsp_types::Uri = "file:///tmp/rename_edge.S".parse().expect("uri");
+    let uri = crate::common::test_uri("rename_edge.S");
     let src = "\
 data:
     nop
@@ -834,9 +834,7 @@ foo:
 
 #[test]
 fn new_lsp_providers_and_workspace_symbol_local_label_filter() {
-    let uri = "file:///tmp/nav_features.S"
-        .parse::<lsp_types::Uri>()
-        .unwrap();
+    let uri = crate::common::test_uri("nav_features.S");
     let src = "\
 .equ MY_CONST, 42
 .macro PUSH r

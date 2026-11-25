@@ -423,8 +423,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::document::DocumentStore;
-    use lsp_types::{Position, Uri};
-    use std::str::FromStr;
+    use lsp_types::Position;
 
     fn decode_tokens(text: &str, tokens: &[SemanticToken]) -> Vec<(String, u32, u32)> {
         let lines: Vec<&str> = text.lines().collect();
@@ -455,7 +454,7 @@ mod tests {
     fn emits_expected_token_types_and_multibyte_positions() {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
-        let uri = Uri::from_str("file:///sem.S").expect("uri");
+        let uri = crate::context::test_uri("sem.S");
         let text = "\
 # 日本語コメント 🚀
 .equ BASE, 0x100

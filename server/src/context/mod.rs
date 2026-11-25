@@ -7,6 +7,8 @@ pub use compile_db::{
     is_preprocessed_by_suffix, is_riscv_target, split_command_args,
 };
 pub use march::{MarchSpec, effective_options_at_line};
+#[cfg(test)]
+pub(crate) use uri::test_uri;
 pub use uri::{
     display_path_for_client, lexical_normalize_path, normalize_path, path_key, path_starts_with,
     path_strip_prefix, path_to_uri, uri_key, uri_to_path,
@@ -86,25 +88,48 @@ mod tests {
 
     #[test]
     fn uri_conversion_handles_localhost_special_chars_and_symlinks() {
-        let localhost_uri: Uri = "file://localhost/tmp/ws%20dir%2B%E6%97%A5%E6%9C%AC/a.S"
-            .parse()
-            .expect("uri");
-        let decoded = uri_to_path(&localhost_uri).expect("file path");
-        assert_eq!(decoded, PathBuf::from("/tmp/ws dir+日本/a.S"));
+        let round_path = std::env::temp_dir().join("ws dir+日本").join("a.S");
+        let round_uri = path_to_uri(&round_path).expect("uri");
+        assert_eq!(uri_to_path(&round_uri), Some(round_path.clone()));
 
-        let round_uri = path_to_uri(Path::new("/tmp/ws dir+日本/a.S")).expect("uri");
-        assert_eq!(uri_to_path(&round_uri), Some(decoded));
-
-        // Symlink path is preserved without canonicalization by path_to_uri & display_path_for_client
-        let base =
-            std::env::temp_dir().join(format!("riscv_asm_lsp_sym_ctx_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let real_dir = base.join("real dir");
-        let link_dir = base.join("link");
-        fs::create_dir_all(&real_dir).unwrap();
-        fs::write(real_dir.join("a.S"), "nop\n").unwrap();
         #[cfg(unix)]
         {
+            let localhost_uri: Uri = "file://localhost/tmp/ws%20dir%2B%E6%97%A5%E6%9C%AC/a.S"
+                .parse()
+                .expect("uri");
+            let decoded = uri_to_path(&localhost_uri).expect("file path");
+            assert_eq!(decoded, PathBuf::from("/tmp/ws dir+日本/a.S"));
+
+            let round_unix_uri = path_to_uri(Path::new("/tmp/ws dir+日本/a.S")).expect("uri");
+            assert_eq!(uri_to_path(&round_unix_uri), Some(decoded));
+        }
+
+        #[cfg(windows)]
+        {
+            let upper: Uri = "file:///C:/Proj/Dir/a.S".parse().expect("uri");
+            let encoded: Uri = "file:///c%3A/proj/dir/a.S".parse().expect("uri");
+            assert_eq!(uri_key(&upper), uri_key(&encoded));
+
+            let unc_uri: Uri = "file://server/share/Dir/a.S".parse().expect("unc uri");
+            let unc_path = uri_to_path(&unc_uri).expect("unc path");
+            assert_eq!(unc_path, PathBuf::from(r"\\server\share\Dir\a.S"));
+            assert_eq!(path_to_uri(&unc_path), Some(unc_uri));
+            assert!(path_starts_with(
+                Path::new(r"\\server\share\DIR\a.S"),
+                Path::new(r"\\server\share")
+            ));
+        }
+
+        // Symlink path is preserved without canonicalization by path_to_uri & display_path_for_client
+        #[cfg(unix)]
+        {
+            let base =
+                std::env::temp_dir().join(format!("riscv_asm_lsp_sym_ctx_{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            let real_dir = base.join("real dir");
+            let link_dir = base.join("link");
+            fs::create_dir_all(&real_dir).unwrap();
+            fs::write(real_dir.join("a.S"), "nop\n").unwrap();
             std::os::unix::fs::symlink(&real_dir, &link_dir).unwrap();
             let linked_file = link_dir.join("a.S");
             let sym_uri = path_to_uri(&linked_file).unwrap();
@@ -119,53 +144,65 @@ mod tests {
                 Some(&fs::canonicalize(&real_dir).unwrap()),
             );
             assert_eq!(mapped, linked_file);
+            let _ = fs::remove_dir_all(&base);
         }
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
     fn extract_relevant_flags_allows_sysroot_include_imacros_and_wa_options() {
-        let dir = Path::new("/proj/build");
-        let args: Vec<String> = [
-            "clang",
-            "--target=riscv64-unknown-elf",
-            "-march=rv64gc",
-            "-O2",
-            "-include",
-            "../inc/pre.h",
-            "-imacros../inc/defs.h",
-            "--sysroot=../sys",
-            "-isysroot",
-            "/opt/sdk",
-            "-nostdinc",
-            "-Wa,-I../asm_inc,-march=rv64gcv,--fatal-warnings",
-            "-c",
-            "entry.S",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+        let base = std::env::temp_dir().join("riscv_asm_flag_proj");
+        let dir = base.join("build");
+        let exp_asm_inc = lexical_normalize_path(&base.join("asm_inc"));
+        let exp_pre = lexical_normalize_path(&base.join("inc").join("pre.h"));
+        let exp_defs = lexical_normalize_path(&base.join("inc").join("defs.h"));
+        let exp_sysroot = lexical_normalize_path(&base.join("sys"));
+        let exp_sdk = lexical_normalize_path(&base.join("opt_sdk"));
+        let isysroot_str = exp_sdk.to_string_lossy().into_owned();
+        let args: Vec<String> = vec![
+            "clang".to_owned(),
+            "--target=riscv64-unknown-elf".to_owned(),
+            "-march=rv64gc".to_owned(),
+            "-O2".to_owned(),
+            "-include".to_owned(),
+            "../inc/pre.h".to_owned(),
+            "-imacros../inc/defs.h".to_owned(),
+            "--sysroot=../sys".to_owned(),
+            "-isysroot".to_owned(),
+            isysroot_str.clone(),
+            "-nostdinc".to_owned(),
+            "-Wa,-I../asm_inc,-march=rv64gcv,--fatal-warnings".to_owned(),
+            "-c".to_owned(),
+            "entry.S".to_owned(),
+        ];
 
-        let entry = extract_relevant_flags(dir, &args);
-        assert_eq!(entry.directory, PathBuf::from("/proj/build"));
+        let entry = extract_relevant_flags(&dir, &args);
+        assert_eq!(entry.directory, lexical_normalize_path(&dir));
         assert_eq!(entry.march.as_deref(), Some("rv64gcv"));
-        assert!(entry.include_dirs.contains(&PathBuf::from("/proj/asm_inc")));
+        assert!(entry.include_dirs.contains(&exp_asm_inc));
         assert!(entry.clang_flags.contains(&"-include".to_owned()));
-        assert!(entry.clang_flags.contains(&"/proj/inc/pre.h".to_owned()));
-        assert!(entry.clang_flags.contains(&"-imacros".to_owned()));
-        assert!(entry.clang_flags.contains(&"/proj/inc/defs.h".to_owned()));
         assert!(
             entry
                 .clang_flags
-                .contains(&"--sysroot=/proj/sys".to_owned())
+                .contains(&exp_pre.to_string_lossy().into_owned())
+        );
+        assert!(entry.clang_flags.contains(&"-imacros".to_owned()));
+        assert!(
+            entry
+                .clang_flags
+                .contains(&exp_defs.to_string_lossy().into_owned())
+        );
+        assert!(
+            entry
+                .clang_flags
+                .contains(&format!("--sysroot={}", exp_sysroot.display()))
         );
         assert!(entry.clang_flags.contains(&"-isysroot".to_owned()));
-        assert!(entry.clang_flags.contains(&"/opt/sdk".to_owned()));
+        assert!(entry.clang_flags.contains(&isysroot_str));
         assert!(entry.clang_flags.contains(&"-nostdinc".to_owned()));
         assert!(
             entry
                 .clang_flags
-                .contains(&"-Wa,-I/proj/asm_inc,-march=rv64gcv".to_owned()),
+                .contains(&format!("-Wa,-I{},-march=rv64gcv", exp_asm_inc.display())),
             "flags: {:?}",
             entry.clang_flags
         );
