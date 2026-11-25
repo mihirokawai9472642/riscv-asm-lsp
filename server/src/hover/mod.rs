@@ -1,5 +1,7 @@
+pub(crate) mod builtin_expand;
 mod expand;
 mod format;
+pub(crate) mod matint;
 pub(crate) mod operands;
 
 use std::collections::{HashMap, HashSet};
@@ -20,6 +22,10 @@ use crate::index::{SymbolHoverInfo, WorkspaceIndex};
 use crate::position::word_range_at;
 use crate::preprocessor::{HashLineKind, classify_hash_line};
 use crate::tools::{ToolKind, ToolRunner};
+
+pub use builtin_expand::expand_and_encode;
+pub use expand::ExpandedInstruction;
+pub use matint::{MatIntInst, generate_inst_seq};
 
 use expand::{
     CachedExpansion, ExpansionCacheKey, PendingExpansion, collect_cpp_preamble,
@@ -429,7 +435,10 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
         });
     let mut parts =
         build_instruction_hover_parts(c.inst, c.effective_march, enabled_by_march, c.db, None);
-    if !c.inst.llvm_supported || !enabled_by_march || c.tools.is_disabled(ToolKind::LlvmMc) {
+    let external_mode = c.ctx.config().diagnostics.external;
+    let use_external_mc = external_mode != crate::config::ExternalDiagnosticsMode::Off
+        && !c.tools.is_disabled(ToolKind::LlvmMc);
+    if !c.inst.llvm_supported || !enabled_by_march {
         return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
     }
     let Some(stmt) = crate::line::extract_statement_at_with_block_state(
@@ -475,6 +484,21 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
     } else {
         (None, false)
     };
+
+    if !use_external_mc {
+        let target_stmt = builtin_preprocessed_stmt.as_deref().unwrap_or(&stmt);
+        let cached = match builtin_expand::expand_and_encode(
+            target_stmt,
+            c.effective_march,
+            &known_consts,
+            c.db,
+        ) {
+            Some(items) => CachedExpansion::Expanded(items),
+            None => CachedExpansion::Unavailable,
+        };
+        parts.facts.push(format_this_line_fact(&cached));
+        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
+    }
     let (cpp_preamble, open_if_depth) = if c.file_ctx.preprocessed {
         collect_cpp_preamble(&c.doc.text, c.pos.line as usize)
     } else {
@@ -974,6 +998,8 @@ mod tests {
                 required_extensions: vec!["i".to_owned()],
                 xlen: crate::data::Xlen::Both,
                 alias_of: Some("addi".to_owned()),
+                encoding: None,
+                alias_expansion: None,
             }],
             udb_assembly: None,
             isa_label: Some("I".to_owned()),

@@ -92,7 +92,9 @@ Pipeline stages:
     `experimental` flag, and description.
   - `instructions`: `mnemonic`, `kind` (`instruction` | `alias` | `pseudo`),
     `variants` (`syntax`, `operands` with LLVM operand class, `required_extensions`,
-    `xlen`, `alias_of`), `udb_assembly`, `isa_label`, `long_name`, `summary`,
+    `xlen`, `alias_of`, optional TableGen bit `encoding` template `{size, fixed,
+    fields}` for real instructions, and optional `alias_expansion` for aliases),
+    `udb_assembly`, `isa_label`, `long_name`, `summary`,
     `description`, `description_source`, `llvm_supported`, `deprecated`,
     `preferred_name`.
   - `csrs`: `name`, `number`, privilege/mode, `required_extensions`, `summary`,

@@ -17,7 +17,7 @@ symbols.
 ## Quick Start
 
 1. Install `zed/` as a dev extension (`zed: install dev extension`; registry publication is pending — see [Developing the Extension](docs/zed.md#developing-the-extension)).
-2. Optionally install LLVM (`clang` and `llvm-mc`) for clang-based diagnostics and live instruction expansion (see [Optional: LLVM for clang-based diagnostics and expansions](#optional-llvm-for-clang-based-diagnostics-and-expansions)).
+2. Optionally install LLVM (`clang` and `llvm-mc`) and enable `diagnostics.external` (`"auto"` or `"on"`) if you want compiler-backed diagnostics and external `llvm-mc` expansions alongside the built-in engine (see [Optional: LLVM for clang-based diagnostics and expansions](#optional-llvm-for-clang-based-diagnostics-and-expansions)).
 3. Open a `.S` or `.s` file (see [Recommended Settings](docs/zed.md#recommended-settings) to enable `document_symbols` and `semantic_tokens`, which Zed extensions cannot enable by default in `config.toml`).
 
 ## Features
@@ -27,7 +27,8 @@ symbols.
   name, directives, preprocessor directives (`#define`, `#include`, ...), and
   project symbols (`_start`, `.equ`/`.set`/`=`, macros, `#define`, `1f`/`1b`,
   `\@`). Instruction hovers show decoded operand constraints and the current
-  line's `llvm-mc` expansion and encoding.
+  line's expansion and encoding (built in by default, with optional `llvm-mc`
+  when `diagnostics.external` is enabled).
 - **Completion** filtered by `-march` and `.option arch`: instructions with
   variant-specific operand placeholders (Tab moves between operands), directive
   snippets (`.macro` ... `.endm`, `.if`, `.irp`, ...), registers, CSRs,
@@ -36,8 +37,10 @@ symbols.
   rename for labels, numeric labels (`1f`, `1b`), `.equ`/`.set`/`=`, macros
   and `#define`s across files and included headers; document outline and
   workspace symbols.
-- **Diagnostics and code actions** from `clang` on unsaved text, with quick
-  fixes for compiler suggestions and `#` preprocessor-directive comment hints.
+- **Diagnostics and code actions** via the built-in Rust validator on unsaved
+  text (plus optional `clang` when `diagnostics.external` is `"auto"` or
+  `"on"`), with suppressible diagnostic codes and `#` preprocessor-directive
+  comment quick fixes.
 - **Signature help, folding ranges, and inlay hints** for instruction operands,
   comment/directive blocks, CSR addresses, and resolved constants.
 - **Semantic tokens** classifying registers, CSRs, labels, constants, macros,
@@ -46,8 +49,10 @@ symbols.
   tree-sitter grammar, highlighting, outline, brackets, indentation and
   block/line comment support.
 
-`clang` and `llvm-mc` are optional. Without them, diagnostics and expansions
-are off and everything else works.
+`clang` and `llvm-mc` are optional and disabled by default (`diagnostics.external`
+is `"off"`). Everything — built-in C preprocessing, built-in diagnostics, hover
+expansions and encodings, completion, navigation, and symbols — works out of
+the box without external tools.
 
 See [docs/features.md](docs/features.md) for detailed feature behaviour.
 
@@ -122,7 +127,7 @@ Example `.zed/settings.json`:
 | `defaultMarch` | `"rv64gc"` | `-march` for files without an entry |
 | `diagnostics.enable` | `true` | Enable diagnostics |
 | `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
-| `diagnostics.external` | `"off"` | External `clang` diagnostics mode (`"off"`, `"auto"`, or `"on"`; opt-in) |
+| `diagnostics.external` | `"off"` | External `clang` / `llvm-mc` mode (`"off"`, `"auto"`, or `"on"`; opt-in) |
 | `diagnostics.suppress` | `[]` | Built-in diagnostic codes to suppress (e.g. `["gnu-only-directive"]`) |
 
 ## Installing a release

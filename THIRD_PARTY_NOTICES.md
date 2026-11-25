@@ -6,16 +6,20 @@ following third-party works, which remain under their respective licenses.
 
 ---
 
-## 1. The LLVM Project (`llvmorg-19.1.7`)
+## 1. The LLVM Project (`llvmorg-23.1.6`)
 
-- **Source**: <https://github.com/llvm/llvm-project/tree/llvmorg-19.1.7>
+- **Source**: <https://github.com/llvm/llvm-project/tree/llvmorg-23.1.6>
 - **Material used**: RISC-V target TableGen definitions under `llvm/include/llvm`
-  and `llvm/lib/Target/RISCV`.
+  and `llvm/lib/Target/RISCV`, and constant materialization logic ported from
+  `llvm/lib/Target/RISCV/MCTargetDesc/RISCVMatInt.cpp` into
+  `server/src/hover/matint.rs`.
 - **License**: Apache License v2.0 with LLVM Exceptions (`Apache-2.0 WITH LLVM-exception`)
-- **Modifications**: Records were dumped via `llvm-tblgen --dump-json`, filtered
+- **Modifications**: TableGen records were dumped via `llvm-tblgen --dump-json`, filtered
   to assembler-visible non-vendor RISC-V instructions, aliases,
   pseudo-instructions, CSRs, registers, and extensions, joined with descriptions
   from the RISC-V specifications below, and written into `data/riscv.json`.
+  `RISCVMatInt::generateInstSeq` was ported to pure Rust in
+  `server/src/hover/matint.rs`.
 
 ```text
 ==============================================================================

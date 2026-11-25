@@ -760,6 +760,8 @@ mod tests {
                 required_extensions: vec!["i".to_owned()],
                 xlen: crate::data::Xlen::Both,
                 alias_of: Some("addi".to_owned()),
+                encoding: None,
+                alias_expansion: None,
             }],
             udb_assembly: None,
             isa_label: Some("I".to_owned()),

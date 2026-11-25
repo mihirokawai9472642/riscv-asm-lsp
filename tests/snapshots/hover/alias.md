@@ -7,7 +7,8 @@ mv rd, rs
 ---
 
 Alias of: `addi`  
-Operands: `rd`, `rs` integer reg (x0–x31)
+Operands: `rd`, `rs` integer reg (x0–x31)  
+This line: `c.li a1, 0` → `0x4581`
 
 ---
 

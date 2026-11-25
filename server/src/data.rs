@@ -82,12 +82,44 @@ pub struct OperandSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EncodingField {
+    pub operand: String,
+    pub inst_lo: u8,
+    pub val_lo: u8,
+    pub width: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EncodingTemplate {
+    pub size: u8,
+    pub fixed: u32,
+    pub fields: Vec<EncodingField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AliasBinding {
+    pub target_operand: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AliasExpansion {
+    pub mnemonic: String,
+    pub target_syntax: String,
+    pub bindings: Vec<AliasBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstructionVariant {
     pub syntax: String,
     pub operands: Vec<OperandSpec>,
     pub required_extensions: Vec<String>,
     pub xlen: Xlen,
     pub alias_of: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<EncodingTemplate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias_expansion: Option<AliasExpansion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

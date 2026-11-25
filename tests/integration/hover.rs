@@ -717,3 +717,282 @@ fn hover_covers_csr_xlen_march_isa_label_operand_keywords_and_unresolved_include
 
     client64.shutdown_and_exit();
 }
+
+#[test]
+fn hover_builtin_expansion_works_without_external_tools() {
+    let mut client = LspClient::start(
+        Some(json!({
+            "clang": "/nonexistent/clang",
+            "llvmMc": "/nonexistent/llvm-mc",
+            "defaultMarch": "rv64gc",
+            "diagnostics": { "enable": false }
+        })),
+        None,
+    );
+    let uri = crate::common::test_uri("builtin_exp_offline.S");
+    let src = "\
+#define IMM_VAL 0x12345678
+_start:
+    li a0, IMM_VAL
+    csrw stvec, t0
+    mv a0, a1
+    addi sp, sp, -16
+    la sp, _stack_top
+";
+    client.open_doc(&uri, 1, src);
+
+    let h_li = hover_markdown(&mut client, &uri, 2, 5).expect("li hover");
+    assert!(
+        h_li.contains("0x12345537") && h_li.contains("0x67850513"),
+        "expected built-in li encoding without llvm-mc, got: {h_li}"
+    );
+
+    let h_csrw = hover_markdown(&mut client, &uri, 3, 5).expect("csrw hover");
+    assert!(h_csrw.contains("0x10529073"), "got: {h_csrw}");
+
+    let h_mv = hover_markdown(&mut client, &uri, 4, 5).expect("mv hover");
+    assert!(
+        h_mv.contains("c.mv a0, a1") && h_mv.contains("0x852e"),
+        "got: {h_mv}"
+    );
+
+    let h_addi = hover_markdown(&mut client, &uri, 5, 5).expect("addi hover");
+    assert!(
+        h_addi.contains("c.addi sp, -16") && h_addi.contains("0x1141"),
+        "got: {h_addi}"
+    );
+
+    let h_la = hover_markdown(&mut client, &uri, 6, 5).expect("la hover");
+    assert!(
+        h_la.contains("auipc sp, %pcrel_hi(_stack_top)") && h_la.contains("(relocated)"),
+        "got: {h_la}"
+    );
+
+    client.shutdown_and_exit();
+}
+
+#[test]
+#[ignore = "requires llvm-mc"]
+fn builtin_expansion_and_encoding_match_llvm_mc() {
+    assert!(
+        has_tool("llvm-mc"),
+        "llvm-mc must be on PATH for ignored tool tests"
+    );
+
+    use riscv_asm_lsp::context::MarchSpec;
+    use riscv_asm_lsp::data::Database;
+    use riscv_asm_lsp::hover::expand_and_encode;
+    use std::collections::HashMap;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let db = Database::load().expect("db");
+
+    fn mc_encode(triple: &str, mattr: &str, stmt: &str) -> Vec<(String, String)> {
+        let mut args = vec![format!("-triple={triple}")];
+        if !mattr.is_empty() {
+            args.push(format!("-mattr={mattr}"));
+        }
+        args.extend([
+            "-show-encoding".to_owned(),
+            "-M".to_owned(),
+            "no-aliases".to_owned(),
+        ]);
+        let mut child = Command::new("llvm-mc")
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn llvm-mc");
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(format!("{stmt}\n").as_bytes());
+        }
+        let out = child.wait_with_output().expect("wait llvm-mc");
+        assert!(
+            out.status.success(),
+            "llvm-mc failed on `{stmt}` with {triple} {mattr}"
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut items = Vec::new();
+        for raw in stdout.lines() {
+            let trimmed = raw.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with('.')
+                || trimmed.starts_with('#')
+                || trimmed.ends_with(':')
+            {
+                continue;
+            }
+            if let Some((asm_part, enc_part)) = trimmed.split_once("# encoding:") {
+                let asm = asm_part.split_whitespace().collect::<Vec<_>>().join(" ");
+                let open = enc_part.find('[').unwrap();
+                let close = enc_part[open + 1..].find(']').unwrap();
+                let inner = enc_part[open + 1..open + 1 + close].trim();
+                let bytes: Option<Vec<u8>> = inner
+                    .split(',')
+                    .map(|t| {
+                        t.trim()
+                            .strip_prefix("0x")
+                            .and_then(|h| u8::from_str_radix(h, 16).ok())
+                    })
+                    .collect();
+                let enc = match bytes {
+                    Some(b) if b.len() == 2 => {
+                        format!("0x{:04x}", u16::from_le_bytes([b[0], b[1]]))
+                    }
+                    Some(b) if b.len() == 4 => {
+                        format!("0x{:08x}", u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    }
+                    _ => "(relocated)".to_owned(),
+                };
+                items.push((asm, enc));
+            }
+        }
+        items
+    }
+
+    let inst_cases: &[(&str, &str)] = &[
+        ("rv64gc", "addi a0, a1, 42"),
+        ("rv64gc", "addi sp, sp, -16"),
+        ("rv64gc", "addi sp, sp, -48"),
+        ("rv64gc", "addi s0, sp, 16"),
+        ("rv64gc", "add a0, a1, a2"),
+        ("rv64gc", "add a0, a0, a2"),
+        ("rv64gc", "sub a0, a0, a1"),
+        ("rv64gc", "ld a0, 16(sp)"),
+        ("rv64gc", "ld s0, 8(s1)"),
+        ("rv64gc", "sd ra, 24(sp)"),
+        ("rv64gc", "lw a0, 4(sp)"),
+        ("rv64gc", "sw a0, 4(s1)"),
+        ("rv64gc", "lui a0, 0x12345"),
+        ("rv64gc", "lui a0, 7"),
+        ("rv64gc", "auipc a0, 12"),
+        ("rv64gc", "csrw stvec, t0"),
+        ("rv64gc", "csrr a0, mstatus"),
+        ("rv64gc", "csrrwi a0, mscratch, 5"),
+        ("rv64gc", "mv a0, a1"),
+        ("rv64gc", "nop"),
+        ("rv64gc", "ret"),
+        ("rv64gc", "not a0, a1"),
+        ("rv64gc", "neg a0, a1"),
+        ("rv64gc", "seqz a0, a1"),
+        ("rv64gc", "snez a0, a1"),
+        ("rv64gc", "jr a0"),
+        ("rv64gc", "jalr a0"),
+        ("rv64gc", "beq a0, a1, 16"),
+        ("rv64gc", "beq a0, a1, -16"),
+        ("rv64gc", "beqz a0, 16"),
+        ("rv64gc", "jal x0, 32"),
+        ("rv64gc", "j 32"),
+        ("rv64gc", "j -8"),
+        ("rv64gc", "ebreak"),
+        ("rv64gc", "ecall"),
+        ("rv64gc", "fence iorw, ow"),
+        ("rv64gc", "lr.w a0, (a1)"),
+        ("rv64gc", "amoswap.w a0, a1, (a2)"),
+        ("rv64gc", "fadd.s fa0, fa1, fa2, rne"),
+        ("rv64gc", "fadd.s fa0, fa1, fa2"),
+        ("rv64gc", "fld fa0, 16(sp)"),
+        ("rv32imac", "addi a0, a1, -1"),
+        ("rv32imac", "jal ra, 16"),
+        ("rv32imac", "lw a0, 8(s1)"),
+        ("rv64imad", "addi sp, sp, -16"),
+        ("rv64imad", "mv a0, a1"),
+        ("rv64imad", "ret"),
+        ("rv64gcv", "vadd.vv v1, v2, v3"),
+        ("rv64gcv", "vadd.vv v1, v2, v3, v0.t"),
+    ];
+
+    let empty = HashMap::new();
+    for &(march_str, stmt) in inst_cases {
+        let spec = MarchSpec::parse(march_str);
+        let mc = mc_encode(spec.llvm_triple(), &spec.to_llvm_mattr(), stmt);
+        let ours = expand_and_encode(stmt, &spec, &empty, &db)
+            .unwrap_or_else(|| panic!("builtin failed to expand `{stmt}` under {march_str}"));
+        let our_enc: Vec<&str> = ours
+            .iter()
+            .map(|e| e.encoding.as_deref().expect("encoding present"))
+            .collect();
+        let mc_enc: Vec<&str> = mc.iter().map(|(_, e)| e.as_str()).collect();
+        assert_eq!(
+            our_enc, mc_enc,
+            "encoding mismatch for `{stmt}` under {march_str}: ours={ours:?} vs mc={mc:?}"
+        );
+    }
+
+    // Wide matrix of `li rd, val` constants across RV32/RV64 and Zba/Zbb/Zbs/no-C combinations
+    let li_vals: &[&str] = &[
+        "0",
+        "1",
+        "-1",
+        "31",
+        "32",
+        "-32",
+        "-33",
+        "2047",
+        "2048",
+        "-2048",
+        "-2049",
+        "0x12345",
+        "0x12345678",
+        "0x7ffff800",
+        "0x7fffffff",
+        "-0x80000000",
+        "0x80000000",
+        "0xffffffff",
+        "0x100000000",
+        "0x100000001",
+        "0xdeadbeefcafebabe",
+        "0x10000000000",
+        "-0x1000001",
+        "0x369d0369",
+        "0x12345678000",
+        "-0x123456789abc",
+        "0x0000ffff0000ffff",
+        "0x7fffffffffffffff",
+        "-0x8000000000000000",
+    ];
+    for march_str in [
+        "rv64gc",
+        "rv64imad",
+        "rv64gc_zba",
+        "rv64gc_zbb",
+        "rv64gc_zbs",
+        "rv64gcb_zbs",
+        "rv32imac",
+    ] {
+        let spec = MarchSpec::parse(march_str);
+        for val_str in li_vals {
+            if spec.xlen == riscv_asm_lsp::data::Xlen::Rv32
+                && matches!(
+                    *val_str,
+                    "0x100000000"
+                        | "0x100000001"
+                        | "0xdeadbeefcafebabe"
+                        | "0x10000000000"
+                        | "0x12345678000"
+                        | "-0x123456789abc"
+                        | "0x0000ffff0000ffff"
+                        | "0x7fffffffffffffff"
+                        | "-0x8000000000000000"
+                )
+            {
+                continue;
+            }
+            let stmt = format!("li a0, {val_str}");
+            let mc = mc_encode(spec.llvm_triple(), &spec.to_llvm_mattr(), &stmt);
+            let ours = expand_and_encode(&stmt, &spec, &empty, &db)
+                .unwrap_or_else(|| panic!("builtin failed to expand `{stmt}` under {march_str}"));
+            let our_enc: Vec<&str> = ours
+                .iter()
+                .map(|e| e.encoding.as_deref().expect("encoding present"))
+                .collect();
+            let mc_enc: Vec<&str> = mc.iter().map(|(_, e)| e.as_str()).collect();
+            assert_eq!(
+                our_enc, mc_enc,
+                "li encoding mismatch for `{stmt}` under {march_str}: ours={ours:?} vs mc={mc:?}"
+            );
+        }
+    }
+}

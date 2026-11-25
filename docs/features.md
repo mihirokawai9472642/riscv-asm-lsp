@@ -31,7 +31,7 @@ Representative outputs live under `tests/snapshots/hover/`:
 
 | Target | Context Header & Code Block | Notices, Facts & Prose | Example |
 | --- | --- | --- | --- |
-| Instruction / Alias / Pseudo | `<Instruction\|Alias\|Pseudo-instruction> · [<long name> · ]<extensions/base ISA> · <RV32\|RV64\|RV32/RV64>[ · spec only]`; up to 3 active-XLEN syntax variants in a `riscv` fence (plus `*(+N more)*` if truncated) | `>` notices if spec-only (not in the bundled LLVM reference), disabled by `-march`/`.option`, or deprecated (`prefer \`...\``); `Alias of:`, decoded `Operands:` constraints across all LLVM operand classes, `This line:` live expansion & encoding from `llvm-mc`, and concise `summary` | [instruction.md](../tests/snapshots/hover/instruction.md), [instruction_with_expansion.md](../tests/snapshots/hover/instruction_with_expansion.md), [alias.md](../tests/snapshots/hover/alias.md), [pseudo.md](../tests/snapshots/hover/pseudo.md), [macro_expansion.md](../tests/snapshots/hover/macro_expansion.md) |
+| Instruction / Alias / Pseudo | `<Instruction\|Alias\|Pseudo-instruction> · [<long name> · ]<extensions/base ISA> · <RV32\|RV64\|RV32/RV64>[ · spec only]`; up to 3 active-XLEN syntax variants in a `riscv` fence (plus `*(+N more)*` if truncated) | `>` notices if spec-only (not in the bundled LLVM reference), disabled by `-march`/`.option`, or deprecated (`prefer \`...\``); `Alias of:`, decoded `Operands:` constraints across all LLVM operand classes, `This line:` expansion & encoding (built-in offline engine by default, or `llvm-mc` when `diagnostics.external` is enabled), and concise `summary` | [instruction.md](../tests/snapshots/hover/instruction.md), [instruction_with_expansion.md](../tests/snapshots/hover/instruction_with_expansion.md), [alias.md](../tests/snapshots/hover/alias.md), [pseudo.md](../tests/snapshots/hover/pseudo.md), [macro_expansion.md](../tests/snapshots/hover/macro_expansion.md) |
 | CSR (`stvec` or numeric `0x105` in CSR position) | `CSR · [<long name> · ]0x<hex> · <privilege>-mode[ · spec only]` (e.g. `CSR · Supervisor Trap Vector · 0x105 · S-mode`); CSR name in `riscv` fence | `>` notices if spec-only or disabled by active `-march` XLEN/extensions; `Fields:` bullet list (up to 8 fields using RV32 bit ranges under RV32 `-march`, as ``- `NAME` [bits] — summary``, plus `- *+N more fields*` if more) and concise summary prose | [csr.md](../tests/snapshots/hover/csr.md) |
 | Operand keyword (`%hi`, `rne`, `iorw`, `v0.t`) | `Relocation modifier`, `Rounding mode`, `Fence ordering`, or `Vector mask`; token in `riscv` fence | Explanation matching active instruction operand role or `%` modifier | — |
 | Register (`x10` / `a0`) | `Register · <Integer\|Floating-point\|Vector>[ · <saver>]` (e.g. `Register · Integer · caller-saved`); `<abi> (<arch>)` in `riscv` fence | Concise register summary prose | [register.md](../tests/snapshots/hover/register.md) |
@@ -41,10 +41,24 @@ Representative outputs live under `tests/snapshots/hover/`:
 | Macro invocation counter (`\@`) | `Macro invocation counter`; `\@` in `riscv` fence | Explanation from `data/texts.json` | — |
 | Include directive (`#include`, `.include`) | `Include` (or `Include · unresolved`); `#include "<target>"` in `c` fence | ``Path: `<resolved>` `` when found on disk; search-path configuration hint when unresolved | — |
 
-### Live `llvm-mc` expansion & encoding
+### Built-in & live expansion & encoding
 
-For valid instructions under active `-march`/`.option` state, hover invokes
-`llvm-mc` asynchronously off the main loop:
+For valid instructions under active `-march`/`.option` state, hover renders a
+`This line:` expansion and machine-word encoding:
+
+- **Default offline engine (`diagnostics.external: "off"`)**: `hover/builtin_expand.rs`
+  and `hover/matint.rs` run synchronously in Rust with no external tools:
+  - `li` uses the port of LLVM `RISCVMatInt::generateInstSeq` (matching RV32/RV64
+    and bit-manipulation extensions such as `Zba`, `Zbb`, `Zbs`, `Zbkb`, and `P`);
+  - fixed relocatable pseudos (`la`, `lla`, `call`, `tail`, `jump`, and symbol
+    load/store forms) expand cleanly with `# (relocated)` markers;
+  - `InstAlias` records expand via `alias_expansion` templates from
+    `data/riscv.json`, compressed instructions are selected when `C`/`Zca`/`Zcf`/`Zcd`
+    allow, and instruction words are bit-packed from bundled TableGen `encoding`
+    templates.
+- **Optional `llvm-mc` mode (`diagnostics.external: "auto"` | `"on"`)**: when opted
+  in, hover invokes `llvm-mc` asynchronously off the main loop (falling back to
+  the built-in engine if `llvm-mc` is unavailable or fails):
 
 ```text
 llvm-mc -triple=<riscv32|riscv64> -mattr=<attrs> -show-encoding -M no-aliases
@@ -58,15 +72,15 @@ llvm-mc -triple=<riscv32|riscv64> -mattr=<attrs> -show-encoding -M no-aliases
   requiring a specific LLVM version.
 - Preceding `.option` directives, visible `.equ`/`#define` constants, and the
   built-in C preprocessor (with `clang -E -P -x assembler-with-cpp` as an
-  optional fallback when external tools are available and unresolved headers are
-  needed) are applied before invoking `llvm-mc`.
+  optional fallback when external tools are enabled and unresolved headers are
+  needed) are applied before expansion.
 - Assembler directives, compiler-generated `.Lpcrel_hi*:` labels, and `# fixup`
-  lines are filtered out.
+  lines are filtered out in `llvm-mc` output.
 - Little-endian encoding bytes render as hex instruction words (`0x1141`,
   `0x10529073`) or `(relocated)` when relocations apply:
 
 ```text
-li a0, 0x12345678   ->  lui a0, 74565 · 0x12345537 / addiw a0, a0, 1656 · 0x6785051b
+li a0, 0x12345678   ->  lui a0, 74565 · 0x12345537 / addi a0, a0, 1656 · 0x67850513
 csrw stvec, t0      ->  csrrw zero, stvec, t0 · 0x10529073
 mv a0, a1           ->  c.mv a0, a1 · 0x852e          (when C is enabled)
 ```
