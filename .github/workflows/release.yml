@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and upload release artifacts without publishing a GitHub Release"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -18,26 +24,31 @@ jobs:
             ext: tar.gz
             bin: riscv-asm-lsp
             musl: true
+            crt_static: false
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             ext: tar.gz
             bin: riscv-asm-lsp
             musl: true
+            crt_static: false
           - target: x86_64-apple-darwin
-            os: macos-15
+            os: macos-15-intel
             ext: tar.gz
             bin: riscv-asm-lsp
             musl: false
+            crt_static: false
           - target: aarch64-apple-darwin
             os: macos-latest
             ext: tar.gz
             bin: riscv-asm-lsp
             musl: false
+            crt_static: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             ext: zip
             bin: riscv-asm-lsp.exe
             musl: false
+            crt_static: true
 
     runs-on: ${{ matrix.os }}
     env:
@@ -48,9 +59,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Verify tag matches workspace version
-        shell: bash
+        if: github.event_name == 'push'
+        shell: python
         run: |
-          python3 - <<'PY'
           import os, sys, tomllib
 
           with open("Cargo.toml", "rb") as f:
@@ -61,7 +72,6 @@ jobs:
               print(f"error: tag {tag!r} does not match Cargo.toml workspace.package.version {version!r} (expected {expected!r})", file=sys.stderr)
               sys.exit(1)
           print(f"Verified tag {tag} matches Cargo.toml version {version}")
-          PY
 
       - name: Install Linux musl build tools
         if: matrix.musl
@@ -79,12 +89,25 @@ jobs:
         run: cargo test --locked
 
       - name: Build release binary
-        shell: bash
+        shell: python
+        env:
+          IS_MUSL: ${{ matrix.musl }}
+          IS_CRT_STATIC: ${{ matrix.crt_static }}
         run: |
-          if [ "${{ matrix.musl }}" = "true" ]; then
-            export "CC_${TARGET//-/_}=musl-gcc"
-          fi
-          cargo build --release --locked -p riscv-asm-lsp --target "${{ env.TARGET }}"
+          import os, subprocess
+
+          env = os.environ.copy()
+          target = env["TARGET"]
+          if env.get("IS_MUSL") == "true":
+              env[f"CC_{target.replace('-', '_')}"] = "musl-gcc"
+          if env.get("IS_CRT_STATIC") == "true":
+              existing = env.get("RUSTFLAGS", "").strip()
+              flag = "-C target-feature=+crt-static"
+              env["RUSTFLAGS"] = f"{existing} {flag}".strip()
+          subprocess.check_call(
+              ["cargo", "build", "--release", "--locked", "-p", "riscv-asm-lsp", "--target", target],
+              env=env,
+          )
 
       - name: Verify static linking (Linux musl)
         if: matrix.musl
@@ -97,6 +120,36 @@ jobs:
             echo "error: binary is dynamically linked" >&2
             exit 1
           fi
+
+      - name: Verify static CRT (Windows)
+        if: runner.os == 'Windows'
+        shell: python
+        env:
+          BIN: target/${{ matrix.target }}/release/${{ matrix.bin }}
+        run: |
+          import glob, os, pathlib, subprocess, sys
+
+          vswhere = pathlib.Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+          candidates = []
+          if vswhere.is_file():
+              inst = subprocess.check_output(
+                  [str(vswhere), "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
+                  text=True,
+              ).strip()
+              if inst:
+                  candidates.extend(sorted(glob.glob(f"{inst}/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"), reverse=True))
+          if not candidates:
+              candidates = sorted(glob.glob(r"C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe"), reverse=True)
+          if not candidates:
+              print("error: dumpbin.exe not found", file=sys.stderr)
+              sys.exit(1)
+          out = subprocess.check_output([candidates[0], "/dependents", os.environ["BIN"]], text=True)
+          print(out)
+          upper = out.upper()
+          for forbidden in ("VCRUNTIME140", "MSVCP140"):
+              if forbidden in upper:
+                  print(f"error: dynamic CRT dependency {forbidden} found", file=sys.stderr)
+                  sys.exit(1)
 
       - name: Verify LSP lifecycle
         shell: python
@@ -158,39 +211,55 @@ jobs:
           rc = proc.wait(timeout=10)
           assert rc == 0, f"expected exit code 0, got {rc}"
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+
       - name: Generate third-party license bundle
-        shell: bash
+        shell: python
+        env:
+          IS_MUSL: ${{ matrix.musl }}
         run: |
-          cargo install --locked --version 0.9.3 --features cli cargo-about
-          mkdir -p dist/pkg
-          cargo about generate --locked -c about.toml -m server/Cargo.toml about.hbs -o dist/pkg/THIRD_PARTY_LICENSES.md
-          grep -q "Copyright (c) 2025 Oskar Meyenburg" dist/pkg/THIRD_PARTY_LICENSES.md
-          if grep -qE '<year>|<copyright holders>' dist/pkg/THIRD_PARTY_LICENSES.md; then
-            echo "error: placeholder text left in THIRD_PARTY_LICENSES.md" >&2
-            exit 1
-          fi
-          if grep -q 'riscv-asm-lsp ' dist/pkg/THIRD_PARTY_LICENSES.md; then
-            echo "error: project crate should not appear in THIRD_PARTY_LICENSES.md" >&2
-            exit 1
-          fi
+          import os, pathlib, re, shutil, subprocess, sys
 
-          if [ "${{ matrix.musl }}" = "true" ]; then
-            test -f /usr/share/doc/musl/copyright
-            musl_ver="$(dpkg-query -W -f='${Version}' musl)"
-            {
-              echo "## musl libc (${musl_ver})"
-              echo
-              echo 'Static binaries for `'"${{ env.TARGET }}"'` statically link musl libc:'
-              echo
-              echo '````text'
-              cat /usr/share/doc/musl/copyright
-              echo '````'
-            } >> dist/pkg/THIRD_PARTY_LICENSES.md
-          fi
+          pkg = pathlib.Path("dist/pkg")
+          pkg.mkdir(parents=True, exist_ok=True)
+          out_path = pkg / "THIRD_PARTY_LICENSES.md"
+          subprocess.check_call([
+              "cargo", "about", "generate", "--locked",
+              "-c", "about.toml", "-m", "server/Cargo.toml", "about.hbs",
+              "-o", str(out_path),
+          ])
 
-          rust_copyright="$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html"
-          test -f "$rust_copyright"
-          cp "$rust_copyright" dist/pkg/COPYRIGHT-library.html
+          content = out_path.read_text(encoding="utf-8")
+          assert "Copyright (c) 2025 Oskar Meyenburg" in content, "missing tree-sitter-riscv copyright"
+          assert not re.search(r"<year>|<copyright holders>", content), "placeholder text left in THIRD_PARTY_LICENSES.md"
+          assert "riscv-asm-lsp " not in content, "project crate should not appear in THIRD_PARTY_LICENSES.md"
+
+          target = os.environ["TARGET"]
+          if os.environ.get("IS_MUSL") == "true":
+              musl_copy = pathlib.Path("/usr/share/doc/musl/copyright")
+              assert musl_copy.is_file(), "missing /usr/share/doc/musl/copyright"
+              musl_ver = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", "musl"], text=True).strip()
+              content += (
+                  f"\n## musl libc ({musl_ver})\n\n"
+                  f"Static binaries for `{target}` statically link musl libc:\n\n"
+                  f"````text\n{musl_copy.read_text(encoding='utf-8')}````\n"
+              )
+          elif target == "x86_64-pc-windows-msvc":
+              content += (
+                  "\n## Microsoft Visual C++ Runtime (static CRT)\n\n"
+                  f"Windows binaries for `{target}` statically link the MSVC C runtime "
+                  "under the Microsoft Software License Terms (Visual Studio Build Tools / Windows SDK redistribution terms).\n"
+              )
+          out_path.write_text(content, encoding="utf-8")
+
+          sysroot = subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip()
+          rust_copyright = pathlib.Path(sysroot) / "share" / "doc" / "rust" / "COPYRIGHT-library.html"
+          if not rust_copyright.is_file():
+              print(f"error: missing {rust_copyright}", file=sys.stderr)
+              sys.exit(1)
+          shutil.copy2(rust_copyright, pkg / "COPYRIGHT-library.html")
 
       - name: Package release archive and SHA-256 checksum
         shell: python
@@ -210,11 +279,20 @@ jobs:
           shutil.copy2("LICENSE.md", pkg / "LICENSE.md")
           shutil.copy2("THIRD_PARTY_NOTICES.md", pkg / "THIRD_PARTY_NOTICES.md")
 
+          expected_members = {
+              bin_name,
+              "LICENSE.md",
+              "THIRD_PARTY_NOTICES.md",
+              "THIRD_PARTY_LICENSES.md",
+              "COPYRIGHT-library.html",
+          }
           archive_path = pathlib.Path("dist") / asset
           if asset.endswith(".zip"):
               with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                   for item in sorted(pkg.iterdir()):
                       zf.write(item, arcname=item.name)
+              with zipfile.ZipFile(archive_path, "r") as zf:
+                  actual_members = set(zf.namelist())
           else:
               with tarfile.open(archive_path, "w:gz") as tf:
                   for item in sorted(pkg.iterdir()):
@@ -225,22 +303,26 @@ jobs:
                       ti.gname = ""
                       with open(item, "rb") as fh:
                           tf.addfile(ti, fh)
+              with tarfile.open(archive_path, "r:gz") as tf:
+                  actual_members = {m.name for m in tf.getmembers()}
+          assert actual_members == expected_members, f"unexpected archive layout: {actual_members!r} != {expected_members!r}"
 
           digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
           sha_path = pathlib.Path("dist") / f"{asset}.sha256"
           sha_path.write_text(f"{digest}  {asset}\n", encoding="utf-8")
           print(f"Packaged {asset} ({digest})")
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: dist/${{ env.ASSET }}*
 
   publish:
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

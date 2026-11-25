@@ -14,7 +14,13 @@ accepted = [
 
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
-targets = ["x86_64-unknown-linux-musl"]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 private = { ignore = true }
 
 # tree-sitter-riscv 0.3.1 omits its LICENSE file from the published crate archive;
