@@ -296,8 +296,10 @@ Dependency licenses are verified with `cargo deny check licenses`. After
 selecting `MIT` for dual-licensed crates, the `riscv-asm-lsp` binary uses
 `MIT` and `Unicode-3.0` third-party crates.
 
-Prebuilt binary release archives also bundle `THIRD_PARTY_LICENSES.md`
-(full license texts and copyright notices of third-party crates via
-`cargo-about` plus `/usr/share/doc/musl/copyright` for `x86_64-unknown-linux-musl`
-builds) and `COPYRIGHT-library.html` (notices for the Rust standard library
-and its dependencies).
+Prebuilt binary release archives (`x86_64`/`aarch64-unknown-linux-musl`,
+`x86_64`/`aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`) also bundle
+`LICENSE.md`, `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.md` (full license
+texts and copyright notices of third-party crates via `cargo-about`, plus
+`/usr/share/doc/musl/copyright` for Linux musl builds and the static MSVC CRT
+redistribution notice for Windows builds), and `COPYRIGHT-library.html`
+(notices for the Rust standard library and its dependencies).
