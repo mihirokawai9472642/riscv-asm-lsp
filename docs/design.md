@@ -79,9 +79,9 @@ release).
 | Scope | RISC-V only (RV32 and RV64) | Architecture-specific data, CSRs and grammar stay coherent and maintainable |
 | Syntax | GNU assembler syntax (`#` / `//` / `/* */` comments, `;` statements, `.` directives) | Standard syntax for RISC-V assembly; accepted by LLVM |
 | Reference implementation | Bundled data generated from one pinned LLVM release (`23` / `llvmorg-23.1.6`), supplemented optionally by external `clang`/`llvm-mc` | Matches `clangd`'s single-reference model without per-version data maintenance; reference LLVM acts as CI oracle |
-| External tools | Optional, any recent LLVM version with `riscv32`/`riscv64` targets; never run compilers from `compile_commands.json` | Avoids brittle host-version coupling and security risks; transitions to opt-in once the built-in validator is complete |
-| Built-in engine (planned) | Pure-Rust preprocessor + approximate validator + `RISCVMatInt` / tblgen encoding in the server | Avoids C++ LLVM MC bindings and 5-target LLVM C++ builds; keeps binary small and static |
-| Built-in diagnostics rule (planned) | Report only when certain (skip unexpanded macros, `.macro`/`.irp`/`.rept` bodies, unresolved expressions); GNU-only constructs warn with stable codes | Avoids false positives that erode trust while providing stable suppressible diagnostic codes |
+| External tools | Optional & opt-in (`diagnostics.external: "off"` by default), any recent LLVM version with `riscv32`/`riscv64` targets; never run compilers from `compile_commands.json` | Avoids brittle host-version coupling and security risks; built-in engine handles core workflows offline |
+| Built-in engine | Pure-Rust preprocessor (`preprocessor/`) + built-in validator (`diagnostics/builtin.rs`) + `RISCVMatInt` / tblgen expansion & encoding (`hover/matint.rs`, `hover/builtin_expand.rs`) | Avoids C++ LLVM MC bindings and 5-target LLVM C++ builds; keeps binary small and static |
+| Built-in diagnostics rule | Report only when certain (skip unexpanded macros, `.macro`/`.irp`/`.rept` bodies, unresolved expressions); GNU-only constructs warn with stable codes | Avoids false positives that erode trust while providing stable suppressible diagnostic codes |
 | Implementation language | Rust (edition 2024, MSRV 1.90) | Required by `tree-sitter` 0.27 (`msrv` CI check); shares ecosystem with `zed_extension_api` and ships one binary |
 | Data generation | Rust (`xtask`) | Single language in the repository |
 | Repository layout | Server, data, generator and Zed extension together | Versions and grammar queries stay in sync |
@@ -101,14 +101,17 @@ Canonical names:
 Editor ──LSP──> riscv-asm-lsp ──> embedded data (data/riscv.json, data/texts.json)
                      │
                      ├──> tree-sitter-riscv (parsing, AST traversal, symbol index)
-                     ├──> clang     (unsaved diagnostics via stdin)
-                     └──> llvm-mc   (hover expansion & encoding)
+                     ├──> built-in engine (C preprocessor, validator, RISCVMatInt + Inst encoding)
+                     ├──> clang     (optional unsaved diagnostics via stdin when opted in)
+                     └──> llvm-mc   (optional hover expansion & encoding when opted in)
 ```
 
 Instruction and reference text data is generated offline and embedded into the
-binary via `include_str!`, so runtime execution needs no network access or
-external data directory. `clang` and `llvm-mc` are optional: when either is
-missing or fails, only diagnostics or expansions degrade.
+binary via `include_str!`, so runtime execution needs no network access,
+external data directory, or external tools. `clang` and `llvm-mc` are opt-in
+supplements (`diagnostics.external: "off"` by default); when disabled, missing,
+or failing, the built-in engine provides preprocessing, diagnostics, and hover
+expansions/encodings.
 
 ### Repository layout
 
@@ -140,7 +143,7 @@ missing or fails, only diagnostics or expansions degrade.
 | `document.rs` | Open document text store and incremental `tree-sitter` reparsing |
 | `context/` | `march.rs` (`MarchSpec`, `.option` tracking), `compile_db.rs` (`compile_commands.json` / `compile_flags.txt`, multi-root, linker-script filter), `uri.rs` (`url`-based symlink-preserving URIs) |
 | `index/` | Background workspace scanner (`mod.rs`), AST symbol extractor (`parse.rs`), lexical/macro/include scope resolver (`scope.rs`) |
-| `hover/` | Hover orchestration (`mod.rs`), `llvm-mc` expansion (`expand.rs`), operand-class decoder (`operands.rs`), shared Markdown renderer (`format.rs`) |
+| `hover/` | Hover orchestration (`mod.rs`), built-in `RISCVMatInt` (`matint.rs`), offline expansion & tblgen encoding (`builtin_expand.rs`), `llvm-mc` expansion (`expand.rs`), operand-class decoder (`operands.rs`), shared Markdown renderer (`format.rs`) |
 | `completion/` | Position classification & text edits (`mod.rs`), candidate collection & lazy resolve (`candidates.rs`), snippet builder (`snippets.rs`) |
 | `signature_help.rs` | Active operand signature help with decoded LLVM operand documentation |
 | `folding.rs` | Block comments, `.macro`/`.if`/`.rept`/`#if` blocks, and label scope folds |
@@ -243,7 +246,7 @@ Embedded data stays under its upstream licenses ([THIRD_PARTY_NOTICES.md](../THI
 
 | Material | License | Notes |
 | --- | --- | --- |
-| Generated LLVM instruction/CSR/register/extension data | `Apache-2.0 WITH LLVM-exception` | Generated from pinned `.td` sources |
+| Generated LLVM instruction/CSR/register/extension data & `RISCVMatInt` port | `Apache-2.0 WITH LLVM-exception` | Generated from pinned `.td` sources; `server/src/hover/matint.rs` ported from `RISCVMatInt.cpp` |
 | riscv-unified-db descriptions & CSR metadata | `BSD-3-Clause-Clear` | Keep copyright and notice |
 | riscv-asm-manual tables | `CC-BY-4.0` | Credit source, authors and license |
 | `data/directives_gnu.json`, `data/supplements.json`, `data/texts.json` | `MIT` | Original project texts (no GPL/GFDL sources used) |
@@ -282,12 +285,8 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 Only unfinished work is listed here:
 
 - **Distribution verification & publishing**:
-  - Test clean Zed GUI installation/settings/features, tag `v0.2.0` once the initial built-in milestones are ready, and publish to the Zed extension registry (`zed-industries/extensions`).
+  - Test clean Zed GUI installation/settings/features, tag `v0.2.0` once ready, and publish to the Zed extension registry (`zed-industries/extensions`).
   - Additional optional install channels (`crates.io` after moving embedded `data/` into `server/`, `cargo-binstall`, Neovim/Helix configs).
-- **Built-in `clangd`-style engine**:
-  - Implement a built-in C preprocessor in `preprocessor.rs` (`#define`/`#undef`, predefined `__riscv*` macros, `#if` expression evaluator, active/inactive/uncertain classification, UTF-16 source mapping).
-  - Implement a built-in instruction/directive validator (`diagnostics/builtin.rs`) with stable suppressible codes and CI oracle validation against reference `llvm-mc`, then switch external `clang`/`llvm-mc` to opt-in (`off` by default) while avoiding duplicate mixed diagnostics.
-  - Port LLVM `RISCVMatInt` for `li`, add fixed pseudo expansions, and generate tblgen `Inst` encoding templates for hover `This line:` without `llvm-mc`.
 - **clangd-style project ergonomics**:
   - Compile-database command interpolation from nearest known sibling file; `.clangd`-style project configuration file (excluding unsafe tool-path settings).
 - **Additional LSP features & corpus items**:
