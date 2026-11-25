@@ -234,10 +234,18 @@ Embedded data stays under its upstream licenses ([THIRD_PARTY_NOTICES.md](../THI
 | Rust dependencies (`lsp-server`, `lsp-types`, `serde*`, `tree-sitter*`, `ignore`, `url`, `yaml_serde`, `zed_extension_api`) | `MIT` and `Unicode-3.0` (`riscv-asm-lsp` binary after MIT choice; full `deny.toml` allow-list verified) | Verified via `cargo deny check licenses` against `deny.toml` |
 
 External `clang` and `llvm-mc` executables run strictly as child processes.
-Binary release archives bundle `THIRD_PARTY_LICENSES.md` (generated with
-`cargo-about` using `about.toml` and `about.hbs`, plus `/usr/share/doc/musl/copyright`
-for Linux musl builds) and `COPYRIGHT-library.html` (Rust standard library
-notices) alongside `LICENSE.md` and `THIRD_PARTY_NOTICES.md`.
+Prebuilt binary release archives (`x86_64`/`aarch64-unknown-linux-musl`,
+`x86_64`/`aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`) bundle
+`THIRD_PARTY_LICENSES.md` (generated with `cargo-about` using `about.toml` and
+`about.hbs`, plus `/usr/share/doc/musl/copyright` on Linux musl builds and a
+static MSVC CRT notice on Windows builds) and `COPYRIGHT-library.html` (Rust
+standard library notices) alongside `LICENSE.md` and `THIRD_PARTY_NOTICES.md`.
+
+CI and release workflows (`.github/workflows/ci.yml`,
+`.github/workflows/release.yml`) pin `actions/checkout`,
+`dtolnay/rust-toolchain`, `Swatinem/rust-cache`, `taiki-e/install-action`,
+`actions/upload-artifact`, and `actions/download-artifact` and keep them updated
+via Dependabot.
 
 ## 7. Testing
 
