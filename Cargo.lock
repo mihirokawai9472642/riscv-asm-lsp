@@ -385,7 +385,7 @@ checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "riscv-asm-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ignore",
  "lsp-server",
@@ -628,7 +628,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "riscv-asm-lsp",
  "serde",
