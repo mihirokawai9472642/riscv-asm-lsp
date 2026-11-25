@@ -304,7 +304,7 @@ fn extract_instructions(
             continue;
         }
         let pred_names = predicate_def_names(rec);
-        if pred_names.iter().any(|p| p.contains("Vendor")) {
+        if has_vendor_loc(rec) || pred_names.iter().any(|p| is_vendor_predicate(root, p)) {
             continue;
         }
 
@@ -362,9 +362,14 @@ fn extract_aliases(
             continue;
         }
         let pred_names = predicate_def_names(rec);
-        if pred_names.iter().any(|p| p.contains("Vendor")) {
+        if has_vendor_loc(rec) || pred_names.iter().any(|p| is_vendor_predicate(root, p)) {
             continue;
         }
+        if let Some(op_map) = rec
+            .get("OutOperandList")
+            .or_else(|| rec.get("InOperandList"))
+            && let _ = op_map
+        {}
         let result_inst = rec.get("ResultInst").and_then(Value::as_object);
         let target_def = result_inst
             .and_then(|r| r.get("operator"))
@@ -372,7 +377,11 @@ fn extract_aliases(
             .and_then(Value::as_str)
             .unwrap_or("");
         if let Some(target_rec) = root.get(target_def).and_then(Value::as_object)
-            && target_rec.get("Namespace").and_then(Value::as_str) != Some("RISCV")
+            && (target_rec.get("Namespace").and_then(Value::as_str) != Some("RISCV")
+                || has_vendor_loc(target_rec)
+                || predicate_def_names(target_rec)
+                    .iter()
+                    .any(|p| is_vendor_predicate(root, p)))
         {
             continue;
         }
@@ -404,6 +413,26 @@ fn extract_aliases(
             },
         });
     }
+}
+
+fn has_vendor_loc(rec: &serde_json::Map<String, Value>) -> bool {
+    rec.get("!locs")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .any(|loc| loc.starts_with("RISCVInstrInfoX"))
+        })
+}
+
+fn is_vendor_predicate(root: &serde_json::Map<String, Value>, pred_name: &str) -> bool {
+    if pred_name.contains("Vendor") || pred_name.starts_with("HasX") {
+        return true;
+    }
+    root.get(pred_name)
+        .and_then(|v| v.get("CondString"))
+        .and_then(Value::as_str)
+        .is_some_and(|cond| cond.contains("Vendor") || cond.contains("hasX"))
 }
 
 fn predicate_def_names(rec: &serde_json::Map<String, Value>) -> Vec<String> {
@@ -673,6 +702,11 @@ fn extract_csrs(
         let Some(rec) = root.get(def_name).and_then(Value::as_object) else {
             continue;
         };
+        if let Some(features_req) = rec.get("FeaturesRequired").and_then(Value::as_str)
+            && (features_req.contains("Vendor") || features_req.contains("FeatureX"))
+        {
+            continue;
+        }
         let Some(name) = rec.get("Name").and_then(Value::as_str) else {
             continue;
         };

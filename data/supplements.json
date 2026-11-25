@@ -313,6 +313,63 @@
       "name": "mtopi",
       "required_extensions": ["smaia"],
       "description": "Machine Top Interrupt — identity and priority of highest-priority pending M-mode interrupt (Smaia)."
+    },
+    {
+      "name": "sbadaddr",
+      "description": "Legacy privileged v1.9 name for `stval` (0x143) — supervisor bad address or illegal instruction value."
+    },
+    {
+      "name": "sptbr",
+      "description": "Legacy privileged v1.9 name for `satp` (0x180) — supervisor page-table base register and address translation control."
+    },
+    {
+      "name": "mbadaddr",
+      "description": "Legacy privileged v1.9 name for `mtval` (0x343) — machine bad address or illegal instruction value."
+    },
+    {
+      "name": "etrigger",
+      "required_extensions": ["sdtrig"],
+      "description": "Exception Trigger (alias of `tdata1`, 0x7a1) — configures debug trigger firing on exceptions (`Sdtrig`)."
+    },
+    {
+      "name": "icount",
+      "required_extensions": ["sdtrig"],
+      "description": "Instruction Count Trigger (alias of `tdata1`, 0x7a1) — configures single-step / N-instruction countdown triggers (`Sdtrig`)."
+    },
+    {
+      "name": "itrigger",
+      "required_extensions": ["sdtrig"],
+      "description": "Interrupt Trigger (alias of `tdata1`, 0x7a1) — configures debug trigger firing on interrupts (`Sdtrig`)."
+    },
+    {
+      "name": "mcontrol",
+      "required_extensions": ["sdtrig"],
+      "description": "Match Control Trigger v0 (alias of `tdata1`, 0x7a1) — legacy address/data match trigger configuration (`Sdtrig`)."
+    },
+    {
+      "name": "mcontrol6",
+      "required_extensions": ["sdtrig"],
+      "description": "Match Control Trigger v6 (alias of `tdata1`, 0x7a1) — extended address/data match trigger configuration (`Sdtrig`)."
+    },
+    {
+      "name": "tmexttrigger",
+      "required_extensions": ["sdtrig"],
+      "description": "External Debug Trigger (alias of `tdata1`, 0x7a1) — configures external trigger inputs (`Sdtrig`)."
+    },
+    {
+      "name": "textra32",
+      "required_extensions": ["sdtrig"],
+      "description": "Trigger Extra Data RV32 (alias of `tdata3`, 0x7a3) — additional trigger match filtering in RV32 (`Sdtrig`)."
+    },
+    {
+      "name": "textra64",
+      "required_extensions": ["sdtrig"],
+      "description": "Trigger Extra Data RV64 (alias of `tdata3`, 0x7a3) — additional trigger match filtering in RV64 (`Sdtrig`)."
+    },
+    {
+      "name": "dscratch",
+      "required_extensions": ["sdext"],
+      "description": "Debug Scratch Register (legacy name for `dscratch0`, 0x7b2) — scratch register usable in Debug Mode (`Sdext`)."
     }
   ],
   "directives": [

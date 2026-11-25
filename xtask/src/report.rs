@@ -48,6 +48,14 @@ fn render_summary(out: &mut String, data: &RiscvData, report: &JoinReportData) {
     let llvm_csr_count = data.csrs.iter().filter(|c| c.llvm_supported).count();
     let doc_only_csr_count = data.csrs.iter().filter(|c| !c.llvm_supported).count();
 
+    let llvm_major = pins::LLVM_TAG
+        .strip_prefix("llvmorg-")
+        .unwrap_or(pins::LLVM_TAG)
+        .split('.')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("LLVM");
+
     let _ = writeln!(out, "## Summary");
     let _ = writeln!(out);
     let _ = writeln!(out, "| Metric | Count |");
@@ -85,7 +93,7 @@ fn render_summary(out: &mut String, data: &RiscvData, report: &JoinReportData) {
     );
     let _ = writeln!(
         out,
-        "| Only in riscv-unified-db (not accepted by LLVM 19) | {} |",
+        "| Only in riscv-unified-db (not accepted by LLVM {llvm_major}) | {} |",
         doc_only_inst_count
     );
     let _ = writeln!(
@@ -111,7 +119,7 @@ fn render_summary(out: &mut String, data: &RiscvData, report: &JoinReportData) {
     );
     let _ = writeln!(
         out,
-        "| CSRs only in riscv-unified-db (not accepted by LLVM 19) | {} |",
+        "| CSRs only in riscv-unified-db (not accepted by LLVM {llvm_major}) | {} |",
         doc_only_csr_count
     );
     let _ = writeln!(out, "| Registers | {} |", data.registers.len());
