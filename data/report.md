@@ -6,7 +6,7 @@
 
 | Input | Version |
 | --- | --- |
-| LLVM | `llvmorg-19.1.7` |
+| LLVM | `llvmorg-23.1.6` |
 | riscv-unified-db | `5d1ded1f93ab` |
 | riscv-asm-manual | `27d6e9e67e6d` |
 
@@ -14,33 +14,35 @@
 
 | Metric | Count |
 | --- | ---: |
-| Extensions | 144 |
-| Instructions & aliases (LLVM supported; `.insn_*` excluded) | 1432 |
-| Instructions in both LLVM and riscv-unified-db | 1381 |
-| Instructions only in LLVM vs riscv-unified-db (total) | 51 |
-| In LLVM, described by riscv-asm-manual | 21 |
-| In LLVM, described by project supplements | 30 |
-| In LLVM, no description | 0 |
-| Only in riscv-unified-db (not accepted by LLVM 19) | 99 |
+| Extensions | 186 |
+| Instructions & aliases (LLVM supported; `.insn_*` excluded) | 2231 |
+| Instructions in both LLVM and riscv-unified-db | 1450 |
+| Instructions only in LLVM vs riscv-unified-db (total) | 781 |
+| In LLVM, described by riscv-asm-manual | 23 |
+| In LLVM, described by project supplements | 20 |
+| In LLVM, no description | 738 |
+| Only in riscv-unified-db (not accepted by LLVM 23) | 30 |
 | rv64gc instructions in riscv-unified-db missing from LLVM | 0 |
-| CSRs (LLVM supported) | 427 |
-| CSRs in both LLVM and riscv-unified-db | 401 |
-| CSRs only in LLVM, described by project supplements | 26 |
+| CSRs (LLVM supported) | 453 |
+| CSRs in both LLVM and riscv-unified-db | 415 |
+| CSRs only in LLVM, described by project supplements | 38 |
 | CSRs only in LLVM (no description) | 0 |
-| CSRs only in riscv-unified-db (not accepted by LLVM 19) | 16 |
+| CSRs only in riscv-unified-db (not accepted by LLVM 23) | 2 |
 | Registers | 96 |
 | Directives | 137 |
 | Cleaned TODOs from riscv-unified-db | 6 |
 
-## In LLVM, Described by riscv-asm-manual (21)
+## In LLVM, Described by riscv-asm-manual (23)
 
 - `call`
 - `fabs.h`
 - `fge.d`
 - `fge.h`
+- `fge.q`
 - `fge.s`
 - `fgt.d`
 - `fgt.h`
+- `fgt.q`
 - `fgt.s`
 - `fmv.h`
 - `fneg.h`
@@ -56,7 +58,7 @@
 - `tail`
 - `vmsgeu.vx`
 
-## In LLVM, Described by Project Supplements (30)
+## In LLVM, Described by Project Supplements (20)
 
 - `c.slli64`
 - `c.srai64`
@@ -68,11 +70,8 @@
 - `fgtq.d`
 - `fgtq.h`
 - `fgtq.s`
-- `frsr`
-- `fssr`
 - `la.tls.gd`
 - `la.tls.ie`
-- `la.tlsdesc`
 - `ssamoswap.d.aq`
 - `ssamoswap.d.aqrl`
 - `ssamoswap.d.rl`
@@ -80,70 +79,755 @@
 - `ssamoswap.w.aqrl`
 - `ssamoswap.w.rl`
 - `unimp`
-- `vfredsum.vs`
-- `vfwredsum.vs`
-- `vle1.v`
-- `vmandnot.mm`
-- `vmornot.mm`
 - `vmsge.vx`
-- `vpopc.m`
-- `vse1.v`
 
-## In LLVM, No Description (0)
+## In LLVM, No Description (738)
 
+- `aadd`
+- `aaddu`
+- `abs`
+- `absw`
+- `addd`
+- `asub`
+- `asubu`
+- `cls`
+- `clsw`
+- `fgeq.q`
+- `fgtq.q`
+- `macc.h00`
+- `macc.h01`
+- `macc.h11`
+- `macc.w00`
+- `macc.w01`
+- `macc.w11`
+- `maccsu.h00`
+- `maccsu.h11`
+- `maccsu.w00`
+- `maccsu.w11`
+- `maccu.h00`
+- `maccu.h01`
+- `maccu.h11`
+- `maccu.w00`
+- `maccu.w01`
+- `maccu.w11`
+- `merge`
+- `mhacc`
+- `mhacc.h0`
+- `mhacc.h1`
+- `mhaccsu`
+- `mhaccsu.h0`
+- `mhaccsu.h1`
+- `mhaccu`
+- `mhracc`
+- `mhraccsu`
+- `mhraccu`
+- `mqacc.h00`
+- `mqacc.h01`
+- `mqacc.h11`
+- `mqacc.w00`
+- `mqacc.w01`
+- `mqacc.w11`
+- `mqracc.h00`
+- `mqracc.h01`
+- `mqracc.h11`
+- `mqracc.w00`
+- `mqracc.w01`
+- `mqracc.w11`
+- `mqrwacc`
+- `mqwacc`
+- `mseq`
+- `mseqz`
+- `msgt`
+- `msgtu`
+- `msgtz`
+- `mslt`
+- `msltu`
+- `msltz`
+- `msnez`
+- `mul.h00`
+- `mul.h01`
+- `mul.h11`
+- `mul.w00`
+- `mul.w01`
+- `mul.w11`
+- `mulh.h0`
+- `mulh.h1`
+- `mulhr`
+- `mulhrsu`
+- `mulhru`
+- `mulhsu.h0`
+- `mulhsu.h1`
+- `mulq`
+- `mulqr`
+- `mulsu.h00`
+- `mulsu.h11`
+- `mulsu.w00`
+- `mulsu.w11`
+- `mulu.h00`
+- `mulu.h01`
+- `mulu.h11`
+- `mulu.w00`
+- `mulu.w01`
+- `mulu.w11`
+- `mvd`
+- `mvm`
+- `mvmn`
+- `nclip`
+- `nclipi`
+- `nclipiu`
+- `nclipr`
+- `nclipri`
+- `nclipriu`
+- `nclipru`
+- `nclipu`
+- `negd`
+- `nsra`
+- `nsrai`
+- `nsrar`
+- `nsrari`
+- `nsrl`
+- `nsrli`
+- `paadd.b`
+- `paadd.db`
+- `paadd.dh`
+- `paadd.dw`
+- `paadd.h`
+- `paadd.w`
+- `paaddu.b`
+- `paaddu.db`
+- `paaddu.dh`
+- `paaddu.dw`
+- `paaddu.h`
+- `paaddu.w`
+- `paas.dhx`
+- `paas.hx`
+- `paas.wx`
+- `pabd.b`
+- `pabd.db`
+- `pabd.dh`
+- `pabd.h`
+- `pabdsumau.b`
+- `pabdsumu.b`
+- `pabdu.b`
+- `pabdu.db`
+- `pabdu.dh`
+- `pabdu.h`
+- `pabs.b`
+- `pabs.db`
+- `pabs.dh`
+- `pabs.h`
+- `packy`
+- `padd.b`
+- `padd.bs`
+- `padd.db`
+- `padd.dbs`
+- `padd.dh`
+- `padd.dhs`
+- `padd.dw`
+- `padd.dws`
+- `padd.h`
+- `padd.hs`
+- `padd.w`
+- `padd.ws`
+- `pas.dhx`
+- `pas.hx`
+- `pas.wx`
+- `pasa.dhx`
+- `pasa.hx`
+- `pasa.wx`
+- `pasub.b`
+- `pasub.db`
+- `pasub.dh`
+- `pasub.dw`
+- `pasub.h`
+- `pasub.w`
+- `pasubu.b`
+- `pasubu.db`
+- `pasubu.dh`
+- `pasubu.dw`
+- `pasubu.h`
+- `pasubu.w`
+- `pli.b`
+- `pli.db`
+- `pli.dh`
+- `pli.h`
+- `pli.w`
+- `plui.dh`
+- `plui.h`
+- `plui.w`
+- `pm2add.h`
+- `pm2add.hx`
+- `pm2add.w`
+- `pm2add.wx`
+- `pm2adda.h`
+- `pm2adda.hx`
+- `pm2adda.w`
+- `pm2adda.wx`
+- `pm2addasu.h`
+- `pm2addasu.w`
+- `pm2addau.h`
+- `pm2addau.w`
+- `pm2addsu.h`
+- `pm2addsu.w`
+- `pm2addu.h`
+- `pm2addu.w`
+- `pm2sadd.h`
+- `pm2sadd.hx`
+- `pm2sub.h`
+- `pm2sub.hx`
+- `pm2sub.w`
+- `pm2sub.wx`
+- `pm2suba.h`
+- `pm2suba.hx`
+- `pm2suba.w`
+- `pm2suba.wx`
+- `pm2wadd.h`
+- `pm2wadd.hx`
+- `pm2wadda.h`
+- `pm2wadda.hx`
+- `pm2waddasu.h`
+- `pm2waddau.h`
+- `pm2waddsu.h`
+- `pm2waddu.h`
+- `pm2wsub.h`
+- `pm2wsub.hx`
+- `pm2wsuba.h`
+- `pm2wsuba.hx`
+- `pm4add.b`
+- `pm4add.h`
+- `pm4adda.b`
+- `pm4adda.h`
+- `pm4addasu.b`
+- `pm4addasu.h`
+- `pm4addau.b`
+- `pm4addau.h`
+- `pm4addsu.b`
+- `pm4addsu.h`
+- `pm4addu.b`
+- `pm4addu.h`
+- `pmacc.w.h00`
+- `pmacc.w.h01`
+- `pmacc.w.h11`
+- `pmaccsu.w.h00`
+- `pmaccsu.w.h11`
+- `pmaccu.w.h00`
+- `pmaccu.w.h01`
+- `pmaccu.w.h11`
+- `pmax.b`
+- `pmax.db`
+- `pmax.dh`
+- `pmax.dw`
+- `pmax.h`
+- `pmax.w`
+- `pmaxu.b`
+- `pmaxu.db`
+- `pmaxu.dh`
+- `pmaxu.dw`
+- `pmaxu.h`
+- `pmaxu.w`
+- `pmhacc.h`
+- `pmhacc.h.b0`
+- `pmhacc.h.b1`
+- `pmhacc.w`
+- `pmhacc.w.h0`
+- `pmhacc.w.h1`
+- `pmhaccsu.h`
+- `pmhaccsu.h.b0`
+- `pmhaccsu.h.b1`
+- `pmhaccsu.w`
+- `pmhaccsu.w.h0`
+- `pmhaccsu.w.h1`
+- `pmhaccu.h`
+- `pmhaccu.w`
+- `pmhracc.h`
+- `pmhracc.w`
+- `pmhraccsu.h`
+- `pmhraccsu.w`
+- `pmhraccu.h`
+- `pmhraccu.w`
+- `pmin.b`
+- `pmin.db`
+- `pmin.dh`
+- `pmin.dw`
+- `pmin.h`
+- `pmin.w`
+- `pminu.b`
+- `pminu.db`
+- `pminu.dh`
+- `pminu.dw`
+- `pminu.h`
+- `pminu.w`
+- `pmq2add.h`
+- `pmq2add.w`
+- `pmq2adda.h`
+- `pmq2adda.w`
+- `pmqacc.w.h00`
+- `pmqacc.w.h01`
+- `pmqacc.w.h11`
+- `pmqr2add.h`
+- `pmqr2add.w`
+- `pmqr2adda.h`
+- `pmqr2adda.w`
+- `pmqracc.w.h00`
+- `pmqracc.w.h01`
+- `pmqracc.w.h11`
+- `pmqrwacc.h`
+- `pmqwacc.h`
+- `pmseq.b`
+- `pmseq.db`
+- `pmseq.dh`
+- `pmseq.dw`
+- `pmseq.h`
+- `pmseq.w`
+- `pmseqz.b`
+- `pmseqz.db`
+- `pmseqz.dh`
+- `pmseqz.dw`
+- `pmseqz.h`
+- `pmseqz.w`
+- `pmsgt.b`
+- `pmsgt.db`
+- `pmsgt.dh`
+- `pmsgt.dw`
+- `pmsgt.h`
+- `pmsgt.w`
+- `pmsgtu.b`
+- `pmsgtu.db`
+- `pmsgtu.dh`
+- `pmsgtu.dw`
+- `pmsgtu.h`
+- `pmsgtu.w`
+- `pmsgtz.b`
+- `pmsgtz.db`
+- `pmsgtz.dh`
+- `pmsgtz.dw`
+- `pmsgtz.h`
+- `pmsgtz.w`
+- `pmslt.b`
+- `pmslt.db`
+- `pmslt.dh`
+- `pmslt.dw`
+- `pmslt.h`
+- `pmslt.w`
+- `pmsltu.b`
+- `pmsltu.db`
+- `pmsltu.dh`
+- `pmsltu.dw`
+- `pmsltu.h`
+- `pmsltu.w`
+- `pmsltz.b`
+- `pmsltz.db`
+- `pmsltz.dh`
+- `pmsltz.dw`
+- `pmsltz.h`
+- `pmsltz.w`
+- `pmsnez.b`
+- `pmsnez.db`
+- `pmsnez.dh`
+- `pmsnez.dw`
+- `pmsnez.h`
+- `pmsnez.w`
+- `pmul.h.b00`
+- `pmul.h.b01`
+- `pmul.h.b11`
+- `pmul.w.h00`
+- `pmul.w.h01`
+- `pmul.w.h11`
+- `pmulh.h`
+- `pmulh.h.b0`
+- `pmulh.h.b1`
+- `pmulh.w`
+- `pmulh.w.h0`
+- `pmulh.w.h1`
+- `pmulhr.h`
+- `pmulhr.w`
+- `pmulhrsu.h`
+- `pmulhrsu.w`
+- `pmulhru.h`
+- `pmulhru.w`
+- `pmulhsu.h`
+- `pmulhsu.h.b0`
+- `pmulhsu.h.b1`
+- `pmulhsu.w`
+- `pmulhsu.w.h0`
+- `pmulhsu.w.h1`
+- `pmulhu.h`
+- `pmulhu.w`
+- `pmulq.h`
+- `pmulq.w`
+- `pmulqr.h`
+- `pmulqr.w`
+- `pmulsu.h.b00`
+- `pmulsu.h.b11`
+- `pmulsu.w.h00`
+- `pmulsu.w.h11`
+- `pmulu.h.b00`
+- `pmulu.h.b01`
+- `pmulu.h.b11`
+- `pmulu.w.h00`
+- `pmulu.w.h01`
+- `pmulu.w.h11`
+- `pmv.bs`
+- `pmv.dbs`
+- `pmv.dhs`
+- `pmv.dws`
+- `pmv.hs`
+- `pmv.ws`
+- `pnclip.bs`
+- `pnclip.hs`
+- `pnclipi.b`
+- `pnclipi.h`
+- `pnclipiu.b`
+- `pnclipiu.h`
+- `pnclipp.b`
+- `pnclipp.h`
+- `pnclipp.w`
+- `pnclipr.bs`
+- `pnclipr.hs`
+- `pnclipri.b`
+- `pnclipri.h`
+- `pnclipriu.b`
+- `pnclipriu.h`
+- `pnclipru.bs`
+- `pnclipru.hs`
+- `pnclipu.bs`
+- `pnclipu.hs`
+- `pnclipup.b`
+- `pnclipup.h`
+- `pnclipup.w`
+- `pncvt.b`
+- `pncvt.h`
+- `pncvt.wb`
+- `pncvt.wh`
+- `pncvth.b`
+- `pncvth.h`
+- `pncvth.wb`
+- `pncvth.wh`
+- `pneg.b`
+- `pneg.db`
+- `pneg.dh`
+- `pneg.dw`
+- `pneg.h`
+- `pneg.w`
+- `pnsra.bs`
+- `pnsra.hs`
+- `pnsrai.b`
+- `pnsrai.h`
+- `pnsrar.bs`
+- `pnsrar.hs`
+- `pnsrari.b`
+- `pnsrari.h`
+- `pnsrl.bs`
+- `pnsrl.hs`
+- `pnsrli.b`
+- `pnsrli.h`
+- `ppaire.b`
+- `ppaire.db`
+- `ppaire.dh`
+- `ppaire.h`
+- `ppaire.w`
+- `ppaireo.b`
+- `ppaireo.db`
+- `ppaireo.dh`
+- `ppaireo.h`
+- `ppaireo.w`
+- `ppairo.b`
+- `ppairo.db`
+- `ppairo.dh`
+- `ppairo.h`
+- `ppairo.w`
+- `ppairoe.b`
+- `ppairoe.db`
+- `ppairoe.dh`
+- `ppairoe.h`
+- `ppairoe.w`
+- `predsum.bs`
+- `predsum.dbs`
+- `predsum.dhs`
+- `predsum.hs`
+- `predsum.ws`
+- `predsumu.bs`
+- `predsumu.dbs`
+- `predsumu.dhs`
+- `predsumu.hs`
+- `predsumu.ws`
+- `psa.dhx`
+- `psa.hx`
+- `psa.wx`
+- `psabs.b`
+- `psabs.db`
+- `psabs.dh`
+- `psabs.h`
+- `psadd.b`
+- `psadd.db`
+- `psadd.dh`
+- `psadd.dw`
+- `psadd.h`
+- `psadd.w`
+- `psaddu.b`
+- `psaddu.db`
+- `psaddu.dh`
+- `psaddu.dw`
+- `psaddu.h`
+- `psaddu.w`
+- `psas.dhx`
+- `psas.hx`
+- `psas.wx`
+- `psati.dh`
+- `psati.dw`
+- `psati.h`
+- `psati.w`
+- `psext.dh.b`
+- `psext.dw.b`
+- `psext.dw.h`
+- `psext.h.b`
+- `psext.w.b`
+- `psext.w.h`
+- `psh1add.dh`
+- `psh1add.dw`
+- `psh1add.h`
+- `psh1add.w`
+- `psll.bs`
+- `psll.dbs`
+- `psll.dhs`
+- `psll.dws`
+- `psll.hs`
+- `psll.ws`
+- `pslli.b`
+- `pslli.db`
+- `pslli.dh`
+- `pslli.dw`
+- `pslli.h`
+- `pslli.w`
+- `psra.bs`
+- `psra.dbs`
+- `psra.dhs`
+- `psra.dws`
+- `psra.hs`
+- `psra.ws`
+- `psrai.b`
+- `psrai.db`
+- `psrai.dh`
+- `psrai.dw`
+- `psrai.h`
+- `psrai.w`
+- `psrari.dh`
+- `psrari.dw`
+- `psrari.h`
+- `psrari.w`
+- `psrl.bs`
+- `psrl.dbs`
+- `psrl.dhs`
+- `psrl.dws`
+- `psrl.hs`
+- `psrl.ws`
+- `psrli.b`
+- `psrli.db`
+- `psrli.dh`
+- `psrli.dw`
+- `psrli.h`
+- `psrli.w`
+- `pssa.dhx`
+- `pssa.hx`
+- `pssa.wx`
+- `pssh1sadd.dh`
+- `pssh1sadd.dw`
+- `pssh1sadd.h`
+- `pssh1sadd.w`
+- `pssha.dhs`
+- `pssha.dws`
+- `pssha.hs`
+- `pssha.ws`
+- `psshar.dhs`
+- `psshar.dws`
+- `psshar.hs`
+- `psshar.ws`
+- `psshl.dhs`
+- `psshl.dws`
+- `psshl.hs`
+- `psshl.ws`
+- `psshlr.dhs`
+- `psshlr.dws`
+- `psshlr.hs`
+- `psshlr.ws`
+- `psslai.dh`
+- `psslai.dw`
+- `psslai.h`
+- `psslai.w`
+- `pssub.b`
+- `pssub.db`
+- `pssub.dh`
+- `pssub.dw`
+- `pssub.h`
+- `pssub.w`
+- `pssubu.b`
+- `pssubu.db`
+- `pssubu.dh`
+- `pssubu.dw`
+- `pssubu.h`
+- `pssubu.w`
+- `psub.b`
+- `psub.db`
+- `psub.dh`
+- `psub.dw`
+- `psub.h`
+- `psub.w`
+- `pusati.dh`
+- `pusati.dw`
+- `pusati.h`
+- `pusati.w`
+- `pwadd.b`
+- `pwadd.h`
+- `pwadda.b`
+- `pwadda.h`
+- `pwaddau.b`
+- `pwaddau.h`
+- `pwaddu.b`
+- `pwaddu.h`
+- `pwcvt.b`
+- `pwcvt.h`
+- `pwcvth.b`
+- `pwcvth.h`
+- `pwcvth.wb`
+- `pwcvth.wh`
+- `pwcvtu.b`
+- `pwcvtu.h`
+- `pwcvtu.wb`
+- `pwcvtu.wh`
+- `pwmacc.h`
+- `pwmaccsu.h`
+- `pwmaccu.h`
+- `pwmul.b`
+- `pwmul.h`
+- `pwmulsu.b`
+- `pwmulsu.h`
+- `pwmulu.b`
+- `pwmulu.h`
+- `pwsla.bs`
+- `pwsla.hs`
+- `pwslai.b`
+- `pwslai.h`
+- `pwsll.bs`
+- `pwsll.hs`
+- `pwslli.b`
+- `pwslli.h`
+- `pwsub.b`
+- `pwsub.h`
+- `pwsuba.b`
+- `pwsuba.h`
+- `pwsubau.b`
+- `pwsubau.h`
+- `pwsubu.b`
+- `pwsubu.h`
+- `pzext.dh.b`
+- `pzext.dw.h`
+- `pzext.h.b`
+- `pzext.w.h`
+- `rev`
+- `rev16`
+- `sadd`
+- `saddu`
+- `sati`
+- `sha`
+- `shar`
+- `shl`
+- `shlr`
+- `slx`
+- `srari`
+- `srliy`
+- `srx`
+- `ssh1sadd`
+- `ssha`
+- `sshar`
+- `sshl`
+- `sshlr`
+- `sslai`
+- `ssub`
+- `ssubu`
+- `subd`
+- `unzip16hp`
+- `unzip16p`
+- `unzip8hp`
+- `unzip8p`
+- `usati`
+- `v8wmmacc.vv`
+- `vf8wimmacc.vv`
+- `vf8wmmacc.vv`
+- `vfmmacc.vv`
+- `vfqimmacc.vv`
+- `vfqmmacc.vv`
+- `vfqwbdota.alt.vv`
+- `vfqwbdota.vv`
+- `vfqwdota.alt.vv`
+- `vfqwdota.vv`
+- `vfwbdota.vv`
+- `vfwdota.vv`
+- `vfwimmacc.vv`
+- `vfwmmacc.vv`
+- `vghsh.vs`
+- `vgmul.vs`
+- `vmmacc.vv`
+- `vmtl.v`
+- `vmts.v`
+- `vmttl.v`
+- `vmtts.v`
+- `vqmmacc.vv`
+- `vqwbdotas.vv`
+- `vqwbdotau.vv`
+- `vqwdotas.vv`
+- `vqwdotau.vv`
+- `vwmmacc.vv`
+- `wadd`
+- `wadda`
+- `waddau`
+- `waddu`
+- `wmacc`
+- `wmaccsu`
+- `wmaccu`
+- `wmul`
+- `wmulsu`
+- `wmulu`
+- `wsla`
+- `wslai`
+- `wsll`
+- `wslli`
+- `wsub`
+- `wsuba`
+- `wsubau`
+- `wsubu`
+- `wzip16p`
+- `wzip8p`
+- `yadd`
+- `yaddi`
+- `yaddrw`
+- `yamask`
+- `ybaser`
+- `ybld`
+- `ybndsrw`
+- `ybndsw`
+- `ybndswi`
+- `yeq`
+- `yhir`
+- `ylenr`
+- `ymv`
+- `ypermc`
+- `ypermr`
+- `yss`
+- `ysunseal`
+- `ytagr`
+- `ytopr`
+- `ytyper`
+- `zip16hp`
+- `zip16p`
+- `zip8hp`
+- `zip8p`
 
-## Only in riscv-unified-db (99)
+## Only in riscv-unified-db (30)
 
-- `beqi`
-- `bnei`
-- `fabs.q`
-- `fadd.q`
-- `fclass.q`
-- `fcvt.d.q`
 - `fcvt.h.q`
-- `fcvt.l.q`
-- `fcvt.lu.q`
-- `fcvt.q.d`
 - `fcvt.q.h`
-- `fcvt.q.l`
-- `fcvt.q.lu`
-- `fcvt.q.s`
-- `fcvt.q.w`
-- `fcvt.q.wu`
-- `fcvt.s.q`
-- `fcvt.w.q`
-- `fcvt.wu.q`
-- `fdiv.q`
-- `feq.q`
-- `fle.q`
-- `fleq.q`
-- `fli.q`
-- `flq`
-- `flt.q`
-- `fltq.q`
-- `fmadd.q`
-- `fmax.q`
-- `fmaxm.q`
-- `fmin.q`
-- `fminm.q`
-- `fmsub.q`
-- `fmul.q`
-- `fmv.q`
 - `fmv.s.x`
 - `fmv.x.s`
-- `fmvh.x.q`
-- `fmvp.q.x`
-- `fneg.q`
-- `fnmadd.q`
-- `fnmsub.q`
-- `fround.q`
-- `froundnx.q`
-- `fsgnj.q`
-- `fsgnjn.q`
-- `fsgnjx.q`
-- `fsq`
-- `fsqrt.q`
-- `fsub.q`
 - `lxb`
 - `lxbu`
 - `lxd`
@@ -165,40 +849,19 @@
 - `lxswu`
 - `lxw`
 - `lxwu`
-- `mnret`
-- `sctrclr`
-- `vabd.vv`
 - `vabd.vx`
-- `vabdu.vv`
 - `vabdu.vx`
-- `vabs.v`
-- `vdot4a.vv`
-- `vdot4a.vx`
-- `vdot4asu.vv`
-- `vdot4asu.vx`
-- `vdot4au.vv`
-- `vdot4au.vx`
-- `vdot4aus.vx`
-- `vfbdota.vv`
 - `vfext.vf2`
-- `vfncvt.f.f.q`
-- `vfncvt.sat.f.f.q`
-- `vfncvtbf16.sat.f.f.w`
-- `vpaire.vv`
-- `vpairo.vv`
-- `vunzipe.v`
-- `vunzipo.v`
-- `vwabda.vv`
 - `vwabda.vx`
-- `vwabdau.vv`
 - `vwabdau.vx`
-- `vzip.vv`
 
-## CSRs Only in LLVM, Described by Project Supplements (26)
+## CSRs Only in LLVM, Described by Project Supplements (38)
 
 - `sieh` (`0x114`)
+- `sbadaddr` (`0x143`)
 - `siph` (`0x154`)
 - `stopei` (`0x15c`)
+- `sptbr` (`0x180`)
 - `vsieh` (`0x214`)
 - `vsiph` (`0x254`)
 - `vstopei` (`0x25c`)
@@ -208,6 +871,7 @@
 - `mieh` (`0x314`)
 - `mvienh` (`0x318`)
 - `mviph` (`0x319`)
+- `mbadaddr` (`0x343`)
 - `miph` (`0x354`)
 - `mtopei` (`0x35c`)
 - `hvien` (`0x608`)
@@ -219,6 +883,15 @@
 - `hviph` (`0x655`)
 - `hviprio1h` (`0x656`)
 - `hviprio2h` (`0x657`)
+- `etrigger` (`0x7a1`)
+- `icount` (`0x7a1`)
+- `itrigger` (`0x7a1`)
+- `mcontrol` (`0x7a1`)
+- `mcontrol6` (`0x7a1`)
+- `tmexttrigger` (`0x7a1`)
+- `textra32` (`0x7a3`)
+- `textra64` (`0x7a3`)
+- `dscratch` (`0x7b2`)
 - `stopi` (`0xdb0`)
 - `vstopi` (`0xeb0`)
 - `mtopi` (`0xfb0`)
@@ -226,24 +899,10 @@
 ## CSRs Only in LLVM, No Description (0)
 
 
-## CSRs Only in riscv-unified-db (16)
+## CSRs Only in riscv-unified-db (2)
 
-- `sctrctl` (`0x14e`)
-- `sctrstatus` (`0x14f`)
-- `sctrdepth` (`0x15f`)
-- `vsctrctl` (`0x24e`)
-- `medelegh` (`0x312`)
-- `mcyclecfg` (`0x321`)
-- `minstretcfg` (`0x322`)
-- `mctrctl` (`0x34e`)
 - `mrmcfg` (`0x381`)
-- `hedelegh` (`0x612`)
-- `mcyclecfgh` (`0x721`)
-- `minstretcfgh` (`0x722`)
 - `mnrmcfg` (`0x781`)
-- `tinfo` (`0x7a4`)
-- `tcontrol` (`0x7a5`)
-- `mscontext` (`0x7aa`)
 
 ## Description Corrections (1)
 

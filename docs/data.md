@@ -20,7 +20,7 @@ descriptions.**
 | Expanding pseudo-instructions (`la`, `li`, `call`, ...) & RISC-V directives | riscv-asm-manual tables | `CC-BY-4.0` |
 | Common GNU/LLVM assembler directives (`data/directives_gnu.json`) | Hand-written for `riscv-asm-lsp` (GNU `as` GFDL manual not used) | `MIT` |
 | Supplemental descriptions, deprecations & text fixes (`data/supplements.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
-| Relocation descriptions, `#` preprocessor texts, `\@` explanation, 51 operand classes (`data/texts.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
+| Relocation descriptions, `#` preprocessor texts, `\@` explanation, 65 operand classes (`data/texts.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
 
 ## Pinned inputs
 
@@ -28,12 +28,22 @@ All pins live in one place in `xtask/src/pins.rs`:
 
 | Input | Pinned Version | Notes |
 | --- | --- | --- |
-| LLVM | Tag `llvmorg-19.1.7` | Sparse checkout of `.td` files under `llvm/include/llvm` and `llvm/lib/Target/RISCV` |
+| LLVM | Tag `llvmorg-23.1.6` | Sparse checkout of `.td` files under `llvm/include/llvm` and `llvm/lib/Target/RISCV` |
 | riscv-unified-db | Commit `5d1ded1f93ab` | Upstream format may evolve across commits |
 | riscv-asm-manual | Commit `27d6e9e67e6d` | Pseudo-instruction and directive tables |
 
 Updating a pin requires regenerating `data/` and reviewing the diff of
 `data/report.md`.
+
+### Updating the reference LLVM version
+
+The server uses one pinned stable LLVM release updated periodically:
+
+1. Bump `LLVM_TAG` in `xtask/src/pins.rs`, the `apt.llvm.org` / package version in `Dockerfile`, and `.github/workflows/ci.yml`, then rebuild the `dev` container.
+2. Run `cargo xtask gen-data` and inspect the `data/report.md` diff carefully (add new non-vendor CSR/instruction descriptions to `data/supplements.json` and extend vendor filters in `xtask/src/llvm.rs` if new vendor `.td` files or predicates were added upstream).
+3. Run `cargo test --lib` and decode any newly added operand classes in `data/texts.json` (`operand_classes`) and `server/src/hover/operands.rs`.
+4. Re-check `docs/design.md` Appendix A directives against `llvm-mc` (updating `xtask/src/asm_manual.rs` if support changed) and verify `march_implications_match_clang_print_enabled_extensions` and `data_validation_rv64gc_instructions_assemble_with_llvm_mc` with `--include-ignored`.
+5. Run `UPDATE_SNAPSHOTS=1` for snapshot tests if upstream wording or predicates changed intentionally, review every changed snapshot, and update version references in `README.md`, `docs/`, and `AGENTS.md`.
 
 ## Generation
 
@@ -97,23 +107,23 @@ Pipeline stages:
   - `preprocessor_directives`: 22 `#` preprocessor directives (`define`,
     `undef`, `include`, `if`, ...).
   - `macro_counter`: description for `\@`.
-  - `operand_classes`: human-readable labels for the 51 non-immediate LLVM
-    operand classes (combined with 26 immediate decoders in
-    `server/src/hover/operands.rs`, covering all 77 classes in `data/riscv.json`).
+  - `operand_classes`: human-readable labels for the 65 register, special, and
+    non-formulaic LLVM operand classes (combined with the mechanical immediate
+    decoders in `server/src/hover/operands.rs`).
 
-## LLVM 19.1.7 vs. Documentation
+## LLVM 23.1.6 vs. Documentation
 
-Summary from `data/report.md` (LLVM `llvmorg-19.1.7` vs. riscv-unified-db
+Summary from `data/report.md` (LLVM `llvmorg-23.1.6` vs. riscv-unified-db
 `5d1ded1f93ab`, excluding vendor extensions and `.insn_*` internal formats):
 
 | Metric | Count | Notes |
 | --- | ---: | --- |
-| Extensions | 144 | |
-| Instructions & aliases (LLVM supported) | 1432 | 1381 in UDB + LLVM, 21 `riscv-asm-manual`, 30 `supplements.json`, 0 undescribed |
-| Only in riscv-unified-db | 99 | e.g. Q extension (34), newer extensions (`Zilx`, `Zvabd`, ...), older names (`fmv.s.x`) |
+| Extensions | 186 | |
+| Instructions & aliases (LLVM supported) | 2231 | 1450 in UDB + LLVM, 23 `riscv-asm-manual`, 20 `supplements.json`, 738 newer/experimental (e.g. `P`, `Y`, vector dot/zip/bfloat) |
+| Only in riscv-unified-db | 30 | e.g. `fcvt.h.q`/`fcvt.q.h`, `fmv.s.x`/`fmv.x.s`, older vector/crypto names |
 | `rv64gc` instructions in UDB missing from LLVM | 0 | |
-| CSRs (LLVM supported) | 427 | 401 in UDB + LLVM, 26 `supplements.json`, 0 undescribed |
-| CSRs only in riscv-unified-db | 16 | e.g. `Smctr`, `Sdtrig` (`tcontrol`), `Smcntrpmf` (`mcyclecfg`) |
+| CSRs (LLVM supported) | 453 | 415 in UDB + LLVM, 38 `supplements.json`, 0 undescribed |
+| CSRs only in riscv-unified-db | 2 | `mrmcfg`, `mnrmcfg` |
 | Registers | 96 | |
 | Directives | 137 | Combined `riscv-asm-manual` and `data/directives_gnu.json` |
 | Cleaned `TODO`s from riscv-unified-db | 6 | `htinst`, `hvip.VSEIP`, `hvip.VSTIP`, `hvip.VSSIP`, `mncause.CODE`, `mtinst` |
@@ -124,7 +134,7 @@ Mismatch handling:
 | --- | --- |
 | LLVM-accepted with description | Normal hover & `-march`-filtered completion |
 | Deprecated aliases (`frsr`, `vpopc.m`, ...) | Marked deprecated in hover (showing `preferred_name`) and completion (`DEPRECATED` tag, lower sort rank) |
-| Documentation-only (`llvm_supported: false`) | Excluded from completion; hover warns `"Not accepted by LLVM 19 (spec only)."` |
+| Documentation-only (`llvm_supported: false`) | Excluded from completion; hover warns `"Not accepted by LLVM 23 (spec only)."` |
 | Deprecated/renamed entries | Joined via LLVM deprecated names with deprecation metadata |
 
 ## Data licenses

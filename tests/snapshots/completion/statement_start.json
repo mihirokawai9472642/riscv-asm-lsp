@@ -52,21 +52,21 @@
     },
     {
       "detail": "Atomic fetch-and-add doubleword",
-      "documentation": "Instruction · Atomic fetch-and-add doubleword · `A or Zaamo` · RV64\n\n```riscv\namoadd.d rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
+      "documentation": "Instruction · Atomic fetch-and-add doubleword · `Zaamo` · RV64\n\n```riscv\namoadd.d rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
       "insertText": "amoadd.d ${1:rd}, ${2:rs2}, (${3:rs1})$0",
       "kind": 3,
       "label": "amoadd.d rd, rs2, (rs1)"
     },
     {
       "detail": "Atomic fetch-and-add doubleword (acquire)",
-      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire) · `A or Zaamo` · RV64\n\n```riscv\namoadd.d.aq rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire ordering: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
+      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire) · `Zaamo` · RV64\n\n```riscv\namoadd.d.aq rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire ordering: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
       "insertText": "amoadd.d.aq ${1:rd}, ${2:rs2}, (${3:rs1})$0",
       "kind": 3,
       "label": "amoadd.d.aq rd, rs2, (rs1)"
     },
     {
       "detail": "Atomic fetch-and-add doubleword (acquire-release)",
-      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire-release) · `A or Zaamo` · RV64\n\n```riscv\namoadd.d.aqrl rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire and release ordering: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
+      "documentation": "Instruction · Atomic fetch-and-add doubleword (acquire-release) · `Zaamo` · RV64\n\n```riscv\namoadd.d.aqrl rd, rs2, (rs1)\n```\n\n---\n\nOperands: `rd`, `rs2` integer reg (x0–x31); `rs1` base integer reg (zero offset)\n\n---\n\nAtomically with acquire and release ordering: load the doubleword at address _rs1_; write the loaded value into _rd_; add the value of register _rs2_ to the loaded value; write the result to the address in _rs1_.",
       "insertText": "amoadd.d.aqrl ${1:rd}, ${2:rs2}, (${3:rs1})$0",
       "kind": 3,
       "label": "amoadd.d.aqrl rd, rs2, (rs1)"
@@ -711,13 +711,6 @@
     {
       "detail": "Add a sign-extended non-zero immediate",
       "documentation": null,
-      "insertText": "c.addi x0, ${1:imm}$0",
-      "kind": 3,
-      "label": "c.addi x0, imm"
-    },
-    {
-      "detail": "Add a sign-extended non-zero immediate",
-      "documentation": null,
       "insertText": "c.addi16sp ${1:rd}, ${2:imm}$0",
       "kind": 3,
       "label": "c.addi16sp rd, imm"
@@ -947,6 +940,34 @@
       "label": "c.nop imm"
     },
     {
+      "detail": "Compressed non-temporal locality hint, all",
+      "documentation": null,
+      "insertText": "c.ntl.all",
+      "kind": 15,
+      "label": "c.ntl.all"
+    },
+    {
+      "detail": "Compressed non-temporal locality hint, innermost private",
+      "documentation": null,
+      "insertText": "c.ntl.p1",
+      "kind": 15,
+      "label": "c.ntl.p1"
+    },
+    {
+      "detail": "Compressed non-temporal locality hint, all private",
+      "documentation": null,
+      "insertText": "c.ntl.pall",
+      "kind": 15,
+      "label": "c.ntl.pall"
+    },
+    {
+      "detail": "Compressed non-temporal locality hint, innermost shared",
+      "documentation": null,
+      "insertText": "c.ntl.s1",
+      "kind": 15,
+      "label": "c.ntl.s1"
+    },
+    {
       "detail": "Or",
       "documentation": null,
       "insertText": "c.or ${1:rd}, ${2:rs2}$0",
@@ -992,7 +1013,7 @@
       "detail": null,
       "documentation": null,
       "insertText": "c.slli64 ${1:rd}$0",
-      "kind": 3,
+      "kind": 15,
       "label": "c.slli64 rd"
     },
     {
@@ -1005,9 +1026,9 @@
     {
       "detail": null,
       "documentation": null,
-      "insertText": "c.srai64 ${1:rd}$0",
-      "kind": 3,
-      "label": "c.srai64 rd"
+      "insertText": "c.srai64 ${1:rs1}$0",
+      "kind": 15,
+      "label": "c.srai64 rs1"
     },
     {
       "detail": "Shift right logical immediate",
@@ -1019,9 +1040,9 @@
     {
       "detail": null,
       "documentation": null,
-      "insertText": "c.srli64 ${1:rd}$0",
-      "kind": 3,
-      "label": "c.srli64 rd"
+      "insertText": "c.srli64 ${1:rs1}$0",
+      "kind": 15,
+      "label": "c.srli64 rs1"
     },
     {
       "detail": "Subtract",
@@ -1775,13 +1796,6 @@
     {
       "detail": null,
       "documentation": null,
-      "insertText": "frsr ${1:rd}$0",
-      "kind": 15,
-      "label": "frsr rd"
-    },
-    {
-      "detail": null,
-      "documentation": null,
       "insertText": "fscsr ${1:rs}$0",
       "kind": 15,
       "label": "fscsr rs"
@@ -1927,20 +1941,6 @@
       "label": "fsrmi imm"
     },
     {
-      "detail": null,
-      "documentation": null,
-      "insertText": "fssr ${1:rs}$0",
-      "kind": 15,
-      "label": "fssr rs"
-    },
-    {
-      "detail": null,
-      "documentation": null,
-      "insertText": "fssr ${1:rd}, ${2:rs}$0",
-      "kind": 15,
-      "label": "fssr rd, rs"
-    },
-    {
       "detail": "Floating-Point Subtract Double-Precision",
       "documentation": null,
       "insertText": "fsub.d ${1:rd}, ${2:rs1}, ${3:rs2}, ${4:frm}$0",
@@ -1974,34 +1974,6 @@
       "insertText": "fsw ${1:rs}, ${2:addr}, ${3:tmp}$0",
       "kind": 3,
       "label": "fsw rs, addr, tmp"
-    },
-    {
-      "detail": "Hypervisor fence guest-physical address",
-      "documentation": null,
-      "insertText": "hfence.gvma",
-      "kind": 3,
-      "label": "hfence.gvma"
-    },
-    {
-      "detail": "Hypervisor fence guest-physical address",
-      "documentation": null,
-      "insertText": "hfence.gvma ${1:rs}$0",
-      "kind": 3,
-      "label": "hfence.gvma rs"
-    },
-    {
-      "detail": "Hypervisor fence guest virtual address",
-      "documentation": null,
-      "insertText": "hfence.vvma",
-      "kind": 3,
-      "label": "hfence.vvma"
-    },
-    {
-      "detail": "Hypervisor fence guest virtual address",
-      "documentation": null,
-      "insertText": "hfence.vvma ${1:rs}$0",
-      "kind": 3,
-      "label": "hfence.vvma rs"
     },
     {
       "detail": null,
@@ -2151,13 +2123,6 @@
       "label": "la.tls.ie dst, src"
     },
     {
-      "detail": null,
-      "documentation": null,
-      "insertText": "la.tlsdesc ${1:dst}, ${2:src}$0",
-      "kind": 15,
-      "label": "la.tlsdesc dst, src"
-    },
-    {
       "detail": "Load byte",
       "documentation": null,
       "insertText": "lb ${1:rd}, ${2:0}(${3:rs1})$0",
@@ -2289,6 +2254,13 @@
       "insertText": "lla ${1:dst}, ${2:src}$0",
       "kind": 15,
       "label": "lla dst, src"
+    },
+    {
+      "detail": "No synopsis available",
+      "documentation": null,
+      "insertText": "lpad ${1:imm20}$0",
+      "kind": 15,
+      "label": "lpad imm20"
     },
     {
       "detail": "Load Reserved Doubleword",
@@ -2473,6 +2445,34 @@
       "label": "not rd, rs"
     },
     {
+      "detail": "Non-temporal locality hint, all",
+      "documentation": null,
+      "insertText": "ntl.all",
+      "kind": 15,
+      "label": "ntl.all"
+    },
+    {
+      "detail": "Non-temporal locality hint, innermost private",
+      "documentation": null,
+      "insertText": "ntl.p1",
+      "kind": 15,
+      "label": "ntl.p1"
+    },
+    {
+      "detail": "Non-temporal locality hint, all private",
+      "documentation": null,
+      "insertText": "ntl.pall",
+      "kind": 15,
+      "label": "ntl.pall"
+    },
+    {
+      "detail": "Non-temporal locality hint, innermost shared",
+      "documentation": null,
+      "insertText": "ntl.s1",
+      "kind": 15,
+      "label": "ntl.s1"
+    },
+    {
       "detail": "Or",
       "documentation": null,
       "insertText": "or ${1:rd}, ${2:rs1}, ${3:rs2}$0",
@@ -2492,6 +2492,34 @@
       "insertText": "ori ${1:rd}, ${2:rs1}, ${3:imm12}$0",
       "kind": 3,
       "label": "ori rd, rs1, imm12"
+    },
+    {
+      "detail": "Pause hint",
+      "documentation": null,
+      "insertText": "pause",
+      "kind": 15,
+      "label": "pause"
+    },
+    {
+      "detail": "Cache block prefetch for instruction fetch",
+      "documentation": null,
+      "insertText": "prefetch.i ${1:0}(${2:rs1})$0",
+      "kind": 3,
+      "label": "prefetch.i imm12(rs1)"
+    },
+    {
+      "detail": "Cache block prefetch for data read",
+      "documentation": null,
+      "insertText": "prefetch.r ${1:0}(${2:rs1})$0",
+      "kind": 3,
+      "label": "prefetch.r imm12(rs1)"
+    },
+    {
+      "detail": "Cache block prefetch for data write",
+      "documentation": null,
+      "insertText": "prefetch.w ${1:0}(${2:rs1})$0",
+      "kind": 3,
+      "label": "prefetch.w imm12(rs1)"
     },
     {
       "detail": null,
@@ -3007,23 +3035,23 @@
     {
       "detail": "Vector integer add-with-carry-in immediate",
       "documentation": null,
-      "insertText": "vadc.vim ${1:vd}, ${2:vs2}, ${3:imm}, v0$0",
+      "insertText": "vadc.vim ${1:vd}, ${2:vs2}, ${3:imm}, ${4:vm}$0",
       "kind": 3,
-      "label": "vadc.vim vd, vs2, imm, v0"
+      "label": "vadc.vim vd, vs2, imm, vm"
     },
     {
       "detail": "Vector integer add-with-carry-in vector",
       "documentation": null,
-      "insertText": "vadc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, v0$0",
+      "insertText": "vadc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vadc.vvm vd, vs2, vs1, v0"
+      "label": "vadc.vvm vd, vs2, vs1, vm"
     },
     {
       "detail": "Vector integer add-with-carry-in scalar",
       "documentation": null,
-      "insertText": "vadc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, v0$0",
+      "insertText": "vadc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vadc.vxm vd, vs2, rs1, v0"
+      "label": "vadc.vxm vd, vs2, rs1, vm"
     },
     {
       "detail": "Vector-immediate integer addition",
@@ -3105,9 +3133,9 @@
     {
       "detail": "No synopsis available",
       "documentation": null,
-      "insertText": "vcpop.m ${1:vd}, ${2:vs2}, ${3:vm}$0",
+      "insertText": "vcpop.m ${1:rd}, ${2:vs2}, ${3:vm}$0",
       "kind": 3,
-      "label": "vcpop.m vd, vs2, vm"
+      "label": "vcpop.m rd, vs2, vm"
     },
     {
       "detail": "No synopsis available",
@@ -3231,9 +3259,9 @@
     {
       "detail": "No synopsis available",
       "documentation": null,
-      "insertText": "vfirst.m ${1:vd}, ${2:vs2}, ${3:vm}$0",
+      "insertText": "vfirst.m ${1:rd}, ${2:vs2}, ${3:vm}$0",
       "kind": 3,
-      "label": "vfirst.m vd, vs2, vm"
+      "label": "vfirst.m rd, vs2, vm"
     },
     {
       "detail": "No synopsis available",
@@ -3280,9 +3308,9 @@
     {
       "detail": "No synopsis available",
       "documentation": null,
-      "insertText": "vfmerge.vfm ${1:vd}, ${2:vs2}, ${3:rs1}, v0$0",
+      "insertText": "vfmerge.vfm ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vfmerge.vfm vd, vs2, rs1, v0"
+      "label": "vfmerge.vfm vd, vs2, rs1, vm"
     },
     {
       "detail": "No synopsis available",
@@ -3343,9 +3371,9 @@
     {
       "detail": "Vector floating-point to scalar move",
       "documentation": null,
-      "insertText": "vfmv.f.s ${1:vd}, ${2:vs2}$0",
+      "insertText": "vfmv.f.s ${1:rd}, ${2:vs2}$0",
       "kind": 3,
-      "label": "vfmv.f.s vd, vs2"
+      "label": "vfmv.f.s rd, vs2"
     },
     {
       "detail": "Vector scalar to floating-point move",
@@ -3521,13 +3549,6 @@
       "insertText": "vfredosum.vs ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
       "kind": 3,
       "label": "vfredosum.vs vd, vs2, vs1, vm"
-    },
-    {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vfredsum.vs ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
-      "kind": 15,
-      "label": "vfredsum.vs vd, vs2, vs1, vm"
     },
     {
       "detail": "No synopsis available",
@@ -3782,13 +3803,6 @@
       "label": "vfwredosum.vs vd, vs2, vs1, vm"
     },
     {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vfwredsum.vs ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
-      "kind": 15,
-      "label": "vfwredsum.vs vd, vs2, vs1, vm"
-    },
-    {
       "detail": "No synopsis available",
       "documentation": null,
       "insertText": "vfwredusum.vs ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
@@ -3976,13 +3990,6 @@
       "insertText": "vl8re8.v ${1:vd}, (${2:rs1})$0",
       "kind": 3,
       "label": "vl8re8.v vd, (rs1)"
-    },
-    {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vle1.v ${1:vd}, (${2:rs1})$0",
-      "kind": 15,
-      "label": "vle1.v vd, (rs1)"
     },
     {
       "detail": "Vector load 16-bit elements",
@@ -5135,9 +5142,9 @@
     {
       "detail": "Vector integer add-with-carry-in-out immediate",
       "documentation": null,
-      "insertText": "vmadc.vim ${1:vd}, ${2:vs2}, ${3:imm}, v0$0",
+      "insertText": "vmadc.vim ${1:vd}, ${2:vs2}, ${3:imm}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmadc.vim vd, vs2, imm, v0"
+      "label": "vmadc.vim vd, vs2, imm, vm"
     },
     {
       "detail": "Vector integer add-with-carry-out vector",
@@ -5149,9 +5156,9 @@
     {
       "detail": "Vector integer add-with-carry-in-out vector",
       "documentation": null,
-      "insertText": "vmadc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, v0$0",
+      "insertText": "vmadc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmadc.vvm vd, vs2, vs1, v0"
+      "label": "vmadc.vvm vd, vs2, vs1, vm"
     },
     {
       "detail": "Vector integer add-with-carry-out scalar",
@@ -5163,9 +5170,9 @@
     {
       "detail": "Vector integer add-with-carry-in-out scalar",
       "documentation": null,
-      "insertText": "vmadc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, v0$0",
+      "insertText": "vmadc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmadc.vxm vd, vs2, rs1, v0"
+      "label": "vmadc.vxm vd, vs2, rs1, vm"
     },
     {
       "detail": "No synopsis available",
@@ -5194,13 +5201,6 @@
       "insertText": "vmandn.mm ${1:vd}, ${2:vs2}, ${3:vs1}$0",
       "kind": 3,
       "label": "vmandn.mm vd, vs2, vs1"
-    },
-    {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vmandnot.mm ${1:vd}, ${2:vs2}, ${3:vs1}$0",
-      "kind": 15,
-      "label": "vmandnot.mm vd, vs2, vs1"
     },
     {
       "detail": "No synopsis available",
@@ -5240,23 +5240,23 @@
     {
       "detail": "No synopsis available",
       "documentation": null,
-      "insertText": "vmerge.vim ${1:vd}, ${2:vs2}, ${3:imm}, v0$0",
+      "insertText": "vmerge.vim ${1:vd}, ${2:vs2}, ${3:imm}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmerge.vim vd, vs2, imm, v0"
+      "label": "vmerge.vim vd, vs2, imm, vm"
     },
     {
       "detail": "Vector merge with mask",
       "documentation": null,
-      "insertText": "vmerge.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, v0$0",
+      "insertText": "vmerge.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmerge.vvm vd, vs2, vs1, v0"
+      "label": "vmerge.vvm vd, vs2, vs1, vm"
     },
     {
       "detail": "No synopsis available",
       "documentation": null,
-      "insertText": "vmerge.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, v0$0",
+      "insertText": "vmerge.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmerge.vxm vd, vs2, rs1, v0"
+      "label": "vmerge.vxm vd, vs2, rs1, vm"
     },
     {
       "detail": "No synopsis available",
@@ -5413,13 +5413,6 @@
       "label": "vmorn.mm vd, vs2, vs1"
     },
     {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vmornot.mm ${1:vd}, ${2:vs2}, ${3:vs1}$0",
-      "kind": 15,
-      "label": "vmornot.mm vd, vs2, vs1"
-    },
-    {
       "detail": "Vector integer subtract-with-borrow-out vector",
       "documentation": null,
       "insertText": "vmsbc.vv ${1:vd}, ${2:vs2}, ${3:vs1}$0",
@@ -5429,9 +5422,9 @@
     {
       "detail": "Vector integer subtract-with-borrow-in-out vector",
       "documentation": null,
-      "insertText": "vmsbc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, v0$0",
+      "insertText": "vmsbc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmsbc.vvm vd, vs2, vs1, v0"
+      "label": "vmsbc.vvm vd, vs2, vs1, vm"
     },
     {
       "detail": "Vector integer subtract-with-borrow-out scalar",
@@ -5443,9 +5436,9 @@
     {
       "detail": "Vector integer subtract-with-borrow-in-out scalar",
       "documentation": null,
-      "insertText": "vmsbc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, v0$0",
+      "insertText": "vmsbc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vmsbc.vxm vd, vs2, rs1, v0"
+      "label": "vmsbc.vxm vd, vs2, rs1, vm"
     },
     {
       "detail": "No synopsis available",
@@ -5499,13 +5492,6 @@
     {
       "detail": null,
       "documentation": null,
-      "insertText": "vmsge.vx ${1:vd}, ${2:vs2}, ${3:rs1}$0",
-      "kind": 15,
-      "label": "vmsge.vx vd, vs2, rs1"
-    },
-    {
-      "detail": null,
-      "documentation": null,
       "insertText": "vmsge.vx ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 15,
       "label": "vmsge.vx vd, vs2, rs1, vm"
@@ -5530,13 +5516,6 @@
       "insertText": "vmsgeu.vv ${1:vd}, ${2:va}, ${3:vb}, ${4:vm}$0",
       "kind": 15,
       "label": "vmsgeu.vv vd, va, vb, vm"
-    },
-    {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vmsgeu.vx ${1:vd}, ${2:vs2}, ${3:rs1}$0",
-      "kind": 15,
-      "label": "vmsgeu.vx vd, vs2, rs1"
     },
     {
       "detail": null,
@@ -5800,9 +5779,9 @@
     {
       "detail": "Vector move scalar to integer register",
       "documentation": null,
-      "insertText": "vmv.x.s ${1:vd}, ${2:vs2}$0",
+      "insertText": "vmv.x.s ${1:rd}, ${2:vs2}$0",
       "kind": 3,
-      "label": "vmv.x.s vd, vs2"
+      "label": "vmv.x.s rd, vs2"
     },
     {
       "detail": "No synopsis available",
@@ -6022,13 +6001,6 @@
       "label": "vor.vx vd, vs2, rs1, vm"
     },
     {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vpopc.m ${1:vd}, ${2:vs2}, ${3:vm}$0",
-      "kind": 15,
-      "label": "vpopc.m vd, vs2, vm"
-    },
-    {
       "detail": "No synopsis available",
       "documentation": null,
       "insertText": "vredand.vs ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
@@ -6227,23 +6199,16 @@
     {
       "detail": "Vector integer subtract-with-borrow-in vector",
       "documentation": null,
-      "insertText": "vsbc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, v0$0",
+      "insertText": "vsbc.vvm ${1:vd}, ${2:vs2}, ${3:vs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vsbc.vvm vd, vs2, vs1, v0"
+      "label": "vsbc.vvm vd, vs2, vs1, vm"
     },
     {
       "detail": "Vector integer subtract-with-borrow-in scalar",
       "documentation": null,
-      "insertText": "vsbc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, v0$0",
+      "insertText": "vsbc.vxm ${1:vd}, ${2:vs2}, ${3:rs1}, ${4:vm}$0",
       "kind": 3,
-      "label": "vsbc.vxm vd, vs2, rs1, v0"
-    },
-    {
-      "detail": null,
-      "documentation": null,
-      "insertText": "vse1.v ${1:vs3}, (${2:rs1})$0",
-      "kind": 15,
-      "label": "vse1.v vs3, (rs1)"
+      "label": "vsbc.vxm vd, vs2, rs1, vm"
     },
     {
       "detail": "Vector store 16-bit elements",

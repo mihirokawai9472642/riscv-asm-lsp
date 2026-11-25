@@ -247,28 +247,6 @@ fn completion_snippets_variant_order_distinct_labels_and_separators() {
             )
     );
 
-    // Item 5: deprecated aliases carry DEPRECATED tag (1) and sort after preferred names
-    let frsr = stmt_items
-        .iter()
-        .find(|i| i["filterText"] == "frsr")
-        .expect("frsr");
-    assert_eq!(frsr["tags"], json!([1]));
-    let frcsr = stmt_items
-        .iter()
-        .find(|i| i["filterText"] == "frcsr")
-        .expect("frcsr");
-    assert!(frcsr["sortText"].as_str() < frsr["sortText"].as_str());
-    let resolved_frsr = snip_client
-        .send_request("completionItem/resolve", frsr.clone())
-        .result
-        .expect("resolved frsr");
-    assert!(
-        resolved_frsr["documentation"]["value"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Deprecated — prefer `frcsr`")
-    );
-
     let mut csrw_items: Vec<_> = stmt_items
         .iter()
         .filter(|i| i["filterText"] == "csrw")

@@ -75,7 +75,10 @@ pub(crate) fn build_instruction_hover_parts(
 
     let mut notices = Vec::new();
     if !inst.llvm_supported {
-        notices.push("Not accepted by LLVM 19 (spec only).".to_owned());
+        notices.push(format!(
+            "Not accepted by {} (spec only).",
+            db.llvm_major_label()
+        ));
     } else if !enabled_by_march {
         notices.push(format_march_disabled_notice(inst, effective_march));
     }
@@ -382,7 +385,11 @@ fn normalize_syntax(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(crate) fn format_csr_hover(csr: &CsrEntry, effective_march: Option<&MarchSpec>) -> String {
+pub(crate) fn format_csr_hover(
+    csr: &CsrEntry,
+    effective_march: Option<&MarchSpec>,
+    db: &Database,
+) -> String {
     let mut header = vec!["CSR".to_owned()];
     if let Some(long_name) = csr
         .description
@@ -451,7 +458,10 @@ pub(crate) fn format_csr_hover(csr: &CsrEntry, effective_march: Option<&MarchSpe
 
     let mut notices = Vec::new();
     if !csr.llvm_supported {
-        notices.push("Not accepted by LLVM 19 (spec only).".to_owned());
+        notices.push(format!(
+            "Not accepted by {} (spec only).",
+            db.llvm_major_label()
+        ));
     } else if let Some(march) = effective_march
         && !march.supports_csr(&csr.required_extensions, csr.xlen)
     {
@@ -538,7 +548,7 @@ pub(crate) fn format_register_hover(reg: &RegisterEntry) -> String {
     .render()
 }
 
-pub(crate) fn format_directive_hover(dir: &DirectiveEntry) -> String {
+pub(crate) fn format_directive_hover(dir: &DirectiveEntry, db: &Database) -> String {
     let scope = if dir.llvm_supported {
         "GNU / LLVM"
     } else {
@@ -551,7 +561,10 @@ pub(crate) fn format_directive_hover(dir: &DirectiveEntry) -> String {
     };
     let mut notices = Vec::new();
     if !dir.llvm_supported {
-        notices.push("Not accepted by LLVM 19 (GNU assembler / docs only).".to_owned());
+        notices.push(format!(
+            "Not accepted by {} (GNU assembler / docs only).",
+            db.llvm_major_label()
+        ));
     }
     let prose = dir
         .summary

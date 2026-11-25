@@ -18,15 +18,14 @@ pub struct AsmManualData {
     pub directives: Vec<DirectiveEntry>,
 }
 
-/// Directives documented in riscv-asm-manual that LLVM 19 rejects (Design Appendix A).
-const LLVM19_UNSUPPORTED_DIRECTIVES: &[&str] = &[
+/// Directives documented in riscv-asm-manual that LLVM rejects (Design Appendix A).
+const LLVM_UNSUPPORTED_DIRECTIVES: &[&str] = &[
     ".dtprelword",
     ".eqv",
     ".func",
     ".endfunc",
     ".float16",
     ".bfloat16",
-    ".base64",
     ".linkonce",
     ".stabs",
     ".list",
@@ -64,7 +63,7 @@ fn parse_directives(text: &str) -> Vec<DirectiveEntry> {
         let name = raw_name.to_ascii_lowercase();
         let args = clean_cell(&row[1]);
         let desc = clean_cell(&row[2]);
-        let llvm_supported = !LLVM19_UNSUPPORTED_DIRECTIVES.contains(&name.as_str());
+        let llvm_supported = !LLVM_UNSUPPORTED_DIRECTIVES.contains(&name.as_str());
 
         out.push(DirectiveEntry {
             name,

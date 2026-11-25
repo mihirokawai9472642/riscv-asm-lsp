@@ -15,7 +15,7 @@
     "source": "clang"
   },
   {
-    "message": "operand must be a symbol with %lo/%pcrel_lo/%tprel_lo modifier or an integer in the range [-2048, 2047]",
+    "message": "operand must be a symbol with %lo/%pcrel_lo/%tprel_lo specifier or an integer in the range [-2048, 2047]",
     "range": {
       "end": {
         "character": 27,

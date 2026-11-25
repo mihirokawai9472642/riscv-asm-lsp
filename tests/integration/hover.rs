@@ -193,7 +193,7 @@ lbl_\\@:
     );
     assert!(hover_markdown(&mut client, &uri, 8, 21).is_none());
 
-    // Item 5: AIA CSR (`stopi`), deprecated alias (`vpopc.m`), newly described `unimp`, new directives
+    // Item 5: AIA CSR (`stopi`), newly described `unimp`, new directives
     let h_stopi = hover_markdown(&mut client, &uri, 9, 15).expect("stopi");
     assert!(
         h_stopi.contains("0xdb0")
@@ -201,11 +201,7 @@ lbl_\\@:
             && !h_stopi.contains("No description"),
         "got: {h_stopi}"
     );
-    let h_vpopc = hover_markdown(&mut client, &uri, 10, 6).expect("vpopc.m");
-    assert!(
-        h_vpopc.contains("Deprecated — prefer `vcpop.m`"),
-        "got: {h_vpopc}"
-    );
+    assert!(hover_markdown(&mut client, &uri, 10, 6).is_none());
     let h_unimp = hover_markdown(&mut client, &uri, 12, 6).expect("unimp");
     assert!(!h_unimp.contains("No description"), "got: {h_unimp}");
     assert!(hover_markdown(&mut client, &uri, 13, 6).is_some());
@@ -526,7 +522,7 @@ fn hover_formatting_csr_shadowing_multiline_block_and_decoded_filenames() {
 #define GHOST 99
 */ addi sp, sp, -16
     c.addi sp, -16
-    csrr a0, tcontrol
+    csrr a0, mrmcfg
 time:
     ret
 _main:
@@ -567,9 +563,9 @@ _main:
     );
 
     // Spec-only CSR shows LLVM notice
-    let h_spec_csr = hover_markdown(&mut client, &uri, 7, 15).expect("tcontrol hover");
+    let h_spec_csr = hover_markdown(&mut client, &uri, 7, 15).expect("mrmcfg hover");
     assert!(
-        h_spec_csr.contains("Not accepted by LLVM 19"),
+        h_spec_csr.contains("Not accepted by LLVM 23"),
         "got: {h_spec_csr}"
     );
 

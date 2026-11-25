@@ -137,6 +137,13 @@
     {
       "detail": "0x143 · S-mode",
       "documentation": null,
+      "insertText": "sbadaddr",
+      "kind": 21,
+      "label": "sbadaddr"
+    },
+    {
+      "detail": "0x143 · S-mode",
+      "documentation": null,
       "insertText": "stval",
       "kind": 21,
       "label": "stval"
@@ -205,11 +212,25 @@
       "label": "satp"
     },
     {
+      "detail": "0x180 · S-mode",
+      "documentation": null,
+      "insertText": "sptbr",
+      "kind": 21,
+      "label": "sptbr"
+    },
+    {
       "detail": "0x24d · VS-mode",
       "documentation": null,
       "insertText": "vstimecmp",
       "kind": 21,
       "label": "vstimecmp"
+    },
+    {
+      "detail": "0x24e · VS-mode",
+      "documentation": null,
+      "insertText": "vsctrctl",
+      "kind": 21,
+      "label": "vsctrctl"
     },
     {
       "detail": "0x250 · VS-mode",
@@ -546,6 +567,13 @@
       "insertText": "mcause",
       "kind": 21,
       "label": "mcause"
+    },
+    {
+      "detail": "0x343 · M-mode",
+      "documentation": null,
+      "insertText": "mbadaddr",
+      "kind": 21,
+      "label": "mbadaddr"
     },
     {
       "detail": "0x343 · M-mode",
@@ -1113,6 +1141,13 @@
       "insertText": "mseccfg",
       "kind": 21,
       "label": "mseccfg"
+    },
+    {
+      "detail": "0x7aa · S-mode",
+      "documentation": null,
+      "insertText": "mscontext",
+      "kind": 21,
+      "label": "mscontext"
     },
     {
       "detail": "0xb00 · M-mode",

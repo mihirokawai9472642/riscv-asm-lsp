@@ -9,7 +9,7 @@ and `x86_64`), and Windows (`x86_64`) are published on
 or you can build from source.
 
 Like `clangd`, the server's reference is its bundled data generated from one
-pinned LLVM release (currently `llvmorg-19.1.7`, updated with each server
+pinned LLVM release (currently `llvmorg-23.1.6`, updated with each server
 release). External `clang` and `llvm-mc` tools are optional supplements and are
 not required for editing, hover documentation, completion, navigation, or
 symbols.
@@ -165,7 +165,7 @@ Building natively requires Rust 1.90 or newer (`edition = "2024"`):
 cargo build --release
 ```
 
-With Docker (using the repository's Rust + LLVM 19 development container):
+With Docker (using the repository's Rust + LLVM 23 development container):
 
 ```bash
 docker compose up -d --build

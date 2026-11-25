@@ -82,7 +82,7 @@ pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Opt
         }
         ResolvePayload::Dir { n } => {
             let dir = db.directive(&n)?;
-            Some(markdown_doc(crate::hover::format_directive_hover(dir)))
+            Some(markdown_doc(crate::hover::format_directive_hover(dir, db)))
         }
         ResolvePayload::Reg { n } => {
             let reg = db.register(&n)?;
@@ -94,6 +94,7 @@ pub(super) fn resolve_documentation(item: &CompletionItem, db: &Database) -> Opt
             Some(markdown_doc(crate::hover::format_csr_hover(
                 csr,
                 march.as_ref(),
+                db,
             )))
         }
         ResolvePayload::Opt { n } => OPTION_SUBCOMMANDS
@@ -768,7 +769,9 @@ fn classify_operand_class(class: &str, demand: &mut OperandDemand) {
         demand.vec_reg = true;
     } else if class.starts_with("GPR")
         || class.starts_with("SP")
+        || class.starts_with("BasePtr")
         || class == "SR07"
+        || class == "YGPR"
         || class.starts_with("AnyReg")
     {
         demand.int_reg = true;
