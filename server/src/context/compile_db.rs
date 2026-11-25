@@ -13,11 +13,33 @@ use super::uri::{
     lexical_normalize_path, normalize_path, path_key, path_starts_with, resolve_path, uri_to_path,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroFlag {
+    Define { name: String, value: Option<String> },
+    Undef(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForceIncludeKind {
+    Include,
+    Imacros,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForceInclude {
+    pub kind: ForceIncludeKind,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 pub struct FileContext {
     pub target: String,
     pub is_riscv: bool,
     pub march: MarchSpec,
+    pub abi: Option<String>,
+    pub cmodel: Option<String>,
+    pub macro_flags: Vec<MacroFlag>,
+    pub force_includes: Vec<ForceInclude>,
     pub clang_flags: Vec<String>,
     pub include_dirs: Vec<PathBuf>,
     pub quote_dirs: Vec<PathBuf>,
@@ -66,7 +88,11 @@ pub(super) struct ParsedCompileEntry {
     pub clang_flags: Vec<String>,
     pub target: Option<String>,
     pub march: Option<String>,
+    pub abi: Option<String>,
+    pub cmodel: Option<String>,
     pub enable_experimental: bool,
+    pub macro_flags: Vec<MacroFlag>,
+    pub force_includes: Vec<ForceInclude>,
     pub include_dirs: Vec<PathBuf>,
     pub quote_dirs: Vec<PathBuf>,
     pub lang_override: Option<bool>,
@@ -223,6 +249,10 @@ impl CompileContext {
             target: target.clone(),
             is_riscv,
             march: MarchSpec::parse(&march_str),
+            abi: None,
+            cmodel: None,
+            macro_flags: Vec::new(),
+            force_includes: Vec::new(),
             clang_flags: vec![format!("--target={target}"), format!("-march={march_str}")],
             include_dirs: Vec::new(),
             quote_dirs: Vec::new(),
@@ -269,6 +299,10 @@ impl CompileContext {
             target,
             is_riscv,
             march: MarchSpec::parse_with_experimental(march_str, entry.enable_experimental),
+            abi: entry.abi.clone(),
+            cmodel: entry.cmodel.clone(),
+            macro_flags: entry.macro_flags.clone(),
+            force_includes: entry.force_includes.clone(),
             clang_flags,
             include_dirs: entry.include_dirs.clone(),
             quote_dirs: entry.quote_dirs.clone(),
@@ -397,7 +431,11 @@ pub(super) fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompi
         clang_flags: Vec::new(),
         target: None,
         march: None,
+        abi: None,
+        cmodel: None,
         enable_experimental: false,
+        macro_flags: Vec::new(),
+        force_includes: Vec::new(),
         include_dirs: Vec::new(),
         quote_dirs: Vec::new(),
         lang_override: None,
@@ -470,13 +508,36 @@ impl ParsedCompileEntry {
             self.clang_flags.push(arg.clone());
             return Some(1);
         }
-        if arg.starts_with("-mabi=") {
+        if let Some(val) = arg.strip_prefix("-mabi=") {
+            if !val.is_empty() {
+                self.abi = Some(val.to_owned());
+            }
             self.clang_flags.push(arg.clone());
             return Some(1);
         }
         if arg == "-mabi" && i + 1 < args.len() {
+            let val = &args[i + 1];
+            if !val.is_empty() {
+                self.abi = Some(val.clone());
+            }
             self.clang_flags.push(arg.clone());
-            self.clang_flags.push(args[i + 1].clone());
+            self.clang_flags.push(val.clone());
+            return Some(2);
+        }
+        if let Some(val) = arg.strip_prefix("-mcmodel=") {
+            if !val.is_empty() {
+                self.cmodel = Some(val.to_owned());
+            }
+            self.clang_flags.push(arg.clone());
+            return Some(1);
+        }
+        if arg == "-mcmodel" && i + 1 < args.len() {
+            let val = &args[i + 1];
+            if !val.is_empty() {
+                self.cmodel = Some(val.clone());
+            }
+            self.clang_flags.push(arg.clone());
+            self.clang_flags.push(val.clone());
             return Some(2);
         }
         None
@@ -513,6 +574,17 @@ impl ParsedCompileEntry {
                     }
                     if track_quote {
                         self.quote_dirs.push(path.clone());
+                    }
+                    if prefix == "-include" {
+                        self.force_includes.push(ForceInclude {
+                            kind: ForceIncludeKind::Include,
+                            path: path.clone(),
+                        });
+                    } else if prefix == "-imacros" {
+                        self.force_includes.push(ForceInclude {
+                            kind: ForceIncludeKind::Imacros,
+                            path: path.clone(),
+                        });
                     }
                     self.clang_flags.push(prefix.to_owned());
                     self.clang_flags.push(path.to_string_lossy().into_owned());
@@ -562,7 +634,8 @@ impl ParsedCompileEntry {
             } else if let Some((flag, abi_val, step)) = parse_wa_value(tok, "-mabi", &wa_tokens, wi)
             {
                 wi += step - 1;
-                if abi_val.is_some() {
+                if let Some(a) = abi_val {
+                    self.abi = Some(a.to_owned());
                     allowed_wa.push(flag);
                 }
             }
@@ -577,13 +650,39 @@ impl ParsedCompileEntry {
     fn consume_macro_flag(&mut self, args: &[String], i: usize) -> usize {
         let arg = &args[i];
         if (arg == "-D" || arg == "-U") && i + 1 < args.len() {
+            let val = &args[i + 1];
+            if arg == "-D" {
+                push_define_flag(&mut self.macro_flags, val);
+            } else if !val.is_empty() {
+                self.macro_flags.push(MacroFlag::Undef(val.clone()));
+            }
             self.clang_flags.push(arg.clone());
-            self.clang_flags.push(args[i + 1].clone());
+            self.clang_flags.push(val.clone());
             2
         } else {
+            if let Some(rest) = arg.strip_prefix("-D") {
+                push_define_flag(&mut self.macro_flags, rest);
+            } else if let Some(rest) = arg.strip_prefix("-U")
+                && !rest.is_empty()
+            {
+                self.macro_flags.push(MacroFlag::Undef(rest.to_owned()));
+            }
             self.clang_flags.push(arg.clone());
             1
         }
+    }
+}
+
+fn push_define_flag(out: &mut Vec<MacroFlag>, raw: &str) {
+    let (name, value) = match raw.split_once('=') {
+        Some((n, v)) => (n, Some(v.to_owned())),
+        None => (raw, None),
+    };
+    if !name.is_empty() {
+        out.push(MacroFlag::Define {
+            name: name.to_owned(),
+            value,
+        });
     }
 }
 
