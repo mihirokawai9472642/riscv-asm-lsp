@@ -3,13 +3,20 @@
 riscv-asm-lsp is a language server for RISC-V assembly in the GNU assembler
 syntax, with an extension for the Zed editor.
 
-**Status: early development.** Prebuilt static `x86_64-unknown-linux-musl` binaries
-are published on [GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases),
+Prebuilt binaries for Linux (`x86_64` and `aarch64` musl), macOS (`aarch64`
+and `x86_64`), and Windows (`x86_64`) are published on
+[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases),
 or you can build from source. It targets LLVM 19 (`llvmorg-19.1.7`).
 
 The LLVM integrated assembler is the reference: instruction data is generated
 from LLVM's own definitions with descriptions from the RISC-V specifications,
 and diagnostics and expansions come from running `clang` and `llvm-mc`.
+
+## Quick Start
+
+1. Install the **RISC-V Assembly** extension from Zed Extensions (`zed: extensions`) — it downloads `riscv-asm-lsp` automatically.
+2. Optionally install LLVM 19 (`clang` and `llvm-mc`) for diagnostics and live instruction expansion (see [Installing LLVM 19](#installing-llvm-19)).
+3. Open a `.S` or `.s` file (see [Recommended Settings](docs/zed.md#recommended-settings) to enable `document_symbols` and `semantic_tokens`, which Zed extensions cannot enable by default in `config.toml`).
 
 ## Features
 
@@ -29,6 +36,8 @@ and diagnostics and expansions come from running `clang` and `llvm-mc`.
   workspace symbols.
 - **Diagnostics and code actions** from `clang` on unsaved text, with quick
   fixes for compiler suggestions and `#` preprocessor-directive comment hints.
+- **Signature help, folding ranges, and inlay hints** for instruction operands,
+  comment/directive blocks, CSR addresses, and resolved constants.
 - **Semantic tokens** classifying registers, CSRs, labels, constants, macros,
   parameters, preprocessor lines and `#` comments.
 - **Zed extension** (`zed/`): the `RISC-V Assembly` language with a
@@ -40,74 +49,124 @@ are off and everything else works.
 
 See [docs/features.md](docs/features.md) for detailed feature behaviour.
 
-## Installing a release
+## Installing LLVM 19
 
-Download the release archive and its checksum from
-[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases)
-(for example `v0.1.0`):
+`riscv-asm-lsp` auto-discovers `clang` and `llvm-mc` when they are not set
+explicitly, checking in order:
 
-```bash
-curl -fsSLO https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.1.0/riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
-curl -fsSLO https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.1.0/riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz.sha256
-sha256sum -c riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz.sha256
-tar -xzf riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz riscv-asm-lsp
-install -m 0755 riscv-asm-lsp ~/.local/bin/riscv-asm-lsp
-```
+1. `clang-19` / `llvm-mc-19` on `PATH`
+2. `clang` / `llvm-mc` on `PATH`
+3. Standard LLVM 19 install directories:
+   - Linux: `/usr/lib/llvm-19/bin`
+   - macOS: `/opt/homebrew/opt/llvm@19/bin`, `/usr/local/opt/llvm@19/bin`
+   - Windows: `C:\Program Files\LLVM\bin`
 
-The archive contains `riscv-asm-lsp` together with `LICENSE.md`,
-`THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.md`, and
-`COPYRIGHT-library.html`. Make sure the destination directory is on `PATH`,
-alongside `clang` and `llvm-mc` if you want diagnostics and expansions.
+If a tool is missing or lacks the RISC-V target, only the feature that needs
+it (diagnostics for `clang`, live encoding expansion for `llvm-mc`) is disabled
+and a one-time warning is shown.
 
-## Building
-
-With Docker (recommended when using the repository's Rust + LLVM 19 container):
-
-```bash
-docker compose up -d --build
-```
-
-```bash
-docker compose exec dev cargo build --release
-```
-
-The server binary is `target/release/riscv-asm-lsp`. Place it on the `PATH`
-of the machine or container where the editor runs language servers, alongside
-`clang` and `llvm-mc` if you want diagnostics and expansions.
-
-Building natively requires Rust 1.90 or newer (`edition = "2024"`).
-
-## Using it with Zed
-
-1. Install `zed/` as a dev extension (`zed: install dev extension`). Zed
-   compiles the WebAssembly extension, so the machine running Zed needs `git`
-   and Rust (`rustup`) on its `PATH`; Zed adds `wasm32-wasip2` itself.
-2. If another installed extension also claims `.S`, `.s`, or `.sx`, uninstall
-   the conflicting extension (recommended) or map those suffixes in
-   `file_types`. To keep linker script templates out of assembly highlighting,
-   map `"*.lds.S"` and `"*.ld.S"` to `Plain Text` (or a linker-script language)
-   via `file_types`; this only takes effect when `.S` is not also mapped in
-   `file_types` (see [docs/zed.md](docs/zed.md#avoiding-file-type-conflicts)).
-3. Make `riscv-asm-lsp` available on `PATH` or via `lsp.riscv-asm-lsp.binary`.
-
-See [docs/zed.md](docs/zed.md) for settings, container execution, Windows with
-WSL, and theme overrides.
+- **Debian / Ubuntu**:
+  ```bash
+  sudo apt install clang-19 llvm-19
+  ```
+- **macOS (Homebrew)**:
+  ```bash
+  brew install llvm@19
+  ```
+  Apple's system `clang` does not include the RISC-V target and is not enough
+  for RISC-V diagnostics or `llvm-mc` expansion.
+- **Windows**: install LLVM 19 using the official LLVM 19 installer (which
+  installs tools under `C:\Program Files\LLVM\bin` by default).
 
 ## Configuration
 
-Options go in `initializationOptions` (in Zed:
-`lsp.riscv-asm-lsp.initialization_options`). All are optional and are read once
-at startup, so changing them requires restarting the language server.
+`initializationOptions` (in Zed: `lsp.riscv-asm-lsp.initialization_options`)
+are read once at startup. Settings under `lsp.riscv-asm-lsp.settings` (or sent
+via `workspace/didChangeConfiguration`) apply live without restarting the
+language server.
+
+Example `.zed/settings.json`:
+
+```json
+{
+  "lsp": {
+    "riscv-asm-lsp": {
+      "settings": {
+        "defaultTarget": "riscv64-unknown-elf",
+        "defaultMarch": "rv64gc",
+        "diagnostics": {
+          "enable": true,
+          "delayMs": 300
+        }
+      }
+    }
+  }
+}
+```
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `clang` | `"clang"` | Path to clang |
-| `llvmMc` | `"llvm-mc"` | Path to llvm-mc |
+| `clang` | Auto-discover (`clang-19` -> `clang` -> standard LLVM 19 dirs) | Path to `clang` (overrides auto-discovery) |
+| `llvmMc` | Auto-discover (`llvm-mc-19` -> `llvm-mc` -> standard LLVM 19 dirs) | Path to `llvm-mc` (overrides auto-discovery) |
 | `compileCommandsDirs` | `["", "build"]` | Directories, relative to the project root, searched for `compile_commands.json` |
 | `defaultTarget` | `"riscv64-unknown-elf"` | Target for files without a compilation database entry |
 | `defaultMarch` | `"rv64gc"` | `-march` for files without an entry |
-| `diagnostics.enable` | `true` | Run clang for diagnostics |
+| `diagnostics.enable` | `true` | Run `clang` for diagnostics |
 | `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
+
+## Installing a release
+
+When using Zed, the extension downloads the release archive automatically. For
+standalone use (or other editors), download the matching archive and `.sha256`
+checksum from
+[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases):
+
+| Target | Archive |
+| --- | --- |
+| Linux `x86_64` (static musl) | `riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz` |
+| Linux `aarch64` (static musl) | `riscv-asm-lsp-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Apple Silicon (`aarch64`) | `riscv-asm-lsp-aarch64-apple-darwin.tar.gz` |
+| macOS Intel (`x86_64`) | `riscv-asm-lsp-x86_64-apple-darwin.tar.gz` |
+| Windows `x86_64` | `riscv-asm-lsp-x86_64-pc-windows-msvc.zip` |
+
+For example, on Linux or macOS (`v0.2.0`):
+
+```bash
+ARCHIVE=riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
+curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.2.0/${ARCHIVE}"
+curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.2.0/${ARCHIVE}.sha256"
+sha256sum -c "${ARCHIVE}.sha256"   # or: shasum -a 256 -c "${ARCHIVE}.sha256" on macOS
+tar -xzf "${ARCHIVE}" riscv-asm-lsp
+install -m 0755 riscv-asm-lsp ~/.local/bin/riscv-asm-lsp
+```
+
+On Windows PowerShell, download the `.zip` and `.zip.sha256`, compare
+`Get-FileHash riscv-asm-lsp-x86_64-pc-windows-msvc.zip -Algorithm SHA256`
+against the `.sha256` file, extract `riscv-asm-lsp.exe`, and place it on
+`PATH`.
+
+Every release archive includes `LICENSE.md`, `THIRD_PARTY_NOTICES.md`,
+`THIRD_PARTY_LICENSES.md`, and `COPYRIGHT-library.html`.
+
+## Building
+
+Building natively requires Rust 1.90 or newer (`edition = "2024"`):
+
+```bash
+cargo build --release
+```
+
+With Docker (using the repository's Rust + LLVM 19 development container):
+
+```bash
+docker compose up -d --build
+docker compose exec dev cargo build --release
+```
+
+The server binary is `target/release/riscv-asm-lsp` (`riscv-asm-lsp.exe` on
+Windows). Place it on `PATH` or point `lsp.riscv-asm-lsp.binary.path` to it.
+See [docs/zed.md](docs/zed.md) for Zed settings, extension development,
+container execution, Windows with WSL, and theme overrides.
 
 ## Documentation
 
@@ -129,4 +188,4 @@ stays under their licenses; hand-written files in `data/` (`directives_gnu.json`
 `supplements.json`, `texts.json`) are MIT. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); binary release archives
 also include `THIRD_PARTY_LICENSES.md` and `COPYRIGHT-library.html` for
-third-party crates, musl, and the Rust standard library.
+third-party crates, musl/CRT, and the Rust standard library.
