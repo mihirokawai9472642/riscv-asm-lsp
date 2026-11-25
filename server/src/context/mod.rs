@@ -300,6 +300,10 @@ mod tests {
         assert!(gc.extensions.contains("f"));
         assert!(gc.extensions.contains("d"));
         assert!(gc.extensions.contains("c"));
+        assert!(gc.extensions.contains("zaamo"));
+        assert!(gc.extensions.contains("zalrsc"));
+        assert!(gc.extensions.contains("zca"));
+        assert!(gc.extensions.contains("zcd"));
         assert!(gc.extensions.contains("zicsr"));
         assert!(gc.extensions.contains("zifencei"));
         assert!(gc.extensions.contains("zmmul"));
@@ -309,17 +313,13 @@ mod tests {
             assert!(bv.extensions.contains(ext), "missing {ext}");
         }
 
-        let zcd_spec = MarchSpec::parse("rv64g_zcd");
-        assert!(zcd_spec.extensions.contains("zca"));
-        assert!(zcd_spec.extensions.contains("zcd"));
-
-        let mut mod_spec = zcd_spec;
+        let mut mod_spec = gc.clone();
         mod_spec.apply_option_arch("-m, -d");
         assert!(!mod_spec.extensions.contains("m"));
         assert!(!mod_spec.extensions.contains("d"));
         assert!(!mod_spec.extensions.contains("zcd"));
 
-        let mut no_rvc = MarchSpec::parse("rv64gc_zcd");
+        let mut no_rvc = gc;
         no_rvc.apply_rvc(false);
         assert!(!no_rvc.extensions.contains("c"));
         assert!(!no_rvc.extensions.contains("zca"));
@@ -335,6 +335,22 @@ mod tests {
         assert!(!exp_off.extensions.contains("zicfilp"));
         let exp_on = MarchSpec::parse_with_experimental("rv64gc_zicfilp", true);
         assert!(exp_on.extensions.contains("zicfilp"));
+
+        let exp_entry = extract_relevant_flags(
+            Path::new("/proj"),
+            &[
+                "clang".to_owned(),
+                "-march=rv64gc_zicfilp".to_owned(),
+                "-menable-experimental-extensions".to_owned(),
+            ],
+        );
+        assert!(exp_entry.enable_experimental);
+        assert!(
+            exp_entry
+                .clang_flags
+                .iter()
+                .any(|f| f == "-menable-experimental-extensions")
+        );
 
         let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_multi_{}", std::process::id()));
         let root_a = tmp.join("root_a");

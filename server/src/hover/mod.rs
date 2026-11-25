@@ -281,13 +281,13 @@ pub fn prepare_hover(
 
     match target {
         HoverTarget::Directive(dir) => {
-            HoverResolution::Ready(Some(make_hover(format_directive_hover(dir), range)))
+            HoverResolution::Ready(Some(make_hover(format_directive_hover(dir, db), range)))
         }
         HoverTarget::Register(reg) => {
             HoverResolution::Ready(Some(make_hover(format_register_hover(reg), range)))
         }
         HoverTarget::Csr(csr) => HoverResolution::Ready(Some(make_hover(
-            format_csr_hover(csr, Some(&effective_march)),
+            format_csr_hover(csr, Some(&effective_march), db),
             range,
         ))),
         HoverTarget::OperandKeyword {
@@ -861,7 +861,7 @@ mod tests {
         let db = Database::load().expect("db");
         let mut store = DocumentStore::new().expect("store");
         let uri = crate::context::test_uri("hover_q.S");
-        let doc = store.open(uri, 1, "    fadd.q f0, f1, f2\n".to_owned());
+        let doc = store.open(uri, 1, "    fcvt.h.q f0, f1\n".to_owned());
         let (mut ctx, mut index) = test_ctx_and_index();
         let tools = ToolRunner::new(
             Some("/nonexistent/clang".to_owned()),
@@ -870,11 +870,65 @@ mod tests {
         );
         index.upsert_open_document(doc);
         let h = provide_hover(doc, Position::new(0, 5), &db, &mut ctx, &mut index, &tools)
-            .expect("fadd.q hover");
+            .expect("fcvt.h.q hover");
         let HoverContents::Markup(m) = h.contents else {
             panic!("expected markup");
         };
-        assert!(m.value.contains("Not accepted by LLVM 19"));
+        assert!(
+            m.value.contains("Not accepted by LLVM 23"),
+            "got: {}",
+            m.value
+        );
+
+        let mut dep_raw = db.raw.clone();
+        dep_raw.instructions.push(crate::data::InstructionEntry {
+            mnemonic: "legacy.alias".to_owned(),
+            kind: crate::data::InstructionKind::Alias,
+            variants: vec![crate::data::InstructionVariant {
+                syntax: "legacy.alias rd".to_owned(),
+                operands: vec![crate::data::OperandSpec {
+                    name: "rd".to_owned(),
+                    class: "GPR".to_owned(),
+                }],
+                required_extensions: vec!["i".to_owned()],
+                xlen: crate::data::Xlen::Both,
+                alias_of: Some("addi".to_owned()),
+            }],
+            udb_assembly: None,
+            isa_label: Some("I".to_owned()),
+            long_name: None,
+            summary: Some("Deprecated test alias.".to_owned()),
+            description: None,
+            description_source: None,
+            llvm_supported: true,
+            deprecated: true,
+            preferred_name: Some("addi".to_owned()),
+        });
+        let dep_db = Database::from_data(dep_raw);
+        let mut dep_store = DocumentStore::new().expect("store");
+        let dep_doc = dep_store.open(
+            crate::context::test_uri("hover_dep.S"),
+            1,
+            "    legacy.alias a0\n".to_owned(),
+        );
+        index.upsert_open_document(dep_doc);
+        let h_dep = provide_hover(
+            dep_doc,
+            Position::new(0, 6),
+            &dep_db,
+            &mut ctx,
+            &mut index,
+            &tools,
+        )
+        .expect("deprecated hover");
+        let HoverContents::Markup(m_dep) = h_dep.contents else {
+            panic!("expected markup");
+        };
+        assert!(
+            m_dep.value.contains("Deprecated — prefer `addi`."),
+            "got: {}",
+            m_dep.value
+        );
     }
 
     #[test]

@@ -378,13 +378,15 @@ fn data_validation_rv64gc_instructions_assemble_with_llvm_mc() {
 
     fn sample_for_class(class: &str) -> Option<&'static str> {
         match class {
-            "GPR" | "GPRNoX0" | "GPRNoX0X2" | "GPRC" | "GPRMem" | "GPRCMem"
-            | "GPRMemZeroOffset" | "AnyReg" | "AnyRegC" => Some("a0"),
+            "GPR" | "GPRNoX0" | "GPRNoX2" | "GPRNoX0X2" | "GPRC" | "GPRMem" | "GPRCMem"
+            | "BasePtr" | "BasePtrC" | "GPRMemZeroOffset" | "YGPR" | "AnyReg" | "AnyRegC" => {
+                Some("a0")
+            }
             "GPRX1" | "GPRX1X5" => Some("ra"),
             "GPRX5" => Some("t0"),
             "SP" | "SPMem" => Some("sp"),
             "SR07" => Some("s0"),
-            "FPR16" | "FPR32" | "FPR32C" | "FPR64" | "FPR64C" => Some("fa0"),
+            "FPR16" | "FPR32" | "FPR32C" | "FPR64" | "FPR64C" | "FPR128" => Some("fa0"),
             "FPR16INX" | "FPR32INX" | "FPR64INX" | "FPR64IN32X" => Some("a0"),
             "VR" | "VRNoV0" | "VRM2" | "VRM4" | "VRM8" => Some("v8"),
             "csr_sysreg" => Some("mstatus"),
@@ -401,7 +403,7 @@ fn data_validation_rv64gc_instructions_assemble_with_llvm_mc() {
             "simm10_lsb0000nonzero" | "uimm10_lsb00nonzero" => Some("16"),
             "simm5_plus1" => Some("1"),
             "loadfpimm" => Some("0.5"),
-            "rlist" => Some("{ra}"),
+            "rlist" | "reglist" => Some("{ra}"),
             "negstackadj" => Some("-16"),
             "stackadj" => Some("16"),
             "VMaskOp" => None,
@@ -957,9 +959,15 @@ fn march_implications_match_clang_print_enabled_extensions() {
         ("riscv64-unknown-elf", "rv64gb"),
         ("riscv64-unknown-elf", "rv64g_zk"),
         ("riscv64-unknown-elf", "rv64g_zks"),
+        ("riscv64-unknown-elf", "rv64i_zca"),
+        ("riscv64-unknown-elf", "rv64g_zca"),
         ("riscv64-unknown-elf", "rv64g_zcd"),
         ("riscv32-unknown-elf", "rv32imafc"),
+        ("riscv32-unknown-elf", "rv32g_zca_zcd"),
+        ("riscv32-unknown-elf", "rv32g_zcf_zcd"),
         ("riscv64-unknown-elf", "rv64g_zfh"),
+        ("riscv64-unknown-elf", "rv64i_zaamo_zalrsc"),
+        ("riscv64-unknown-elf", "rv64i_zba_zbb_zbs"),
     ];
 
     for (target, march) in cases {

@@ -112,16 +112,62 @@ impl MarchSpec {
 
         let mut queue: VecDeque<String> = self.extensions.iter().cloned().collect();
         while let Some(cur) = queue.pop_front() {
-            let Some(implied) = graph.implies.get(&cur) else {
-                continue;
-            };
-            for dep in implied {
-                if !self.enable_experimental && graph.experimental.contains(dep) {
-                    continue;
+            if let Some(implied) = graph.implies.get(&cur) {
+                for dep in implied {
+                    if !self.enable_experimental && graph.experimental.contains(dep) {
+                        continue;
+                    }
+                    if self.extensions.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                    }
                 }
-                if self.extensions.insert(dep.clone()) {
-                    queue.push_back(dep.clone());
+            }
+            // Match LLVM RISCVISAInfo compressed implications when `c` implies `zca`:
+            // `c` + `d` -> `zcd`; RV32 `c` + `f` -> `zcf`; and `zca` (+ required `zcd`/`zcf`) -> `c`.
+            let c_uses_zca = graph
+                .implies
+                .get("c")
+                .is_some_and(|v| v.iter().any(|e| e == "zca"));
+            if c_uses_zca {
+                if self.extensions.contains("c") {
+                    if self.extensions.contains("d")
+                        && (self.enable_experimental || !graph.experimental.contains("zcd"))
+                        && self.extensions.insert("zcd".to_owned())
+                    {
+                        queue.push_back("zcd".to_owned());
+                    }
+                    if self.xlen == Xlen::Rv32
+                        && self.extensions.contains("f")
+                        && (self.enable_experimental || !graph.experimental.contains("zcf"))
+                        && self.extensions.insert("zcf".to_owned())
+                    {
+                        queue.push_back("zcf".to_owned());
+                    }
                 }
+                if self.extensions.contains("zca")
+                    && (!self.extensions.contains("d") || self.extensions.contains("zcd"))
+                    && (self.xlen != Xlen::Rv32
+                        || !self.extensions.contains("f")
+                        || self.extensions.contains("zcf"))
+                    && self.extensions.insert("c".to_owned())
+                {
+                    queue.push_back("c".to_owned());
+                }
+            }
+            if self.extensions.contains("zaamo")
+                && self.extensions.contains("zalrsc")
+                && (self.enable_experimental || !graph.experimental.contains("a"))
+                && self.extensions.insert("a".to_owned())
+            {
+                queue.push_back("a".to_owned());
+            }
+            if self.extensions.contains("zba")
+                && self.extensions.contains("zbb")
+                && self.extensions.contains("zbs")
+                && (self.enable_experimental || !graph.experimental.contains("b"))
+                && self.extensions.insert("b".to_owned())
+            {
+                queue.push_back("b".to_owned());
             }
         }
     }

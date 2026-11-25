@@ -66,6 +66,7 @@ pub(super) struct ParsedCompileEntry {
     pub clang_flags: Vec<String>,
     pub target: Option<String>,
     pub march: Option<String>,
+    pub enable_experimental: bool,
     pub include_dirs: Vec<PathBuf>,
     pub quote_dirs: Vec<PathBuf>,
     pub lang_override: Option<bool>,
@@ -267,7 +268,7 @@ impl CompileContext {
         FileContext {
             target,
             is_riscv,
-            march: MarchSpec::parse(march_str),
+            march: MarchSpec::parse_with_experimental(march_str, entry.enable_experimental),
             clang_flags,
             include_dirs: entry.include_dirs.clone(),
             quote_dirs: entry.quote_dirs.clone(),
@@ -396,6 +397,7 @@ pub(super) fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompi
         clang_flags: Vec::new(),
         target: None,
         march: None,
+        enable_experimental: false,
         include_dirs: Vec::new(),
         quote_dirs: Vec::new(),
         lang_override: None,
@@ -429,7 +431,13 @@ impl ParsedCompileEntry {
         if arg.starts_with("-D") || arg.starts_with("-U") {
             return self.consume_macro_flag(args, i);
         }
-        if matches!(arg.as_str(), "-nostdinc" | "-fno-pic" | "-fpic" | "-fPIC") {
+        if matches!(
+            arg.as_str(),
+            "-nostdinc" | "-fno-pic" | "-fpic" | "-fPIC" | "-menable-experimental-extensions"
+        ) {
+            if arg == "-menable-experimental-extensions" {
+                self.enable_experimental = true;
+            }
             self.clang_flags.push(arg.clone());
         }
         1

@@ -82,7 +82,9 @@ pub(super) fn variant_sort_key(
 fn is_register_class(class: &str) -> bool {
     class == "SP"
         || class.starts_with("GPR")
+        || class.starts_with("BasePtr")
         || class == "SR07"
+        || class == "YGPR"
         || class.starts_with("AnyReg")
         || class.starts_with("FPR")
         || class.starts_with("VR")

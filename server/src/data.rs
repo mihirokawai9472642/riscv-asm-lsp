@@ -428,7 +428,7 @@ mod tests {
         assert!(!texts.relocations.is_empty());
         assert!(!texts.preprocessor_directives.is_empty());
         assert!(!texts.macro_counter.description.is_empty());
-        assert_eq!(texts.operand_classes.len(), 51);
+        assert_eq!(texts.operand_classes.len(), 65);
     }
 
     #[test]

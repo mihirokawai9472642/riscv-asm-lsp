@@ -747,19 +747,55 @@ mod tests {
         ));
 
         // Deprecated alias carries DEPRECATED tag and sorts after preferred instruction
-        let deprecated_vpopc = arr
+        let mut dep_raw = db.raw.clone();
+        dep_raw.instructions.push(crate::data::InstructionEntry {
+            mnemonic: "legacy.alias".to_owned(),
+            kind: crate::data::InstructionKind::Alias,
+            variants: vec![crate::data::InstructionVariant {
+                syntax: "legacy.alias rd".to_owned(),
+                operands: vec![crate::data::OperandSpec {
+                    name: "rd".to_owned(),
+                    class: "GPR".to_owned(),
+                }],
+                required_extensions: vec!["i".to_owned()],
+                xlen: crate::data::Xlen::Both,
+                alias_of: Some("addi".to_owned()),
+            }],
+            udb_assembly: None,
+            isa_label: Some("I".to_owned()),
+            long_name: None,
+            summary: Some("Deprecated test alias.".to_owned()),
+            description: None,
+            description_source: None,
+            llvm_supported: true,
+            deprecated: true,
+            preferred_name: Some("frcsr".to_owned()),
+        });
+        let dep_db = Database::from_data(dep_raw);
+        let dep_arr = items_vec(
+            provide_completion(
+                doc,
+                Position::new(0, 4),
+                &dep_db,
+                &mut ctx,
+                &mut index,
+                caps,
+            )
+            .unwrap(),
+        );
+        let deprecated_item = dep_arr
             .iter()
-            .find(|i| i.filter_text.as_deref() == Some("frsr"))
-            .expect("frsr");
+            .find(|i| i.filter_text.as_deref() == Some("legacy.alias"))
+            .expect("legacy.alias");
         assert_eq!(
-            deprecated_vpopc.tags.as_deref(),
+            deprecated_item.tags.as_deref(),
             Some([CompletionItemTag::DEPRECATED].as_slice())
         );
-        let active_frcsr = arr
+        let active_frcsr = dep_arr
             .iter()
             .find(|i| i.filter_text.as_deref() == Some("frcsr"))
             .expect("frcsr");
-        assert!(active_frcsr.sort_text < deprecated_vpopc.sort_text);
+        assert!(active_frcsr.sort_text < deprecated_item.sort_text);
 
         // `csrw`: register variant must sort before immediate variant
         let mut csrw_items: Vec<_> = arr

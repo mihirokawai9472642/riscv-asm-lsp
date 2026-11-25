@@ -17,21 +17,26 @@ fn decode_immediate_class(class: &str) -> Option<String> {
         _ => {}
     }
 
-    let (signed, mut rest) = if let Some(r) = class.strip_prefix("simm") {
+    let normalized = class.strip_prefix("bare_").unwrap_or(class);
+    let (signed, mut rest) = if let Some(r) = normalized.strip_prefix("simm") {
         (true, r)
     } else {
-        (false, class.strip_prefix("uimm")?)
+        (false, normalized.strip_prefix("uimm")?)
     };
 
     let mut is_pc_rel = false;
-    if let Some(r) = rest.strip_suffix("_jal") {
-        is_pc_rel = true;
-        rest = r;
-    } else if let Some(r) = rest.strip_suffix("_auipc") {
-        is_pc_rel = true;
-        rest = r;
-    } else if let Some(r) = rest.strip_suffix("_lui") {
-        rest = r;
+    for suffix in ["_jal", "_auipc"] {
+        if let Some(r) = rest.strip_suffix(suffix) {
+            is_pc_rel = true;
+            rest = r;
+            break;
+        }
+    }
+    for suffix in ["_lui", "_lo", "_pli_b", "_pli_h", "_pli_w", "_plui"] {
+        if let Some(r) = rest.strip_suffix(suffix) {
+            rest = r;
+            break;
+        }
     }
 
     let plus1 = if let Some(r) = rest.strip_suffix("_plus1") {
@@ -129,6 +134,22 @@ mod tests {
         assert_eq!(
             describe_operand_class("simm12", &db).as_deref(),
             Some("signed 12-bit (-2048..2047)")
+        );
+        assert_eq!(
+            describe_operand_class("simm12_lo", &db).as_deref(),
+            Some("signed 12-bit (-2048..2047)")
+        );
+        assert_eq!(
+            describe_operand_class("bare_simm13_lsb0", &db).as_deref(),
+            Some("signed 13-bit, 2-byte aligned (-4096..4094)")
+        );
+        assert_eq!(
+            describe_operand_class("simm10_pli_h", &db).as_deref(),
+            Some("signed 10-bit (-512..511)")
+        );
+        assert_eq!(
+            describe_operand_class("imm5_zibi", &db).as_deref(),
+            Some("5-bit immediate (1..31 or -1)")
         );
         assert_eq!(
             describe_operand_class("uimm5", &db).as_deref(),
