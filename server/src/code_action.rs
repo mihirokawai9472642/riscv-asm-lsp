@@ -5,6 +5,7 @@ use lsp_types::{
     Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use crate::context::uri_key;
 use crate::diagnostics::{DiagnosticsCache, StoredDiagnostic};
 use crate::document::Document;
 use crate::preprocessor::{classify_hash_line, hash_to_slash_replacement};
@@ -26,7 +27,7 @@ pub fn provide_code_actions(
     let stored: Vec<StoredDiagnostic> = cache
         .lock()
         .ok()
-        .and_then(|guard| guard.get(uri.as_str()).cloned())
+        .and_then(|guard| guard.get(&uri_key(uri)).cloned())
         .unwrap_or_default();
     let mut actions = Vec::new();
     let mut hash_diags_by_line: HashMap<u32, Vec<Diagnostic>> = HashMap::new();

@@ -8,7 +8,8 @@ pub use compile_db::{
 };
 pub use march::{MarchSpec, effective_options_at_line};
 pub use uri::{
-    display_path_for_client, lexical_normalize_path, normalize_path, path_to_uri, uri_to_path,
+    display_path_for_client, lexical_normalize_path, normalize_path, path_key, path_starts_with,
+    path_strip_prefix, path_to_uri, uri_key, uri_to_path,
 };
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 
-use crate::context::{normalize_path, uri_to_path};
+use crate::context::{path_key, uri_key, uri_to_path};
 use crate::position::LineIndex;
 
 #[derive(Debug, Clone)]
@@ -18,7 +18,7 @@ pub struct Document {
 
 impl Document {
     fn new(uri: Uri, version: i32, text: String, parser: &mut Parser) -> Self {
-        let canon_path = uri_to_path(&uri).map(|p| normalize_path(&p));
+        let canon_path = uri_to_path(&uri).map(|p| path_key(&p));
         let line_index = LineIndex::new(&text);
         let tree = parser.parse(&text, None);
         Self {
@@ -121,7 +121,7 @@ impl DocumentStore {
     }
 
     pub fn open(&mut self, uri: Uri, version: i32, text: String) -> &Document {
-        let key = uri.as_str().to_owned();
+        let key = uri_key(&uri);
         let doc = Document::new(uri, version, text, &mut self.parser);
         self.docs.insert(key.clone(), doc);
         &self.docs[&key]
@@ -133,18 +133,18 @@ impl DocumentStore {
         version: i32,
         changes: Vec<TextDocumentContentChangeEvent>,
     ) -> Option<&Document> {
-        let key = uri.as_str();
-        let doc = self.docs.get_mut(key)?;
+        let key = uri_key(uri);
+        let doc = self.docs.get_mut(&key)?;
         doc.apply_changes(version, changes, &mut self.parser);
         Some(doc)
     }
 
     pub fn close(&mut self, uri: &Uri) -> Option<Document> {
-        self.docs.remove(uri.as_str())
+        self.docs.remove(&uri_key(uri))
     }
 
     pub fn get(&self, uri: &Uri) -> Option<&Document> {
-        self.docs.get(uri.as_str())
+        self.docs.get(&uri_key(uri))
     }
 
     pub fn is_open_path(&self, canon_path: &Path) -> bool {

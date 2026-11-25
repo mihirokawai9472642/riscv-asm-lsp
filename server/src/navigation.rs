@@ -293,7 +293,7 @@ pub fn rename_symbol(
                 }
             }
         }
-        let key = loc.uri.as_str().to_owned();
+        let key = crate::context::uri_key(&loc.uri);
         grouped
             .entry(key)
             .or_insert_with(|| (loc.uri, Vec::new()))
@@ -795,7 +795,7 @@ fn collect_scoped_occurrences(q: ScopedOccurrenceQuery<'_>) {
 
 fn push_unique(out: &mut Vec<Location>, seen: &mut HashSet<(String, u32, u32)>, loc: Location) {
     let key = (
-        loc.uri.as_str().to_owned(),
+        crate::context::uri_key(&loc.uri),
         loc.range.start.line,
         loc.range.start.character,
     );

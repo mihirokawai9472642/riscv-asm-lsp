@@ -22,8 +22,8 @@ use lsp_types::{
 use tree_sitter::Parser;
 
 use crate::context::{
-    display_path_for_client, is_linker_script_template, is_preprocessed_by_suffix, normalize_path,
-    path_to_uri, uri_to_path,
+    display_path_for_client, is_linker_script_template, is_preprocessed_by_suffix, path_key,
+    path_starts_with, path_to_uri, uri_to_path,
 };
 use crate::diagnostics::MessageSink;
 use crate::document::Document;
@@ -202,7 +202,7 @@ impl WorkspaceIndex {
             .set_language(&language)
             .map_err(|err| format!("failed to initialize tree-sitter-riscv: {err}"))?;
         let canon_workspace_roots: Vec<PathBuf> =
-            workspace_roots.iter().map(|r| normalize_path(r)).collect();
+            workspace_roots.iter().map(|r| path_key(r)).collect();
         let workspace_root = workspace_roots.first().cloned();
         let canon_workspace_root = canon_workspace_roots.first().cloned();
         Ok(Self {
@@ -224,29 +224,31 @@ impl WorkspaceIndex {
     }
 
     pub fn set_excluded_paths(&mut self, paths: HashSet<PathBuf>) {
-        for p in &paths {
+        let keyed: HashSet<PathBuf> = paths.into_iter().map(|p| path_key(&p)).collect();
+        for p in &keyed {
             self.files.remove(p);
         }
         if let Ok(mut guard) = self.excluded_paths.lock() {
-            *guard = paths;
+            *guard = keyed;
         }
     }
 
     fn is_excluded_path(&self, norm_path: &Path) -> bool {
+        let key = path_key(norm_path);
         self.excluded_paths
             .lock()
-            .map(|g| g.contains(norm_path))
+            .map(|g| g.contains(&key))
             .unwrap_or(false)
     }
 
     pub fn display_path(&self, path: &Path) -> PathBuf {
-        let norm_p = normalize_path(path);
+        let key = path_key(path);
         for (client_root, canon_root) in self
             .workspace_roots
             .iter()
             .zip(self.canon_workspace_roots.iter())
         {
-            if norm_p.starts_with(canon_root) {
+            if path_starts_with(&key, canon_root) {
                 return display_path_for_client(path, Some(client_root), Some(canon_root));
             }
         }
@@ -288,9 +290,9 @@ impl WorkspaceIndex {
         }
         self.bg_cancel = Arc::new(AtomicBool::new(false));
 
-        let canon_roots: Vec<PathBuf> = workspace_roots.iter().map(|r| normalize_path(r)).collect();
+        let canon_roots: Vec<PathBuf> = workspace_roots.iter().map(|r| path_key(r)).collect();
         self.files.retain(|path, _| {
-            is_open_path(path) || canon_roots.iter().any(|r| path.starts_with(r))
+            is_open_path(path) || canon_roots.iter().any(|r| path_starts_with(path, r))
         });
         if let Ok(mut seen) = self.seen_paths.lock() {
             seen.retain(|p| self.files.contains_key(p));
@@ -402,7 +404,7 @@ impl WorkspaceIndex {
         ) else {
             return;
         };
-        let norm_root = normalize_path(&scan_root);
+        let norm_root = path_key(&scan_root);
         if !self.prioritized_roots.insert(norm_root.clone()) {
             return;
         }
@@ -520,21 +522,23 @@ impl WorkspaceIndex {
     }
 
     pub fn file_by_path(&self, path: &Path) -> Option<&FileIndex> {
-        self.files.get(path)
+        self.files
+            .get(path)
+            .or_else(|| self.files.get(&path_key(path)))
     }
 
     pub fn file_by_uri(&self, uri: &Uri) -> Option<&FileIndex> {
         let path = uri_to_path(uri)?;
-        let norm = normalize_path(&path);
-        self.files.get(&norm).or_else(|| self.files.get(&path))
+        let key = path_key(&path);
+        self.files.get(&key).or_else(|| self.files.get(&path))
     }
 
     pub fn upsert_open_document(&mut self, doc: &Document) {
         let Some(path) = uri_to_path(&doc.uri) else {
             return;
         };
-        let norm = normalize_path(&path);
-        let preprocessed = is_preprocessed_by_suffix(&norm);
+        let key = path_key(&path);
+        let preprocessed = is_preprocessed_by_suffix(&key);
         self.upsert_open_document_with_preprocessed(doc, preprocessed);
     }
 
@@ -542,15 +546,15 @@ impl WorkspaceIndex {
         let Some(path) = uri_to_path(&doc.uri) else {
             return;
         };
-        let norm = normalize_path(&path);
-        if is_linker_script_template(&norm) {
+        let key = path_key(&path);
+        if is_linker_script_template(&key) {
             return;
         }
-        let is_header = is_header_path(&norm);
+        let is_header = is_header_path(&key);
         let effective_pre = if is_header { true } else { preprocessed };
         let entry = build_file_index(
             BuildFileInput {
-                path: norm.clone(),
+                path: key.clone(),
                 uri: doc.uri.clone(),
                 is_header,
                 preprocessed: effective_pre,
@@ -560,20 +564,20 @@ impl WorkspaceIndex {
             },
             &mut self.parser,
         );
-        self.files.insert(norm, entry);
+        self.files.insert(key, entry);
     }
 
     pub fn sync_preprocessed(&mut self, uri: &Uri, preprocessed: bool) {
         let Some(path) = uri_to_path(uri) else {
             return;
         };
-        let norm = normalize_path(&path);
-        self.sync_preprocessed_path(&norm, preprocessed);
+        let key = path_key(&path);
+        self.sync_preprocessed_path(&key, preprocessed);
     }
 
     pub(super) fn sync_preprocessed_path(&mut self, path: &Path, preprocessed: bool) {
-        let norm = normalize_path(path);
-        let Some(existing) = self.files.get(&norm) else {
+        let key = path_key(path);
+        let Some(existing) = self.files.get(&key) else {
             return;
         };
         if existing.is_header || existing.preprocessed == preprocessed {
@@ -584,7 +588,7 @@ impl WorkspaceIndex {
         let line_index = existing.line_index.clone();
         let rebuilt = build_file_index(
             BuildFileInput {
-                path: norm.clone(),
+                path: key.clone(),
                 uri,
                 is_header: false,
                 preprocessed,
@@ -594,7 +598,7 @@ impl WorkspaceIndex {
             },
             &mut self.parser,
         );
-        self.files.insert(norm, rebuilt);
+        self.files.insert(key, rebuilt);
     }
 
     pub fn reload_path(&mut self, uri: &Uri) {
@@ -609,16 +613,16 @@ impl WorkspaceIndex {
         let Some(path) = uri_to_path(uri) else {
             return;
         };
-        let norm = normalize_path(&path);
-        if is_linker_script_template(&norm) || self.is_excluded_path(&norm) {
-            self.files.remove(&norm);
+        let key = path_key(&path);
+        if is_linker_script_template(&key) || self.is_excluded_path(&key) {
+            self.files.remove(&key);
             return;
         }
-        if norm.exists() {
+        if path.exists() {
             let display = self.display_path(&path);
-            self.index_path_from_disk_with_display(&display, &norm, preprocessed_override);
+            self.index_path_from_disk_with_display(&display, &key, preprocessed_override);
         } else {
-            self.files.remove(&norm);
+            self.files.remove(&key);
         }
     }
 
@@ -626,8 +630,8 @@ impl WorkspaceIndex {
         let Some(path) = uri_to_path(uri) else {
             return;
         };
-        let norm = normalize_path(&path);
-        self.files.remove(&norm);
+        let key = path_key(&path);
+        self.files.remove(&key);
         self.files.remove(&path);
     }
 
@@ -636,9 +640,9 @@ impl WorkspaceIndex {
         path: &Path,
         preprocessed_override: Option<bool>,
     ) {
-        let norm = normalize_path(path);
+        let key = path_key(path);
         let display = self.display_path(path);
-        self.index_path_from_disk_with_display(&display, &norm, preprocessed_override);
+        self.index_path_from_disk_with_display(&display, &key, preprocessed_override);
     }
 
     fn index_path_from_disk_with_display(
@@ -734,15 +738,17 @@ fn find_priority_root(
     if !parent.is_dir() {
         return None;
     }
-    let norm_parent = normalize_path(parent);
-    if canon_root.is_some_and(|ws| ws == norm_parent) || client_root.is_some_and(|ws| ws == parent)
+    let norm_parent = crate::context::normalize_path(parent);
+    let key_parent = path_key(parent);
+    if canon_root.is_some_and(|ws| ws == key_parent)
+        || client_root.is_some_and(|ws| path_key(ws) == key_parent)
     {
         return None;
     }
 
     let mut cur = Some(norm_parent.as_path());
     while let Some(dir) = cur {
-        if canon_root.is_some_and(|ws| ws == dir) {
+        if canon_root.is_some_and(|ws| ws == path_key(dir)) {
             return Some(parent.to_path_buf());
         }
         if dir.join(".git").exists() || dir.join("compile_commands.json").exists() {
@@ -767,13 +773,13 @@ fn parse_file_from_disk(req: DiskParseRequest<'_>, parser: &mut Parser) -> Optio
     if is_linker_script_template(req.path) {
         return None;
     }
-    let norm = req
+    let key = req
         .known_norm
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| normalize_path(req.path));
+        .map(path_key)
+        .unwrap_or_else(|| path_key(req.path));
     if let Some(excluded_lock) = req.excluded {
         let guard = excluded_lock.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.contains(&norm) {
+        if guard.contains(&key) {
             return None;
         }
     }
@@ -796,7 +802,7 @@ fn parse_file_from_disk(req: DiskParseRequest<'_>, parser: &mut Parser) -> Optio
 
     if let Some(seen_lock) = req.seen {
         let mut guard = seen_lock.lock().unwrap_or_else(|e| e.into_inner());
-        if !guard.insert(norm.clone()) {
+        if !guard.insert(key.clone()) {
             return None;
         }
     }
@@ -809,13 +815,13 @@ fn parse_file_from_disk(req: DiskParseRequest<'_>, parser: &mut Parser) -> Optio
     let display = display_path_for_client(req.path, req.client_root, req.canon_root);
     let uri = path_to_uri(&display)?;
     let line_index = LineIndex::new(&text);
-    let is_header = is_header_path(&norm);
+    let is_header = is_header_path(&key);
     let preprocessed = req
         .preprocessed_override
-        .unwrap_or_else(|| is_preprocessed_by_suffix(&norm));
+        .unwrap_or_else(|| is_preprocessed_by_suffix(&key));
     Some(build_file_index(
         BuildFileInput {
-            path: norm,
+            path: key,
             uri,
             is_header,
             preprocessed,
@@ -1006,11 +1012,11 @@ mod tests {
         idx.wait_for_background_scan();
 
         // Headers are not indexed eagerly until `#include` closure reaches them
-        let regs_path = normalize_path(&fixtures.join("regs.h"));
+        let regs_path = path_key(&fixtures.join("regs.h"));
         assert!(!idx.files.contains_key(&regs_path));
 
         let mut ctx = CompileContext::new(Some(fixtures.clone()), Default::default());
-        let kernel_path = normalize_path(&fixtures.join("kernel_entry.S"));
+        let kernel_path = crate::context::normalize_path(&fixtures.join("kernel_entry.S"));
         let kernel_uri = path_to_uri(&kernel_path).expect("uri");
         let file = idx
             .file_by_uri(&kernel_uri)

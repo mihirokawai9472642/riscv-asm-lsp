@@ -636,7 +636,7 @@ impl ServerState<'_> {
                     }
                     let version = p.text_document.version;
                     let text = p.text_document.text;
-                    self.dirty_docs.remove(uri.as_str());
+                    self.dirty_docs.remove(&crate::context::uri_key(&uri));
                     let file_ctx = self.ctx.for_uri(&uri);
                     let doc = self.store.open(uri.clone(), version, text.clone());
                     self.index
@@ -655,7 +655,7 @@ impl ServerState<'_> {
                     let version = p.text_document.version;
                     if let Some(doc) = self.store.change(&uri, version, p.content_changes) {
                         self.dirty_docs.insert(
-                            uri.as_str().to_owned(),
+                            crate::context::uri_key(&uri),
                             (uri.clone(), Instant::now() + INDEX_DEBOUNCE),
                         );
                         let text = doc.text.clone();
@@ -670,7 +670,7 @@ impl ServerState<'_> {
                     if is_linker_script_uri(&uri) || self.is_unsupported_target_uri(&uri) {
                         return;
                     }
-                    self.dirty_docs.remove(uri.as_str());
+                    self.dirty_docs.remove(&crate::context::uri_key(&uri));
                     let is_header_or_inc = uri_to_path(&uri).is_some_and(|path| {
                         matches!(
                             path.extension().and_then(|e| e.to_str()),
@@ -699,7 +699,8 @@ impl ServerState<'_> {
             }
             "textDocument/didClose" => {
                 if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(params) {
-                    self.dirty_docs.remove(p.text_document.uri.as_str());
+                    self.dirty_docs
+                        .remove(&crate::context::uri_key(&p.text_document.uri));
                     self.store.close(&p.text_document.uri);
                     if !is_linker_script_uri(&p.text_document.uri)
                         && !self.is_unsupported_target_uri(&p.text_document.uri)
