@@ -77,7 +77,9 @@ Pipeline stages:
 
 - **`data/riscv.json`** (compact JSON embedded via `include_str!`):
   - `meta`: pinned input versions.
-  - `extensions`: `-march` name, LLVM feature name, description.
+  - `extensions`: `-march` name, LLVM feature name, `version` (`major.minor`),
+    `implies` (implied canonical extension names from TableGen `Implies`),
+    `experimental` flag, and description.
   - `instructions`: `mnemonic`, `kind` (`instruction` | `alias` | `pseudo`),
     `variants` (`syntax`, `operands` with LLVM operand class, `required_extensions`,
     `xlen`, `alias_of`), `udb_assembly`, `isa_label`, `long_name`, `summary`,
@@ -106,7 +108,7 @@ Summary from `data/report.md` (LLVM `llvmorg-19.1.7` vs. riscv-unified-db
 
 | Metric | Count | Notes |
 | --- | ---: | --- |
-| Extensions | 154 | |
+| Extensions | 144 | |
 | Instructions & aliases (LLVM supported) | 1432 | 1381 in UDB + LLVM, 21 `riscv-asm-manual`, 30 `supplements.json`, 0 undescribed |
 | Only in riscv-unified-db | 99 | e.g. Q extension (34), newer extensions (`Zilx`, `Zvabd`, ...), older names (`fmv.s.x`) |
 | `rv64gc` instructions in UDB missing from LLVM | 0 | |
