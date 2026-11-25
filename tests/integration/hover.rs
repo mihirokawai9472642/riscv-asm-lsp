@@ -393,6 +393,52 @@ fn hover_llvm_mc_and_clang_expansions() {
 }
 
 #[test]
+#[ignore = "requires llvm-mc"]
+fn hover_expands_cpp_macros_without_clang() {
+    assert!(
+        has_tool("llvm-mc"),
+        "llvm-mc must be on PATH for ignored tool tests"
+    );
+
+    let fixtures = fixtures_dir();
+    let kernel_path = fixtures.join("kernel_entry.S");
+    let kernel_uri = path_to_uri(&kernel_path);
+    let kernel_src = std::fs::read_to_string(&kernel_path).expect("read kernel_entry.S");
+
+    let mut client = LspClient::start(
+        Some(json!({
+            "clang": "/nonexistent/clang",
+            "diagnostics": { "enable": false }
+        })),
+        Some(&path_to_uri(&fixtures)),
+    );
+    client.open_doc(&kernel_uri, 1, &kernel_src);
+
+    // Line 15 of kernel_entry.S uses `#define` from `#include "regs.h"` — resolved purely by B3!
+    let li_hover = hover_markdown(&mut client, &kernel_uri, 15, 4).expect("li hover");
+    assert!(
+        li_hover.contains("This line:") && (li_hover.contains("addi") || li_hover.contains("c.li")),
+        "expected built-in macro expansion without clang, got: {li_hover}"
+    );
+    assert!(!li_hover.contains("expansion unavailable"));
+
+    // Function-like macro + `#ifdef` expansion without clang
+    let fn_uri = path_to_uri(&fixtures.join("virtual_b3_hover.S"));
+    client.open_doc(
+        &fn_uri,
+        1,
+        "#define MAKE_IMM(x) ((x) + 10)\n#if __riscv_xlen == 64\n    li a0, MAKE_IMM(5)\n#endif\n",
+    );
+    let fn_hover = hover_markdown(&mut client, &fn_uri, 2, 5).expect("fn hover");
+    assert!(
+        fn_hover.contains("This line:") && fn_hover.contains("15"),
+        "expected built-in function-like macro expansion without clang, got: {fn_hover}"
+    );
+
+    client.shutdown_and_exit();
+}
+
+#[test]
 fn preprocessor_hover_distinguishes_s_suffix_and_x_override() {
     let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_hover_pp_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);

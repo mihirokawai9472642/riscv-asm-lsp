@@ -1016,3 +1016,91 @@ fn march_implications_match_clang_print_enabled_extensions() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires clang"]
+fn predefined_macros_match_clang_dm() {
+    assert!(
+        has_tool("clang"),
+        "clang must be on PATH for ignored tool tests"
+    );
+
+    use riscv_asm_lsp::context::MarchSpec;
+    use riscv_asm_lsp::data::Database;
+    use riscv_asm_lsp::preprocessor::predefined::predefined_macros;
+    use std::collections::BTreeMap;
+    use std::process::Command;
+
+    let db = Database::load().expect("db");
+    let cases: &[(&str, &str, Option<&str>, Option<&str>)] = &[
+        ("riscv64-unknown-elf", "rv64gc", Some("lp64d"), None),
+        ("riscv64-unknown-elf", "rv64imac", Some("lp64"), None),
+        ("riscv32-unknown-elf", "rv32imac", Some("ilp32"), None),
+        ("riscv32-unknown-elf", "rv32gc", Some("ilp32d"), None),
+        ("riscv32-unknown-elf", "rv32imafc", Some("ilp32f"), None),
+        (
+            "riscv64-unknown-elf",
+            "rv64gcv_zba_zbb_zbc_zbs",
+            Some("lp64d"),
+            None,
+        ),
+        ("riscv32-unknown-elf", "rv32e", Some("ilp32e"), None),
+        ("riscv64-unknown-elf", "rv64e", Some("lp64e"), None),
+        (
+            "riscv64-unknown-elf",
+            "rv64gc",
+            Some("lp64d"),
+            Some("medany"),
+        ),
+        ("riscv64-unknown-elf", "rv64i_zve32x", Some("lp64"), None),
+        ("riscv64-unknown-elf", "rv64i_zmmul", Some("lp64"), None),
+        ("riscv64-unknown-elf", "rv64i_zfinx", Some("lp64"), None),
+    ];
+
+    for &(target, march, abi, cmodel) in cases {
+        let mut args = vec![
+            format!("--target={target}"),
+            format!("-march={march}"),
+            "-E".to_owned(),
+            "-dM".to_owned(),
+            "-x".to_owned(),
+            "assembler-with-cpp".to_owned(),
+        ];
+        if let Some(a) = abi {
+            args.push(format!("-mabi={a}"));
+        }
+        if let Some(cm) = cmodel {
+            args.push(format!("-mcmodel={cm}"));
+        }
+        args.push("/dev/null".to_owned());
+
+        let out = Command::new("clang")
+            .args(&args)
+            .output()
+            .expect("run clang -E -dM");
+        assert!(
+            out.status.success(),
+            "clang failed for {march}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let mut clang_macros = BTreeMap::new();
+        for line in stdout.lines() {
+            if let Some(rest) = line.strip_prefix("#define ")
+                && let Some((name, val)) = rest.split_once(' ')
+                && (name == "__ASSEMBLER__" || name.starts_with("__riscv"))
+            {
+                clang_macros.insert(name.to_owned(), val.trim().to_owned());
+            }
+        }
+
+        let spec = MarchSpec::parse(march);
+        let our_macros: BTreeMap<String, String> = predefined_macros(&spec, abi, cmodel, &db)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            our_macros, clang_macros,
+            "predefined macro mismatch for ({target}, {march}, {abi:?}, {cmodel:?})"
+        );
+    }
+}

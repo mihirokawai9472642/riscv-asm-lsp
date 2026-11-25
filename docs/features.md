@@ -56,9 +56,10 @@ llvm-mc -triple=<riscv32|riscv64> -mattr=<attrs> -show-encoding -M no-aliases
   `llvm`/`llvm@*` on macOS, `C:\Program Files\LLVM\bin` on Windows), verifying
   RISC-V (`riscv32`/`riscv64`) target support via `llvm-mc --version` without
   requiring a specific LLVM version.
-- Preceding `.option` directives, visible `.equ`/`#define` constants, and
-  `clang -E -P -x assembler-with-cpp` preprocessing are applied before invoking
-  `llvm-mc`.
+- Preceding `.option` directives, visible `.equ`/`#define` constants, and the
+  built-in C preprocessor (with `clang -E -P -x assembler-with-cpp` as an
+  optional fallback when external tools are available and unresolved headers are
+  needed) are applied before invoking `llvm-mc`.
 - Assembler directives, compiler-generated `.Lpcrel_hi*:` labels, and `# fixup`
   lines are filtered out.
 - Little-endian encoding bytes render as hex instruction words (`0x1141`,
@@ -69,6 +70,28 @@ li a0, 0x12345678   ->  lui a0, 74565 · 0x12345537 / addiw a0, a0, 1656 · 0x67
 csrw stvec, t0      ->  csrrw zero, stvec, t0 · 0x10529073
 mv a0, a1           ->  c.mv a0, a1 · 0x852e          (when C is enabled)
 ```
+
+## Built-in C preprocessing
+
+For preprocessed assembly sources (`.S`, `.sx`, headers, or `-x
+assembler-with-cpp` in `compile_commands.json` / `compile_flags.txt`),
+`preprocessor/` evaluates preprocessor directives purely in Rust:
+
+- **Predefined macros**: emits `__ASSEMBLER__`, `__riscv`, `__riscv_arch_test`,
+  `__riscv_xlen`, `__riscv_flen`, `__riscv_float_abi_*`, `__riscv_cmodel_*`,
+  `__riscv_atomic`, `__riscv_mul`, `__riscv_div`, `__riscv_muldiv`,
+  `__riscv_compressed`, `__riscv_vector`/`__riscv_v_*`, and `__riscv_<ext>`
+  version values derived from `MarchSpec`, `-mabi`, `-mcmodel`, and `data/riscv.json`.
+- **Conditionals**: evaluates `#if`, `#ifdef`, `#ifndef`, `#elif`, `#elifdef`,
+  `#elifndef`, `#else`, and `#endif` using a C integer constant expression
+  evaluator (`defined`, arithmetic, shifts, comparisons, logical/bitwise ops,
+  and ternary `?:`), tracking each line as **active**, **inactive**, or
+  **uncertain** (when an unresolved `#include` may affect the guard).
+- **Macro expansion**: expands object-like and function-like macros (`#`, `##`,
+  `__VA_ARGS__`, GNU `, ##__VA_ARGS__`, `#include`/`#include_next`/`-include`/
+  `-imacros`/`-D`/`-U`, `\` continuations, and `/* ... */` / `//` comments)
+  with bounded recursion depth and UTF-16 source-span mappings back to the
+  original file.
 
 ## Completion
 

@@ -3,8 +3,9 @@ mod march;
 mod uri;
 
 pub use compile_db::{
-    CompileContext, FileContext, is_linker_script_template, is_linker_script_uri,
-    is_preprocessed_by_suffix, is_riscv_target, split_command_args,
+    CompileContext, FileContext, ForceInclude, ForceIncludeKind, MacroFlag,
+    is_linker_script_template, is_linker_script_uri, is_preprocessed_by_suffix, is_riscv_target,
+    split_command_args,
 };
 pub use march::{MarchSpec, effective_options_at_line};
 #[cfg(test)]
@@ -378,5 +379,64 @@ mod tests {
         assert_eq!(cb.march.xlen, Xlen::Rv64);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extracts_abi_cmodel_macro_flags_and_force_includes() {
+        let dir = Path::new("/proj/build");
+        let args: Vec<String> = [
+            "clang",
+            "--target=riscv64-unknown-elf",
+            "-march=rv64gc",
+            "-mabi=lp64d",
+            "-mcmodel=medany",
+            "-DFOO",
+            "-D",
+            "BAR=42",
+            "-DEMPTY=",
+            "-UFOO",
+            "-include",
+            "inc/defs.h",
+            "-imacrosinc/macros.h",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let entry = extract_relevant_flags(dir, &args);
+        assert_eq!(entry.abi.as_deref(), Some("lp64d"));
+        assert_eq!(entry.cmodel.as_deref(), Some("medany"));
+        assert_eq!(
+            entry.macro_flags,
+            vec![
+                MacroFlag::Define {
+                    name: "FOO".to_owned(),
+                    value: None
+                },
+                MacroFlag::Define {
+                    name: "BAR".to_owned(),
+                    value: Some("42".to_owned())
+                },
+                MacroFlag::Define {
+                    name: "EMPTY".to_owned(),
+                    value: Some(String::new())
+                },
+                MacroFlag::Undef("FOO".to_owned()),
+            ]
+        );
+        assert_eq!(
+            entry.force_includes,
+            vec![
+                ForceInclude {
+                    kind: ForceIncludeKind::Include,
+                    path: lexical_normalize_path(&dir.join("inc/defs.h")),
+                },
+                ForceInclude {
+                    kind: ForceIncludeKind::Imacros,
+                    path: lexical_normalize_path(&dir.join("inc/macros.h")),
+                },
+            ]
+        );
+        assert!(entry.clang_flags.contains(&"-mcmodel=medany".to_owned()));
     }
 }
