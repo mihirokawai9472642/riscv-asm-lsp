@@ -4,8 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 use riscv_asm_lsp::data::{
-    ExtensionEntry, InstructionKind, InstructionVariant, OperandSpec, RegisterClass, RegisterEntry,
-    Xlen,
+    AliasBinding, AliasExpansion, EncodingField, EncodingTemplate, ExtensionEntry, InstructionKind,
+    InstructionVariant, OperandSpec, RegisterClass, RegisterEntry, Xlen,
 };
 use serde_json::Value;
 
@@ -257,21 +257,27 @@ fn extract_extensions(
     by_march.into_values().collect()
 }
 
+struct TargetInstInfo {
+    mnemonic: String,
+    syntax: String,
+    ordered_operands: Vec<String>,
+}
+
 fn extract_instructions_and_aliases(
     root: &serde_json::Map<String, Value>,
     instanceof: &serde_json::Map<String, Value>,
 ) -> Vec<LlvmInstruction> {
     let mut out = Vec::new();
-    let mut inst_mnemonic_by_def: HashMap<String, String> = HashMap::new();
-    extract_instructions(root, instanceof, &mut inst_mnemonic_by_def, &mut out);
-    extract_aliases(root, instanceof, &inst_mnemonic_by_def, &mut out);
+    let mut inst_info_by_def: HashMap<String, TargetInstInfo> = HashMap::new();
+    extract_instructions(root, instanceof, &mut inst_info_by_def, &mut out);
+    extract_aliases(root, instanceof, &inst_info_by_def, &mut out);
     out
 }
 
 fn extract_instructions(
     root: &serde_json::Map<String, Value>,
     instanceof: &serde_json::Map<String, Value>,
-    inst_mnemonic_by_def: &mut HashMap<String, String>,
+    inst_info_by_def: &mut HashMap<String, TargetInstInfo>,
     out: &mut Vec<LlvmInstruction>,
 ) {
     let Some(inst_defs) = instanceof.get("Instruction").and_then(Value::as_array) else {
@@ -312,16 +318,31 @@ fn extract_instructions(
         if mnemonic.is_empty() || mnemonic.starts_with('.') {
             continue;
         }
-        inst_mnemonic_by_def.insert(def_name.to_owned(), mnemonic.clone());
 
         let operand_map = collect_instruction_operand_classes(rec);
         let (syntax, operands) = format_syntax_and_operands(asm_string, &operand_map);
+        let ordered_operands = collect_ordered_operand_names(rec);
         let (required_extensions, xlen) = decode_predicates(root, &pred_names);
-        let kind = if rec.get("isPseudo").and_then(Value::as_i64).unwrap_or(0) != 0 {
+        let is_pseudo = rec.get("isPseudo").and_then(Value::as_i64).unwrap_or(0) != 0;
+        let kind = if is_pseudo {
             InstructionKind::Pseudo
         } else {
             InstructionKind::Instruction
         };
+        let encoding = if is_pseudo {
+            None
+        } else {
+            extract_encoding_template(rec)
+        };
+
+        inst_info_by_def.insert(
+            def_name.to_owned(),
+            TargetInstInfo {
+                mnemonic: mnemonic.clone(),
+                syntax: syntax.clone(),
+                ordered_operands,
+            },
+        );
 
         out.push(LlvmInstruction {
             mnemonic,
@@ -332,6 +353,8 @@ fn extract_instructions(
                 required_extensions,
                 xlen,
                 alias_of: None,
+                encoding,
+                alias_expansion: None,
             },
         });
     }
@@ -340,7 +363,7 @@ fn extract_instructions(
 fn extract_aliases(
     root: &serde_json::Map<String, Value>,
     instanceof: &serde_json::Map<String, Value>,
-    inst_mnemonic_by_def: &HashMap<String, String>,
+    inst_info_by_def: &HashMap<String, TargetInstInfo>,
     out: &mut Vec<LlvmInstruction>,
 ) {
     let Some(alias_defs) = instanceof.get("InstAlias").and_then(Value::as_array) else {
@@ -365,11 +388,6 @@ fn extract_aliases(
         if has_vendor_loc(rec) || pred_names.iter().any(|p| is_vendor_predicate(root, p)) {
             continue;
         }
-        if let Some(op_map) = rec
-            .get("OutOperandList")
-            .or_else(|| rec.get("InOperandList"))
-            && let _ = op_map
-        {}
         let result_inst = rec.get("ResultInst").and_then(Value::as_object);
         let target_def = result_inst
             .and_then(|r| r.get("operator"))
@@ -393,13 +411,16 @@ fn extract_aliases(
         let operand_map = collect_alias_operand_classes(result_inst);
         let (syntax, operands) = format_syntax_and_operands(asm_string, &operand_map);
         let (required_extensions, xlen) = decode_predicates(root, &pred_names);
-        let alias_of = inst_mnemonic_by_def.get(target_def).cloned().or_else(|| {
+        let target_info = inst_info_by_def.get(target_def);
+        let alias_of = target_info.map(|t| t.mnemonic.clone()).or_else(|| {
             root.get(target_def)
                 .and_then(|v| v.get("AsmString"))
                 .and_then(Value::as_str)
                 .map(extract_mnemonic)
                 .filter(|s| !s.is_empty())
         });
+        let alias_expansion =
+            result_inst.and_then(|ri| extract_alias_expansion(root, target_info, ri));
 
         out.push(LlvmInstruction {
             mnemonic,
@@ -410,9 +431,164 @@ fn extract_aliases(
                 required_extensions,
                 xlen,
                 alias_of,
+                encoding: None,
+                alias_expansion,
             },
         });
     }
+}
+
+fn collect_ordered_operand_names(rec: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut names = Vec::new();
+    for list_key in ["OutOperandList", "InOperandList"] {
+        if let Some(args) = rec
+            .get(list_key)
+            .and_then(|v| v.get("args"))
+            .and_then(Value::as_array)
+        {
+            for arg in args {
+                if let Some(pair) = arg.as_array()
+                    && pair.len() >= 2
+                    && let Some(var_name) = pair[1].as_str()
+                {
+                    names.push(var_name.to_owned());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn extract_encoding_template(rec: &serde_json::Map<String, Value>) -> Option<EncodingTemplate> {
+    let size_u64 = rec.get("Size").and_then(Value::as_u64)?;
+    if !matches!(size_u64, 2 | 4) {
+        return None;
+    }
+    let size = size_u64 as u8;
+    let inst_bits = rec.get("Inst").and_then(Value::as_array)?;
+    if inst_bits.len() != usize::from(size) * 8 {
+        return None;
+    }
+
+    let mut fixed = 0u32;
+    let mut fields: Vec<EncodingField> = Vec::new();
+
+    for (inst_bit_usize, bit_val) in inst_bits.iter().enumerate() {
+        let inst_bit = inst_bit_usize as u8;
+        if let Some(n) = bit_val.as_u64() {
+            if n == 1 {
+                fixed |= 1u32 << inst_bit;
+            } else if n != 0 {
+                return None;
+            }
+            continue;
+        }
+        let obj = bit_val.as_object()?;
+        let (operand, val_bit) = match obj.get("kind").and_then(Value::as_str)? {
+            "varbit" => {
+                let op = obj.get("var").and_then(Value::as_str)?;
+                let idx = obj.get("index").and_then(Value::as_u64)?;
+                if idx > 31 {
+                    return None;
+                }
+                (op, idx as u8)
+            }
+            "var" => {
+                let op = obj.get("var").and_then(Value::as_str)?;
+                (op, 0u8)
+            }
+            _ => return None,
+        };
+
+        if let Some(last) = fields.last_mut()
+            && last.operand == operand
+            && last.inst_lo + last.width == inst_bit
+            && last.val_lo + last.width == val_bit
+        {
+            last.width += 1;
+        } else {
+            fields.push(EncodingField {
+                operand: operand.to_owned(),
+                inst_lo: inst_bit,
+                val_lo: val_bit,
+                width: 1,
+            });
+        }
+    }
+
+    Some(EncodingTemplate {
+        size,
+        fixed,
+        fields,
+    })
+}
+
+fn extract_alias_expansion(
+    root: &serde_json::Map<String, Value>,
+    target_info: Option<&TargetInstInfo>,
+    result_inst: &serde_json::Map<String, Value>,
+) -> Option<AliasExpansion> {
+    let target = target_info?;
+    let args = result_inst.get("args").and_then(Value::as_array)?;
+    if args.len() != target.ordered_operands.len() {
+        return None;
+    }
+
+    let mut bindings = Vec::with_capacity(args.len());
+    for (target_op, arg) in target.ordered_operands.iter().zip(args) {
+        let pair = arg.as_array()?;
+        if pair.len() < 2 {
+            return None;
+        }
+        let val = if let Some(var_name) = pair[1].as_str() {
+            format!("${var_name}")
+        } else if let Some(int_val) = pair[0].as_i64() {
+            int_val.to_string()
+        } else if let Some(bits) = pair[0].as_array() {
+            if bits.len() > 16 {
+                return None;
+            }
+            let mut acc = 0u16;
+            for (bit_idx, b) in bits.iter().enumerate() {
+                if b.as_i64() == Some(1) {
+                    acc |= 1u16 << bit_idx;
+                } else if b.as_i64() != Some(0) {
+                    return None;
+                }
+            }
+            format!("0x{acc:x}")
+        } else {
+            let def_name = pair[0].get("def").and_then(Value::as_str)?;
+            resolve_fixed_reg_def(root, def_name)?
+        };
+        bindings.push(AliasBinding {
+            target_operand: target_op.clone(),
+            value: val,
+        });
+    }
+
+    Some(AliasExpansion {
+        mnemonic: target.mnemonic.clone(),
+        target_syntax: target.syntax.clone(),
+        bindings,
+    })
+}
+
+fn resolve_fixed_reg_def(root: &serde_json::Map<String, Value>, def_name: &str) -> Option<String> {
+    if matches!(def_name, "X0" | "X0_Pair" | "zero_reg") {
+        return Some("zero".to_owned());
+    }
+    let rec = root.get(def_name).and_then(Value::as_object)?;
+    if let Some(alt_names) = rec.get("AltNames").and_then(Value::as_array)
+        && let Some(first) = alt_names.first().and_then(Value::as_str)
+        && !first.is_empty()
+    {
+        return Some(first.to_ascii_lowercase());
+    }
+    rec.get("AsmName")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
 }
 
 fn has_vendor_loc(rec: &serde_json::Map<String, Value>) -> bool {
@@ -944,6 +1120,108 @@ Supported Profiles
         assert_eq!(
             cond_to_ext_reqs("Subtarget->hasStdExtM() && Subtarget->hasStdExtZba()"),
             vec!["m".to_owned(), "zba".to_owned()]
+        );
+    }
+
+    #[test]
+    fn extracts_encoding_template_and_alias_expansion_from_tblgen() {
+        let mut addi_bits = vec![json!(0); 32];
+        // opcode 0b0010011 at bits 0..7
+        for (i, b) in [1, 1, 0, 0, 1, 0, 0].into_iter().enumerate() {
+            addi_bits[i] = json!(b);
+        }
+        for i in 0..5 {
+            addi_bits[7 + i] = json!({"kind": "varbit", "var": "rd", "index": i});
+        }
+        for i in 0..5 {
+            addi_bits[15 + i] = json!({"kind": "varbit", "var": "rs1", "index": i});
+        }
+        for i in 0..12 {
+            addi_bits[20 + i] = json!({"kind": "varbit", "var": "imm12", "index": i});
+        }
+
+        let doc = json!({
+            "!instanceof": {
+                "Instruction": ["ADDI"],
+                "InstAlias": ["MV_ALIAS"]
+            },
+            "X0": { "AsmName": "x0", "AltNames": ["zero"] },
+            "ADDI": {
+                "Namespace": "RISCV",
+                "isCodeGenOnly": 0,
+                "isPseudo": 0,
+                "Size": 4,
+                "AsmString": "addi\t$rd, $rs1, $imm12",
+                "OutOperandList": { "args": [[{"def": "GPR"}, "rd"]] },
+                "InOperandList": { "args": [[{"def": "GPR"}, "rs1"], [{"def": "simm12_lo"}, "imm12"]] },
+                "Predicates": [],
+                "Inst": addi_bits
+            },
+            "MV_ALIAS": {
+                "AsmString": "mv\t$rd, $rs",
+                "Predicates": [],
+                "ResultInst": {
+                    "operator": { "def": "ADDI" },
+                    "args": [[{"def": "GPR"}, "rd"], [{"def": "GPR"}, "rs"], [0, null]]
+                }
+            }
+        });
+        let root = doc.as_object().unwrap();
+        let instanceof = root["!instanceof"].as_object().unwrap();
+        let insts = extract_instructions_and_aliases(root, instanceof);
+
+        let addi = insts.iter().find(|i| i.mnemonic == "addi").unwrap();
+        let enc = addi.variant.encoding.as_ref().expect("ADDI encoding");
+        assert_eq!(enc.size, 4);
+        assert_eq!(enc.fixed, 0b0010011);
+        assert_eq!(
+            enc.fields,
+            vec![
+                EncodingField {
+                    operand: "rd".to_owned(),
+                    inst_lo: 7,
+                    val_lo: 0,
+                    width: 5
+                },
+                EncodingField {
+                    operand: "rs1".to_owned(),
+                    inst_lo: 15,
+                    val_lo: 0,
+                    width: 5
+                },
+                EncodingField {
+                    operand: "imm12".to_owned(),
+                    inst_lo: 20,
+                    val_lo: 0,
+                    width: 12
+                },
+            ]
+        );
+
+        let mv = insts.iter().find(|i| i.mnemonic == "mv").unwrap();
+        let ae = mv
+            .variant
+            .alias_expansion
+            .as_ref()
+            .expect("mv alias_expansion");
+        assert_eq!(ae.mnemonic, "addi");
+        assert_eq!(ae.target_syntax, "addi rd, rs1, imm12");
+        assert_eq!(
+            ae.bindings,
+            vec![
+                AliasBinding {
+                    target_operand: "rd".to_owned(),
+                    value: "$rd".to_owned()
+                },
+                AliasBinding {
+                    target_operand: "rs1".to_owned(),
+                    value: "$rs".to_owned()
+                },
+                AliasBinding {
+                    target_operand: "imm12".to_owned(),
+                    value: "0".to_owned()
+                },
+            ]
         );
     }
 }
