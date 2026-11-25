@@ -629,16 +629,22 @@ mod tests {
         let local_opt = tmp.join("local_opt");
         let win_bin = tmp.join("win_llvm_bin");
 
+        let sub_bin = |root: &Path, subdir: &str, name: &str| {
+            let p = root.join(subdir).join("bin").join(name);
+            touch(&p);
+            p.to_string_lossy().into_owned()
+        };
+
         touch(&path_dir1.join("clang-18"));
         touch(&path_dir1.join("clang-foo"));
         touch(&path_dir2.join("clang-21"));
         touch(&path_dir2.join("clang-19"));
-        touch(&linux_lib.join("llvm-18/bin/clang"));
-        touch(&linux_lib.join("llvm-20/bin/clang"));
-        touch(&brew_opt.join("llvm/bin/clang"));
-        touch(&brew_opt.join("llvm@19/bin/clang"));
-        touch(&brew_opt.join("llvm@20/bin/clang"));
-        touch(&local_opt.join("llvm@18/bin/clang"));
+        let linux_18 = sub_bin(&linux_lib, "llvm-18", "clang");
+        let linux_20 = sub_bin(&linux_lib, "llvm-20", "clang");
+        let brew_llvm = sub_bin(&brew_opt, "llvm", "clang");
+        let brew_19 = sub_bin(&brew_opt, "llvm@19", "clang");
+        let brew_20 = sub_bin(&brew_opt, "llvm@20", "clang");
+        let local_18 = sub_bin(&local_opt, "llvm@18", "clang");
         touch(&win_bin.join("llvm-mc.exe"));
 
         let roots = SystemRoots {
@@ -665,30 +671,12 @@ mod tests {
             "clang-21".to_owned(),
             "clang-19".to_owned(),
             "clang-18".to_owned(),
-            linux_lib
-                .join("llvm-20/bin/clang")
-                .to_string_lossy()
-                .into_owned(),
-            linux_lib
-                .join("llvm-18/bin/clang")
-                .to_string_lossy()
-                .into_owned(),
-            brew_opt
-                .join("llvm/bin/clang")
-                .to_string_lossy()
-                .into_owned(),
-            brew_opt
-                .join("llvm@20/bin/clang")
-                .to_string_lossy()
-                .into_owned(),
-            brew_opt
-                .join("llvm@19/bin/clang")
-                .to_string_lossy()
-                .into_owned(),
-            local_opt
-                .join("llvm@18/bin/clang")
-                .to_string_lossy()
-                .into_owned(),
+            linux_20,
+            linux_18,
+            brew_llvm,
+            brew_20,
+            brew_19,
+            local_18,
         ];
         assert_eq!(
             discover_candidates(ToolKind::Clang, Some("  "), Some(&path_os), &roots, false),
