@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 `riscv-asm-lsp` code is licensed under the MIT License ([LICENSE.md](LICENSE.md)).
-The generated dataset in `data/riscv.json` incorporates data derived from the
+The generated dataset in `server/data/riscv.json` incorporates data derived from the
 following third-party works, which remain under their respective licenses.
 
 ---
@@ -17,7 +17,7 @@ following third-party works, which remain under their respective licenses.
 - **Modifications**: TableGen records were dumped via `llvm-tblgen --dump-json`, filtered
   to assembler-visible non-vendor RISC-V instructions, aliases,
   pseudo-instructions, CSRs, registers, and extensions, joined with descriptions
-  from the RISC-V specifications below, and written into `data/riscv.json`.
+  from the RISC-V specifications below, and written into `server/data/riscv.json`.
   `RISCVMatInt::generateInstSeq` was ported to pure Rust in
   `server/src/hover/matint.rs`.
 
@@ -231,7 +231,7 @@ Software.
 - **Modifications**: Cleaned AsciiDoc markup, tables, and template variables;
   removed upstream `TODO` sentences; derived concise summaries; and applied
   typo corrections and supplemental/preferred-name metadata from
-  `data/supplements.json`.
+  `server/data/supplements.json`.
 
 ```text
 SPDX-License-Identifier: BSD-3-Clause-Clear
@@ -289,8 +289,8 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 - **Modifications**: Directive and pseudoinstruction rows were extracted from
   AsciiDoc tables, checked against LLVM 23 support, expanded where shorthands
   were used, 30 directive descriptions were replaced by project-authored MIT
-  summaries in `data/supplements.json` (preserving the manual's argument syntax),
-  and stored in `data/riscv.json`.
+  summaries in `server/data/supplements.json` (preserving the manual's argument syntax),
+  and stored in `server/data/riscv.json`.
 
 ---
 

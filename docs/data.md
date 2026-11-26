@@ -1,6 +1,6 @@
 # Instruction Data
 
-Reference for the embedded datasets built by `xtask/` and stored under `data/`.
+Reference for the embedded datasets built by `xtask/` and stored under `server/data/`.
 
 ## Sources
 
@@ -18,9 +18,9 @@ descriptions.**
 | CSR descriptions and fields | riscv-unified-db (`spec/std/isa/csr/`) | `BSD-3-Clause-Clear` |
 | Register descriptions and calling convention | riscv-unified-db (`register_file/`) | `BSD-3-Clause-Clear` |
 | Expanding pseudo-instructions (`la`, `li`, `call`, ...) & RISC-V directives | riscv-asm-manual tables | `CC-BY-4.0` |
-| Common GNU/LLVM assembler directives (`data/directives_gnu.json`) | Hand-written for `riscv-asm-lsp` (GNU `as` GFDL manual not used) | `MIT` |
-| Supplemental descriptions, deprecations & text fixes (`data/supplements.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
-| Relocation descriptions, `#` preprocessor texts, `\@` explanation, 65 operand classes (`data/texts.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
+| Common GNU/LLVM assembler directives (`server/data/directives_gnu.json`) | Hand-written for `riscv-asm-lsp` (GNU `as` GFDL manual not used) | `MIT` |
+| Supplemental descriptions, deprecations & text fixes (`server/data/supplements.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
+| Relocation descriptions, `#` preprocessor texts, `\@` explanation, 65 operand classes (`server/data/texts.json`) | Hand-written for `riscv-asm-lsp` | `MIT` |
 
 ## Pinned inputs
 
@@ -32,16 +32,16 @@ All pins live in one place in `xtask/src/pins.rs`:
 | riscv-unified-db | Commit `5d1ded1f93ab` | Upstream format may evolve across commits |
 | riscv-asm-manual | Commit `27d6e9e67e6d` | Pseudo-instruction and directive tables |
 
-Updating a pin requires regenerating `data/` and reviewing the diff of
-`data/report.md`.
+Updating a pin requires regenerating `server/data/` and reviewing the diff of
+`server/data/report.md`.
 
 ### Updating the reference LLVM version
 
 The server uses one pinned stable LLVM release updated periodically:
 
 1. Bump `LLVM_TAG` in `xtask/src/pins.rs`, the `apt.llvm.org` / package version in `Dockerfile`, and `.github/workflows/ci.yml`, then rebuild the `dev` container.
-2. Run `cargo xtask gen-data` and inspect the `data/report.md` diff carefully (add new non-vendor CSR/instruction descriptions to `data/supplements.json` and extend vendor filters in `xtask/src/llvm.rs` if new vendor `.td` files or predicates were added upstream).
-3. Run `cargo test --lib` and decode any newly added operand classes in `data/texts.json` (`operand_classes`) and `server/src/hover/operands.rs`.
+2. Run `cargo xtask gen-data` and inspect the `server/data/report.md` diff carefully (add new non-vendor CSR/instruction descriptions to `server/data/supplements.json` and extend vendor filters in `xtask/src/llvm.rs` if new vendor `.td` files or predicates were added upstream).
+3. Run `cargo test --lib` and decode any newly added operand classes in `server/data/texts.json` (`operand_classes`) and `server/src/hover/operands.rs`.
 4. Re-check `docs/design.md` Appendix A directives against `llvm-mc` (updating `xtask/src/asm_manual.rs` if support changed) and verify `march_implications_match_clang_print_enabled_extensions` and `data_validation_rv64gc_instructions_assemble_with_llvm_mc` with `--include-ignored`.
 5. Run `UPDATE_SNAPSHOTS=1` for snapshot tests if upstream wording or predicates changed intentionally, review every changed snapshot, and update version references in `README.md`, `docs/`, and `AGENTS.md`.
 
@@ -53,7 +53,7 @@ Run inside the development container (needs `llvm-tblgen`):
 docker compose exec dev cargo xtask gen-data
 ```
 
-Generation is deterministic (`data/riscv.json` and `data/report.md` use sorted
+Generation is deterministic (`server/data/riscv.json` and `server/data/report.md` use sorted
 maps and stable ordering; re-running yields byte-identical output). Because the
 outputs are committed, building `riscv-asm-lsp` requires neither LLVM `.td`
 sources nor network access.
@@ -69,23 +69,23 @@ Pipeline stages:
    (`++`, preserving `C++`), tables/xrefs and stray attribute refs (keeping
    instruction notation such as `{u}`), decodes HTML entities, and removes
    upstream `"TODO"` placeholder sentences while recording them for
-   `data/report.md`.
+   `server/data/report.md`.
 3. **riscv-asm-manual (`xtask/src/asm_manual.rs`)**: parses Markdown/AsciiDoc
    pseudo-instruction and directive tables cleanly without duplicating
    `expands to` clauses.
 4. **Join & Clean (`xtask/src/join.rs`)**: merges by canonical/deprecated name,
    normalizes UDB `xd`/`xs1`/`xs2`/`xs3` register placeholders to match LLVM's
    `rd`/`rs1`/`rs2`/`rs3` operands, derives privileged/counter `isa_label`s
-   (`Sm`, `S`, `Sdext`, `Zicntr`), applies `data/supplements.json` descriptions,
+   (`Sm`, `S`, `Sdext`, `Zicntr`), applies `server/data/supplements.json` descriptions,
    CSR extension requirements, deprecation markers, and typo corrections, and
    generates concise punctuation-terminated `summary` strings (capped at 260
    characters for entries and 140 characters for CSR fields and registers).
-5. **Report (`xtask/src/report.rs`)**: emits `data/report.md` summarizing
+5. **Report (`xtask/src/report.rs`)**: emits `server/data/report.md` summarizing
    matches, upstream gaps, cleaned `TODO` items, and applied corrections.
 
 ## Data format
 
-- **`data/riscv.json`** (compact JSON embedded via `include_str!`):
+- **`server/data/riscv.json`** (compact JSON embedded via `include_str!`):
   - `meta`: pinned input versions.
   - `extensions`: `-march` name, LLVM feature name, `version` (`major.minor`),
     `implies` (implied canonical extension names from TableGen `Implies`),
@@ -103,7 +103,7 @@ Pipeline stages:
   - `registers`: `name`, ABI names, `class`, `summary`, `description`, saver
     convention.
   - `directives`: `name`, arguments, `description`, source.
-- **`data/texts.json`** (embedded via `include_str!`):
+- **`server/data/texts.json`** (embedded via `include_str!`):
   - `relocations`: `%hi(`, `%lo(`, `%pcrel_hi(`, `%pcrel_lo(`, `%tprel_hi(`,
     `%tprel_lo(`, `%tprel_add(`, `%got_pcrel_hi(`.
   - `preprocessor_directives`: 22 `#` preprocessor directives (`define`,
@@ -115,7 +115,7 @@ Pipeline stages:
 
 ## LLVM 23.1.6 vs. Documentation
 
-Summary from `data/report.md` (LLVM `llvmorg-23.1.6` vs. riscv-unified-db
+Summary from `server/data/report.md` (LLVM `llvmorg-23.1.6` vs. riscv-unified-db
 `5d1ded1f93ab`, excluding vendor extensions and `.insn_*` internal formats):
 
 | Metric | Count | Notes |
@@ -127,7 +127,7 @@ Summary from `data/report.md` (LLVM `llvmorg-23.1.6` vs. riscv-unified-db
 | CSRs (LLVM supported) | 453 | 415 in UDB + LLVM, 38 `supplements.json`, 0 undescribed |
 | CSRs only in riscv-unified-db | 2 | `mrmcfg`, `mnrmcfg` |
 | Registers | 96 | |
-| Directives | 137 | Combined `riscv-asm-manual` and `data/directives_gnu.json` |
+| Directives | 137 | Combined `riscv-asm-manual` and `server/data/directives_gnu.json` |
 | Cleaned `TODO`s from riscv-unified-db | 6 | `htinst`, `hvip.VSEIP`, `hvip.VSTIP`, `hvip.VSSIP`, `mncause.CODE`, `mtinst` |
 
 Mismatch handling:

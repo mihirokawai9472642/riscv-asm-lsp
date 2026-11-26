@@ -38,7 +38,7 @@ Representative outputs live under `tests/snapshots/hover/`:
 | Directive (`.globl`, `.macro`, `.cfi_sections`, ...) | `Directive · <GNU / LLVM\|GNU only>`; `<name>[ <arguments>]` in `riscv` fence | `>` notice for GNU-only directives not accepted by the bundled LLVM reference; concise description | [directive.md](../tests/snapshots/hover/directive.md) |
 | Preprocessor `#<directive>` (in preprocessed files) | `Preprocessor directive`; `#<name>` in `c` fence | `>` notice that `#<name>` is handled by the C preprocessor rather than treated as a comment; directive description | [preprocessor_directive.md](../tests/snapshots/hover/preprocessor_directive.md) |
 | Project symbols (`label`, `.equ`, `.set`, `=`, `.macro`, `.irp`/`.irpc` param, `#define`, `1f`/`1b`) | ``<Kind> · `<file>:<line>` `` (`Label`, `Local label`, `Numeric label`, `Constant (.equ)` / `Constant (.equiv)` / `Symbol (.set)` / `Symbol (=)`, `Macro`, `Macro parameter`, `#define`); defining line in `riscv` fence | `>` notice when reassigned multiple times in scope; ``Value: `<val>` `` fact for constants/defines | [label.md](../tests/snapshots/hover/label.md), [equ.md](../tests/snapshots/hover/equ.md), [macro.md](../tests/snapshots/hover/macro.md), [macro_param.md](../tests/snapshots/hover/macro_param.md), [define.md](../tests/snapshots/hover/define.md) |
-| Macro invocation counter (`\@`) | `Macro invocation counter`; `\@` in `riscv` fence | Explanation from `data/texts.json` | — |
+| Macro invocation counter (`\@`) | `Macro invocation counter`; `\@` in `riscv` fence | Explanation from `server/data/texts.json` | — |
 | Include directive (`#include`, `.include`) | `Include` (or `Include · unresolved`); `#include "<target>"` in `c` fence | ``Path: `<resolved>` `` when found on disk; search-path configuration hint when unresolved | — |
 
 ### Built-in & live expansion & encoding
@@ -53,7 +53,7 @@ For valid instructions under active `-march`/`.option` state, hover renders a
   - fixed relocatable pseudos (`la`, `lla`, `call`, `tail`, `jump`, and symbol
     load/store forms) expand cleanly with `# (relocated)` markers;
   - `InstAlias` records expand via `alias_expansion` templates from
-    `data/riscv.json`, compressed instructions are selected when `C`/`Zca`/`Zcf`/`Zcd`
+    `server/data/riscv.json`, compressed instructions are selected when `C`/`Zca`/`Zcf`/`Zcd`
     allow, and instruction words are bit-packed from bundled TableGen `encoding`
     templates.
 - **Optional `llvm-mc` mode (`diagnostics.external: "auto"` | `"on"`)**: when opted
@@ -95,7 +95,7 @@ assembler-with-cpp` in `compile_commands.json` / `compile_flags.txt`),
   `__riscv_xlen`, `__riscv_flen`, `__riscv_float_abi_*`, `__riscv_cmodel_*`,
   `__riscv_atomic`, `__riscv_mul`, `__riscv_div`, `__riscv_muldiv`,
   `__riscv_compressed`, `__riscv_vector`/`__riscv_v_*`, and `__riscv_<ext>`
-  version values derived from `MarchSpec`, `-mabi`, `-mcmodel`, and `data/riscv.json`.
+  version values derived from `MarchSpec`, `-mabi`, `-mcmodel`, and `server/data/riscv.json`.
 - **Conditionals**: evaluates `#if`, `#ifdef`, `#ifndef`, `#elif`, `#elifdef`,
   `#elifndef`, `#else`, and `#endif` using a C integer constant expression
   evaluator (`defined`, arithmetic, shifts, comparisons, logical/bitwise ops,
@@ -121,7 +121,7 @@ Trigger characters: `.`, `%`, `\`, `,`, and ` `.
     `#define` macros. Spec-only (`llvm_supported == false`) entries are excluded.
   - Operand positions: classified by expected operand role (integer/FP/vector
     registers, CSRs including `0xhex · mode` details, symbols, `%hi(`/etc.
-    relocations from `data/texts.json`, and enclosing macro/`.irp`/`.irpc`
+    relocations from `server/data/texts.json`, and enclosing macro/`.irp`/`.irpc`
     parameters).
   - After `.option`: `arch`, `rvc`, `norvc`, `push`, `pop`, `relax`, `norelax`,
     `pic`, `nopic`, `exact`, plus extension names (`+ext`/`-ext`) after `.option arch, `.

@@ -98,7 +98,7 @@ Canonical names:
 ## 3. Architecture
 
 ```text
-Editor ──LSP──> riscv-asm-lsp ──> embedded data (data/riscv.json, data/texts.json)
+Editor ──LSP──> riscv-asm-lsp ──> embedded data (server/data/riscv.json, server/data/texts.json)
                      │
                      ├──> tree-sitter-riscv (parsing, AST traversal, symbol index)
                      ├──> built-in engine (C preprocessor, validator, RISCVMatInt + Inst encoding)
@@ -272,7 +272,7 @@ Embedded data stays under its upstream licenses ([THIRD_PARTY_NOTICES.md](../THI
 | Generated LLVM instruction/CSR/register/extension data & `RISCVMatInt` port | `Apache-2.0 WITH LLVM-exception` | Generated from pinned `.td` sources; `server/src/hover/matint.rs` ported from `RISCVMatInt.cpp` |
 | riscv-unified-db descriptions & CSR metadata | `BSD-3-Clause-Clear` | Keep copyright and notice |
 | riscv-asm-manual tables | `CC-BY-4.0` | Credit source, authors and license |
-| `data/directives_gnu.json`, `data/supplements.json`, `data/texts.json` | `MIT` | Original project texts (no GPL/GFDL sources used) |
+| `server/data/directives_gnu.json`, `server/data/supplements.json`, `server/data/texts.json` | `MIT` | Original project texts (no GPL/GFDL sources used) |
 | Rust dependencies (`lsp-server`, `lsp-types`, `serde*`, `tree-sitter*`, `ignore`, `url`, `yaml_serde`, `zed_extension_api`) | `MIT` and `Unicode-3.0` (`riscv-asm-lsp` binary after MIT choice; full `deny.toml` allow-list verified) | Verified via `cargo deny check licenses` against `deny.toml` |
 
 External `clang` and `llvm-mc` executables run strictly as child processes.
@@ -293,7 +293,7 @@ via Dependabot.
 
 | Suite | What it covers |
 | --- | --- |
-| Unit tests | Position/UTF-16 math, line scanner, `-march`/`.option` state, preprocessor classification, scope resolution, operand class decoding (all classes in `data/riscv.json`), xtask cleaning/joining |
+| Unit tests | Position/UTF-16 math, line scanner, `-march`/`.option` state, preprocessor classification, scope resolution, operand class decoding (all classes in `server/data/riscv.json`), xtask cleaning/joining |
 | Integration tests | In-process JSON-RPC harness driving the real binary over stdio across navigation, completion, hover, symbols, semantic tokens, diagnostics, code actions and lifecycle |
 | Snapshot tests | Golden files under `tests/snapshots/` (`hover/*.md`, `completion/*.json`, etc.); rewritten intentionally via `UPDATE_SNAPSHOTS=1` and reviewed in diff |
 | Regression inputs | Multibyte UTF-8/UTF-16 characters, positions past line ends, empty lines, closed/open block comments |
@@ -308,8 +308,8 @@ via `-- --include-ignored`. The non-ignored suite passes with `clang` and
 Only unfinished work is listed here:
 
 - **Distribution verification & publishing**:
-  - Test clean Zed GUI installation/settings/features, tag `v0.2.0` once ready, and publish to the Zed extension registry (`zed-industries/extensions`).
-  - Additional optional install channels (`crates.io` after moving embedded `data/` into `server/`, `cargo-binstall`, Neovim/Helix configs).
+  - Test clean Zed GUI installation/settings/features and publish to the Zed extension registry (`zed-industries/extensions`).
+  - Publish `riscv-asm-lsp` to `crates.io` (the `server/data/` crate layout, `[package.metadata.binstall]`, and [docs/editors.md](editors.md) Neovim/Helix setup docs are in place).
 - **clangd-style project ergonomics**:
   - Compile-database command interpolation from nearest known sibling file; `.clangd`-style project configuration file (excluding unsafe tool-path settings).
 - **Additional LSP features & corpus items**: none currently open beyond distribution verification and Zed polish.
