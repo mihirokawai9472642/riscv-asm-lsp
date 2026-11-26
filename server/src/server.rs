@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use lsp_server::{Connection, ErrorCode, Message, Request, RequestId, Response};
 use lsp_types::{
-    CodeActionParams, CodeActionProviderCapability, CompletionItem, CompletionOptions,
-    CompletionParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
+    CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
+    CallHierarchyServerCapability, CodeActionParams, CodeActionProviderCapability, CompletionItem,
+    CompletionOptions, CompletionParams, DidChangeConfigurationParams, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions,
     DidChangeWorkspaceFoldersParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, DocumentHighlightParams, DocumentSymbolParams, FileChangeType,
@@ -24,6 +25,7 @@ use lsp_types::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_action::provide_code_actions;
 use crate::completion::{CompletionClientCaps, provide_completion, resolve_completion_item};
 use crate::config::{Config, merge_json_value};
@@ -87,6 +89,7 @@ pub fn server_capabilities() -> ServerCapabilities {
         }),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
+        call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -311,6 +314,9 @@ impl ServerState<'_> {
                     | "textDocument/references"
                     | "textDocument/rename"
                     | "workspace/symbol"
+                    | "textDocument/prepareCallHierarchy"
+                    | "callHierarchy/incomingCalls"
+                    | "callHierarchy/outgoingCalls"
             ) {
                 self.index
                     .drain_background_wait(&|p| store.is_open_path(p), Duration::from_millis(200));
@@ -397,7 +403,10 @@ impl ServerState<'_> {
             | "textDocument/references"
             | "textDocument/documentHighlight"
             | "textDocument/prepareRename"
-            | "textDocument/rename" => {
+            | "textDocument/rename"
+            | "textDocument/prepareCallHierarchy"
+            | "callHierarchy/incomingCalls"
+            | "callHierarchy/outgoingCalls" => {
                 self.handle_navigation_request(req.method.as_str(), id, params)
             }
             "textDocument/documentSymbol"
@@ -468,6 +477,21 @@ impl ServerState<'_> {
                 let pos = p.text_document_position.position;
                 rename_symbol(&mut s.index, uri, pos, &p.new_name, s.db, &mut s.ctx)
             }),
+            "textDocument/prepareCallHierarchy" => {
+                self.dispatch_typed(id, params, |s, p: CallHierarchyPrepareParams| {
+                    Ok(prepare_call_hierarchy(&mut s.index, &p, &mut s.ctx))
+                })
+            }
+            "callHierarchy/incomingCalls" => {
+                self.dispatch_typed(id, params, |s, p: CallHierarchyIncomingCallsParams| {
+                    Ok(incoming_calls(&s.index, &p))
+                })
+            }
+            "callHierarchy/outgoingCalls" => {
+                self.dispatch_typed(id, params, |s, p: CallHierarchyOutgoingCallsParams| {
+                    Ok(outgoing_calls(&s.index, &p))
+                })
+            }
             _ => unreachable!(),
         }
     }

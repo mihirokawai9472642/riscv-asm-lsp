@@ -312,8 +312,7 @@ Only unfinished work is listed here:
   - Additional optional install channels (`crates.io` after moving embedded `data/` into `server/`, `cargo-binstall`, Neovim/Helix configs).
 - **clangd-style project ergonomics**:
   - Compile-database command interpolation from nearest known sibling file; `.clangd`-style project configuration file (excluding unsafe tool-path settings).
-- **Additional LSP features & corpus items**:
-  - Call hierarchy (`textDocument/prepareCallHierarchy`, incoming/outgoing calls).
+- **Additional LSP features & corpus items**: none currently open beyond distribution verification and Zed polish.
 - **Zed extension polish**:
   - Separate `.s` vs. `.S` language grammars or upstream `tree-sitter-riscv`
     preprocessor improvements if real-world editing warrants it.
