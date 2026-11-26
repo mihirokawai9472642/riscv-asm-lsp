@@ -360,6 +360,11 @@ fn validate_statement(
             return;
         }
 
+        // Skip C preprocessor function-like macro invocations (e.g. `SET_FAULT_HANDLER(x0, a1)`).
+        if head.contains('(') || rest.trim_start().starts_with('(') {
+            return;
+        }
+
         if pl.has_unexpanded_macro {
             return;
         }

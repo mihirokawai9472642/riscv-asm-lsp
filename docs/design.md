@@ -247,6 +247,21 @@ preprocessor flags).
   typed structs; any required `#[allow(deprecated)]` carries an explanatory
   comment.
 
+- **Parsing and `tree-sitter-riscv` resilience**: the upstream
+  `tree-sitter-riscv` grammar produces `ERROR` nodes on five common RISC-V /
+  Linux kernel assembly constructs:
+  1. C function-like macro invocations with parentheses (e.g. `SET_FAULT_HANDLER(x0, a1)`);
+  2. multi-line `\` line-continuation macro calls;
+  3. multi-argument `.option arch, +a, +c`;
+  4. `.dc.a sym` data-expression directives;
+  5. column-0 `sym = expr` symbol assignments.
+  The server keeps full IDE behaviour on all five by combining C-macro-call
+  skips in the built-in validator (`head.contains('(')` / leading `(` arg) with
+  line/token fallback extraction on `ERROR` spans in `index/parse.rs`. In
+  addition, inline labels defined inside C macro argument strings or
+  `__stringify(...)` (e.g. Linux `ALTERNATIVE(..., __stringify(1: ...), ...)`)
+  are extracted with exact source spans for outline and navigation.
+
 ## 6. Licensing
 
 The project's code is MIT ([LICENSE.md](../LICENSE.md), [zed/LICENSE](../zed/LICENSE)).
@@ -299,11 +314,6 @@ Only unfinished work is listed here:
   - Compile-database command interpolation from nearest known sibling file; `.clangd`-style project configuration file (excluding unsafe tool-path settings).
 - **Additional LSP features & corpus items**:
   - Call hierarchy (`textDocument/prepareCallHierarchy`, incoming/outgoing calls).
-  - Inline labels defined inside C macro argument strings (e.g. Linux
-    `ALTERNATIVE(..., __stringify(... label:), ...)`).
-  - Upstream reports / selective workarounds for `tree-sitter-riscv` grammar
-    edge cases (`SET_FAULT_HANDLER(x0, a1)`, multiline `\` macro calls, multi-arg
-    `.option arch`, `.dc.a`, start-of-line `sym = expr`).
 - **Zed extension polish**:
   - Separate `.s` vs. `.S` language grammars or upstream `tree-sitter-riscv`
     preprocessor improvements if real-world editing warrants it.
