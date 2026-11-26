@@ -6,8 +6,12 @@ addi rd, rs1, imm12
 
 ---
 
-Operands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)  
-This line: `c.addi sp, -16` → `0x1141`
+Operands: `rd`, `rs1` integer reg (x0–x31); `imm12` signed 12-bit (-2048..2047)
+
+This line:
+```riscv
+c.addi sp, -16  # 0x1141
+```
 
 ---
 

@@ -1073,7 +1073,10 @@ mod tests {
         assert_eq!(items[0].asm, "c.addi sp, -16");
         assert_eq!(items[0].encoding.as_deref(), Some("0x1141"));
         let single_md = format_this_line_fact(&CachedExpansion::Expanded(items));
-        assert_eq!(single_md.trim(), "This line: `c.addi sp, -16` → `0x1141`");
+        assert_eq!(
+            single_md.trim(),
+            "This line:\n```riscv\nc.addi sp, -16  # 0x1141\n```"
+        );
 
         let csr_out =
             "\tcsrrw\tzero, stvec, t0                 # encoding: [0x73,0x90,0x52,0x10]\n";
