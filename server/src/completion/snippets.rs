@@ -19,38 +19,59 @@ pub(crate) fn syntax_args<'a>(mnemonic: &str, syntax: &'a str) -> &'a str {
         .map_or("", |(_, r)| r.trim())
 }
 
+pub(crate) fn is_special_variant(mnemonic: &str, v: &InstructionVariant) -> bool {
+    let is_bare_symbol_exempt = matches!(mnemonic.to_ascii_lowercase().as_str(), "la" | "lla");
+    v.operands.iter().any(|o| {
+        matches!(
+            o.class.as_str(),
+            "tprel_add_symbol" | "tlsdesc_call_symbol" | "call_symbol" | "pseudo_jump_symbol"
+        ) || (!is_bare_symbol_exempt && o.class == "bare_symbol")
+    }) || v.syntax.contains(".insn")
+}
+
+fn is_zfinx_variant(v: &InstructionVariant) -> bool {
+    v.required_extensions.iter().any(|ext| {
+        ext.split('|').any(|part| {
+            matches!(
+                part.trim().to_ascii_lowercase().as_str(),
+                "zfinx" | "zdinx" | "zhinx" | "zhinxmin"
+            )
+        })
+    }) || v
+        .operands
+        .iter()
+        .any(|o| o.class.ends_with("INX") || o.class.ends_with("IN32X"))
+}
+
 pub(crate) fn deduplicate_and_sort_variants<'a>(
     mnemonic: &str,
     variants: &[&'a InstructionVariant],
 ) -> Vec<&'a InstructionVariant> {
+    // Sort before deduplicating so canonical F/D variants win over Z*inx duplicates.
+    let mut sorted = variants.to_vec();
+    sorted.sort_by_key(|v| variant_sort_key(mnemonic, v));
+
     let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for &v in variants {
+    let mut out = Vec::with_capacity(sorted.len());
+    for v in sorted {
         let norm = v.syntax.split_whitespace().collect::<Vec<_>>().join(" ");
         if seen.insert(norm) {
             out.push(v);
         }
     }
-    out.sort_by_key(|v| variant_sort_key(mnemonic, v));
     out
 }
 
 pub(super) fn variant_sort_key(
     mnemonic: &str,
     v: &InstructionVariant,
-) -> (u8, u8, u8, usize, String) {
+) -> (u8, u8, u8, u8, usize, String) {
     let args = syntax_args(mnemonic, &v.syntax);
     // Order variants of a mnemonic (Item 2):
     // 0: primary instruction itself (no non-self `alias_of` and not a special relocation/symbol form),
     // 1: LLVM alias (e.g. `add rd, rs1, imm12` -> `addi`),
     // 2: special TLS / symbol / relocation forms (`tprel_add_symbol`, `bare_symbol`, `.insn`).
-    let is_bare_symbol_exempt = matches!(mnemonic.to_ascii_lowercase().as_str(), "la" | "lla");
-    let is_special = v.operands.iter().any(|o| {
-        matches!(
-            o.class.as_str(),
-            "tprel_add_symbol" | "tlsdesc_call_symbol" | "call_symbol" | "pseudo_jump_symbol"
-        ) || (!is_bare_symbol_exempt && o.class == "bare_symbol")
-    }) || v.syntax.contains(".insn");
+    let is_special = is_special_variant(mnemonic, v);
     let is_alias = v
         .alias_of
         .as_deref()
@@ -63,6 +84,7 @@ pub(super) fn variant_sort_key(
         0
     };
 
+    let zfinx_rank = u8::from(is_zfinx_variant(v));
     let has_reg = v.operands.iter().any(|o| is_register_class(&o.class));
     let reg_score = u8::from(!args.is_empty() && !has_reg);
     let shorthand_mem_score = u8::from(
@@ -72,6 +94,7 @@ pub(super) fn variant_sort_key(
     );
     (
         tier,
+        zfinx_rank,
         reg_score,
         shorthand_mem_score,
         v.operands.len(),
