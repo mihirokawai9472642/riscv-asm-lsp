@@ -42,14 +42,6 @@ pub struct PendingExpansion {
 
 pub(super) fn format_this_line_fact(cached: &CachedExpansion) -> String {
     match cached {
-        CachedExpansion::Expanded(items) if items.len() == 1 => {
-            let item = &items[0];
-            match item.encoding.as_deref() {
-                Some("(relocated)") => format!("This line: `{}` (relocated)", item.asm),
-                Some(hex) => format!("This line: `{}` → `{hex}`", item.asm),
-                None => format!("This line: `{}`", item.asm),
-            }
-        }
         CachedExpansion::Expanded(items) => {
             let mut out = String::from("This line:\n```riscv\n");
             for item in items {

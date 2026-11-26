@@ -177,6 +177,7 @@ Supports `textDocument/definition`, `textDocument/references`,
   | Code | Severity | Meaning |
   | --- | --- | --- |
   | `unknown-mnemonic` | Error | Unrecognized instruction mnemonic (with edit-distance suggestions) |
+  | `unknown-directive` | Error | Unrecognized assembler directive (``.``-prefixed, not a defined macro) |
   | `extension-disabled` | Error | Instruction valid for XLEN but requires a disabled extension |
   | `xlen-mismatch` | Error | Instruction requires a different XLEN (RV32 vs RV64) |
   | `operand-count` | Error | Wrong number of operands for all active variants |

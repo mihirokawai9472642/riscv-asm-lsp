@@ -597,20 +597,28 @@ fn try_compress(
         }
         "jal" if call.operands.len() == 2 => {
             let rd = reg_num(&call.operands[0])?;
-            if let Some(imm) = eval_i(&call.operands[1])
-                && (-2048..=2046).contains(&imm)
-                && imm.rem_euclid(2) == 0
-            {
+            let target_tok = call.operands[1].trim();
+            let target_opt = match eval_i(target_tok) {
+                Some(imm) if (-2048..=2046).contains(&imm) && imm.rem_euclid(2) == 0 => {
+                    Some(imm.to_string())
+                }
+                Some(_) => None,
+                None if !target_tok.is_empty() && !target_tok.contains('%') => {
+                    Some(target_tok.to_owned())
+                }
+                None => None,
+            };
+            if let Some(target_out) = target_opt {
                 if rd == 0 {
                     return Some(InstCall {
                         mnemonic: "c.j".to_owned(),
-                        operands: vec![imm.to_string()],
+                        operands: vec![target_out],
                     });
                 }
                 if rd == 1 && march.xlen == Xlen::Rv32 {
                     return Some(InstCall {
                         mnemonic: "c.jal".to_owned(),
-                        operands: vec![imm.to_string()],
+                        operands: vec![target_out],
                     });
                 }
             }
@@ -618,10 +626,18 @@ fn try_compress(
         "beq" | "bne" if call.operands.len() == 3 => {
             let rs1 = i_reg_num(&call.operands[0])?;
             let rs2 = i_reg_num(&call.operands[1])?;
-            if let Some(imm) = eval_i(&call.operands[2])
-                && (-256..=254).contains(&imm)
-                && imm.rem_euclid(2) == 0
-            {
+            let target_tok = call.operands[2].trim();
+            let target_opt = match eval_i(target_tok) {
+                Some(imm) if (-256..=254).contains(&imm) && imm.rem_euclid(2) == 0 => {
+                    Some(imm.to_string())
+                }
+                Some(_) => None,
+                None if !target_tok.is_empty() && !target_tok.contains('%') => {
+                    Some(target_tok.to_owned())
+                }
+                None => None,
+            };
+            if let Some(target_out) = target_opt {
                 let cmp_mnemonic = if call.mnemonic == "beq" {
                     "c.beqz"
                 } else {
@@ -630,13 +646,13 @@ fn try_compress(
                 if rs2 == 0 && is_c_gpr(rs1) {
                     return Some(InstCall {
                         mnemonic: cmp_mnemonic.to_owned(),
-                        operands: vec![call.operands[0].clone(), imm.to_string()],
+                        operands: vec![call.operands[0].clone(), target_out],
                     });
                 }
                 if rs1 == 0 && is_c_gpr(rs2) {
                     return Some(InstCall {
                         mnemonic: cmp_mnemonic.to_owned(),
-                        operands: vec![call.operands[1].clone(), imm.to_string()],
+                        operands: vec![call.operands[1].clone(), target_out],
                     });
                 }
             }

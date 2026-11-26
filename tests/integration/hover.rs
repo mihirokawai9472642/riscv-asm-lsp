@@ -265,7 +265,7 @@ fn hover_llvm_mc_and_clang_expansions() {
     // Compressed hex instruction word `0x1141`
     let addi_exp = hover_markdown(&mut client, &kernel_uri, 28, 4).expect("addi exp");
     assert!(
-        addi_exp.contains("This line: `c.addi sp, -16` → `0x1141`"),
+        addi_exp.contains("This line:\n```riscv\nc.addi sp, -16  # 0x1141\n```"),
         "got: {addi_exp}"
     );
 
@@ -959,6 +959,10 @@ fn builtin_expansion_and_encoding_match_llvm_mc() {
         ("rv64imad", "addi sp, sp, -16"),
         ("rv64imad", "mv a0, a1"),
         ("rv64imad", "ret"),
+        ("rv64gc", "beqz a0, target_lbl"),
+        ("rv64gc", "bnez a1, target_lbl"),
+        ("rv64gc", "j target_lbl"),
+        ("rv32imac", "jal target_lbl"),
         ("rv64gcv", "vadd.vv v1, v2, v3"),
         ("rv64gcv", "vadd.vv v1, v2, v3, v0.t"),
     ];

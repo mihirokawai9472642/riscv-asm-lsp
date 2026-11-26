@@ -1686,3 +1686,85 @@ fn deeply_nested_expressions_do_not_overflow_stack() {
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn validator_catches_mem_offset_missing_mem_unknown_directive_and_uses_readable_wording() {
+    let doc_uri = crate::common::test_uri("f5_f6_coverage.S");
+    let mut client = LspClient::start(
+        Some(json!({
+            "defaultMarch": "rv64imac",
+            "diagnostics": { "enable": true, "delayMs": 15 }
+        })),
+        None,
+    );
+    let src = "\
+_start:
+    lw a0, 2048(sp)
+    sd a0, a1
+    .nosuchdirective 123
+    c.lw a0, 0(t0)
+    vsetivli a0, 4, e32, m1, ta, ma
+    c.fld fs0, 0(a1)
+";
+    client.open_doc(&doc_uri, 1, src);
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("publishDiagnostics");
+    let diags = notif.params["diagnostics"].as_array().unwrap();
+    let by_line = |line: u64| -> &serde_json::Value {
+        diags
+            .iter()
+            .find(|d| d["range"]["start"]["line"] == line)
+            .unwrap_or_else(|| panic!("missing diagnostic on line {line}: {diags:?}"))
+    };
+
+    let lw_diag = by_line(1);
+    assert_eq!(lw_diag["code"], json!("invalid-immediate"));
+    let lw_msg = lw_diag["message"].as_str().unwrap();
+    assert!(
+        lw_msg.contains("integer in [-2048, 2047]") && !lw_msg.contains("simm12_lo"),
+        "unexpected lw message: {lw_msg}"
+    );
+
+    let sd_diag = by_line(2);
+    assert_eq!(sd_diag["code"], json!("invalid-register"));
+    let sd_msg = sd_diag["message"].as_str().unwrap();
+    assert!(
+        !sd_msg.contains("GPRMem"),
+        "unexpected sd message: {sd_msg}"
+    );
+
+    let dir_diag = by_line(3);
+    assert_eq!(dir_diag["code"], json!("unknown-directive"));
+
+    let clw_diag = by_line(4);
+    assert_eq!(clw_diag["code"], json!("invalid-register"));
+    let clw_msg = clw_diag["message"].as_str().unwrap();
+    assert!(
+        clw_msg.contains("x8–x15") && !clw_msg.contains("BasePtrC"),
+        "unexpected c.lw message: {clw_msg}"
+    );
+
+    let v_diag = by_line(5);
+    assert_eq!(v_diag["code"], json!("extension-disabled"));
+    let v_msg = v_diag["message"].as_str().unwrap();
+    assert!(
+        !v_msg.contains('|'),
+        "extension notice should use one separator: {v_msg}"
+    );
+
+    let flw_diag = by_line(6);
+    let flw_msg = flw_diag["message"].as_str().unwrap();
+    let flw_parts: Vec<&str> = flw_msg.split(" / ").collect();
+    let unique: std::collections::HashSet<&str> = flw_parts.iter().copied().collect();
+    assert_eq!(
+        flw_parts.len(),
+        unique.len(),
+        "duplicate extensions in message: {flw_msg}"
+    );
+
+    client.shutdown_and_exit();
+}

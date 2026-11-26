@@ -23,6 +23,7 @@ const SOURCE_NAME: &str = "riscv-asm-lsp";
 
 pub mod codes {
     pub const UNKNOWN_MNEMONIC: &str = "unknown-mnemonic";
+    pub const UNKNOWN_DIRECTIVE: &str = "unknown-directive";
     pub const EXTENSION_DISABLED: &str = "extension-disabled";
     pub const XLEN_MISMATCH: &str = "xlen-mismatch";
     pub const OPERAND_COUNT: &str = "operand-count";
@@ -445,7 +446,58 @@ fn handle_directive_statement(
             format!("directive `{head_raw}` is GNU as only and not accepted by LLVM"),
             Vec::new(),
         ));
+    } else if db.directive(head_raw).is_none()
+        && !is_known_extra_directive(head_lower)
+        && !state.known_macros.contains(head_lower)
+        && !state.has_any_unresolved_include()
+    {
+        out.push(make_diag(
+            head_range,
+            DiagnosticSeverity::ERROR,
+            codes::UNKNOWN_DIRECTIVE,
+            format!("unknown directive `{head_raw}`"),
+            Vec::new(),
+        ));
     }
+}
+
+fn is_known_extra_directive(head_lower: &str) -> bool {
+    head_lower.starts_with(".cfi_")
+        || head_lower.starts_with(".dc.")
+        || head_lower.starts_with(".dcb.")
+        || head_lower.starts_with(".ds.")
+        || head_lower.starts_with(".cv_")
+        || matches!(
+            head_lower,
+            ".insn"
+                | ".addrsig"
+                | ".addrsig_sym"
+                | ".cg_profile"
+                | ".eh_frame"
+                | ".lto_discard"
+                | ".variant_pcs"
+                | ".ln"
+                | ".stabs"
+                | ".stabd"
+                | ".stabn"
+                | ".fail"
+                | ".offset"
+                | ".struct"
+                | ".init"
+                | ".fini"
+                | ".preinit_array"
+                | ".init_array"
+                | ".fini_array"
+                | ".sdata"
+                | ".sbss"
+                | ".tdata"
+                | ".tbss"
+                | ".rodata"
+                | ".nopic"
+                | ".pic"
+                | ".relax"
+                | ".norelax"
+        )
 }
 
 fn scan_asm_include(target: &str, db: &Database, state: &mut ValidatorState<'_>, depth: usize) {
@@ -651,12 +703,21 @@ fn validate_instruction_statement(
             .iter()
             .any(|v| state.march.supports_xlen(v.xlen));
         if any_xlen_match {
-            let reqs: Vec<String> = inst
+            let mut reqs: Vec<String> = Vec::new();
+            for v in inst
                 .variants
                 .iter()
                 .filter(|v| state.march.supports_xlen(v.xlen) && !v.required_extensions.is_empty())
-                .flat_map(|v| v.required_extensions.iter().cloned())
-                .collect();
+            {
+                for req in &v.required_extensions {
+                    for alt in req.split('|') {
+                        let clean = alt.trim().to_ascii_lowercase();
+                        if !clean.is_empty() && !reqs.contains(&clean) {
+                            reqs.push(clean);
+                        }
+                    }
+                }
+            }
             let req_text = if reqs.is_empty() {
                 "a disabled extension".to_owned()
             } else {
@@ -948,6 +1009,18 @@ fn check_paren_reg_operand(
         return OperandVerdict::Skip;
     };
     let Some((off_raw, inner)) = split_trailing_paren(uo.text.trim()) else {
+        let trimmed = uo.text.trim();
+        if looks_like_pure_register(trimmed, db) {
+            return OperandVerdict::Mismatch(OperandMismatch {
+                code: codes::INVALID_REGISTER,
+                message: format!(
+                    "expected memory operand `({})`, got register `{trimmed}`",
+                    describe_register_class_for_diag(class)
+                ),
+                abs_start: uo.abs_start,
+                abs_end: uo.abs_end,
+            });
+        }
         return OperandVerdict::Skip;
     };
     let off_trimmed = off_raw.trim();
@@ -955,7 +1028,10 @@ fn check_paren_reg_operand(
         if !allow_zero_offset {
             return OperandVerdict::Mismatch(OperandMismatch {
                 code: codes::INVALID_IMMEDIATE,
-                message: format!("expected zero offset for `{class}` memory operand"),
+                message: format!(
+                    "expected zero offset for `{}` memory operand",
+                    describe_register_class_for_diag(class)
+                ),
                 abs_start: uo.abs_start,
                 abs_end: uo.abs_end,
             });
@@ -1118,6 +1194,16 @@ fn check_operand_class(
         | "pseudo_jump_symbol"
         | "tlsdesc_call_symbol"
         | "tprel_add_symbol" => {
+            if let Some((_, inner)) = split_trailing_paren(tok)
+                && db.register(inner.trim()).is_some()
+            {
+                return OperandVerdict::Mismatch(OperandMismatch {
+                    code: codes::INVALID_IMMEDIATE,
+                    message: format!("expected symbol operand, got memory operand `{tok}`"),
+                    abs_start: uo.abs_start,
+                    abs_end: uo.abs_end,
+                });
+            }
             return if looks_like_pure_register(tok, db) {
                 OperandVerdict::Mismatch(OperandMismatch {
                     code: codes::INVALID_IMMEDIATE,
@@ -1199,7 +1285,10 @@ fn check_register_operand(
         }
         return OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_REGISTER,
-            message: format!("invalid register `{tok}` for operand class `{class}`"),
+            message: format!(
+                "invalid {}, got `{tok}`",
+                describe_register_class_for_diag(class)
+            ),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,
         });
@@ -1263,10 +1352,40 @@ fn check_register_operand(
     } else {
         OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_REGISTER,
-            message: format!("invalid register `{tok}` for operand class `{class}`"),
+            message: format!(
+                "expected {}, got `{tok}`",
+                describe_register_class_for_diag(class)
+            ),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,
         })
+    }
+}
+
+fn describe_register_class_for_diag(class: &str) -> &'static str {
+    match class {
+        "GPR" | "GPRMem" | "BasePtr" | "GPRMemZeroOffset" | "FPR16INX" | "FPR32INX"
+        | "FPR64INX" | "YGPR" => "integer register",
+        "GPRC" | "GPRCMem" | "BasePtrC" => "register x8–x15",
+        "GPRNoX0" => "non-zero integer register (not x0)",
+        "GPRNoX2" => "integer register (not sp)",
+        "GPRNoX0X2" => "integer register (not x0 or sp)",
+        "GPRX1" => "register ra (x1)",
+        "GPRX5" => "register t0 (x5)",
+        "GPRX1X5" => "register ra or t0 (x1 or x5)",
+        "SP" | "SPMem" => "stack pointer (sp)",
+        "SR07" => "saved register (s0–s7)",
+        "GPRPairRV32" | "GPRPairRV64" | "FPR64IN32X" => "even integer register",
+        "GPRPairCRV32" => "even integer register in x8–x14",
+        "GPRPairNoX0RV32" => "non-zero even integer register",
+        "FPR16" | "FPR32" | "FPR64" | "FPR128" => "floating-point register",
+        "FPR32C" | "FPR64C" => "floating-point register f8–f15",
+        "VR" => "vector register",
+        "VRNoV0" => "vector register (not v0)",
+        "VRM2" => "even vector register group (LMUL=2)",
+        "VRM4" => "4-aligned vector register group (LMUL=4)",
+        "VRM8" => "8-aligned vector register group (LMUL=8)",
+        _ => "register",
     }
 }
 
@@ -1333,9 +1452,12 @@ fn check_immediate_operand(
 
     // Reject obvious register tokens passed in immediate slots immediately.
     if looks_like_pure_register(tok, db) {
+        let expected = parse_immediate_spec(class, state.march.xlen)
+            .map(|s| describe_imm_constraint(&s))
+            .unwrap_or_else(|| "immediate operand".to_owned());
         return OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_IMMEDIATE,
-            message: format!("expected immediate for `{class}`, got register `{tok}`"),
+            message: format!("expected {expected}, got register `{tok}`"),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,
         });
@@ -1423,8 +1545,8 @@ fn check_immediate_operand(
         return OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_IMMEDIATE,
             message: format!(
-                "immediate {val} out of range ({}..{}) for `{class}`",
-                spec.min, spec.max
+                "operand out of range, must be {}",
+                describe_imm_constraint(&spec)
             ),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,
@@ -1433,7 +1555,7 @@ fn check_immediate_operand(
     if spec.nonzero && val == 0 {
         return OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_IMMEDIATE,
-            message: format!("immediate must be nonzero for `{class}`"),
+            message: format!("operand must be nonzero {}", describe_imm_constraint(&spec)),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,
         });
@@ -1442,8 +1564,9 @@ fn check_immediate_operand(
         return OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_IMMEDIATE,
             message: format!(
-                "immediate {val} must be a multiple of {} for `{class}`",
-                spec.step
+                "operand must be a multiple of {}, expected {}",
+                spec.step,
+                describe_imm_constraint(&spec)
             ),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,
@@ -1451,6 +1574,14 @@ fn check_immediate_operand(
     }
 
     OperandVerdict::Match
+}
+
+fn describe_imm_constraint(spec: &crate::hover::operands::ImmSpec) -> String {
+    if spec.step > 1 {
+        format!("multiple of {} in [{}, {}]", spec.step, spec.min, spec.max)
+    } else {
+        format!("integer in [{}, {}]", spec.min, spec.max)
+    }
 }
 
 fn looks_like_pure_register(tok: &str, db: &Database) -> bool {
