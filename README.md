@@ -147,12 +147,12 @@ checksum from
 | macOS Intel (`x86_64`) | `riscv-asm-lsp-x86_64-apple-darwin.tar.gz` |
 | Windows `x86_64` | `riscv-asm-lsp-x86_64-pc-windows-msvc.zip` |
 
-For example, on Linux or macOS (`v0.2.0`):
+For example, on Linux or macOS (`v0.3.0`):
 
 ```bash
 ARCHIVE=riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
-curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.2.0/${ARCHIVE}"
-curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.2.0/${ARCHIVE}.sha256"
+curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.3.0/${ARCHIVE}"
+curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.3.0/${ARCHIVE}.sha256"
 sha256sum -c "${ARCHIVE}.sha256"   # or: shasum -a 256 -c "${ARCHIVE}.sha256" on macOS
 tar -xzf "${ARCHIVE}" riscv-asm-lsp
 install -m 0755 riscv-asm-lsp ~/.local/bin/riscv-asm-lsp

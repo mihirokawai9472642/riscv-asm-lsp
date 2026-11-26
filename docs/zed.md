@@ -9,7 +9,7 @@ Guide to installing, configuring and developing the `zed/` extension for Zed
 2. Search for **RISC-V Assembly** and click **Install**.
 3. Open any `.S` or `.s` file. The extension downloads the matching
    `riscv-asm-lsp` release archive automatically from GitHub Releases into its
-   extension working directory (for example `riscv-asm-lsp-v0.2.0/riscv-asm-lsp`).
+   extension working directory (for example `riscv-asm-lsp-v0.3.0/riscv-asm-lsp`).
 
 ### Server binary precedence and overrides
 
