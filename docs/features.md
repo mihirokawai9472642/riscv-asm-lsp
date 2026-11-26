@@ -188,7 +188,8 @@ Supports `textDocument/definition`, `textDocument/references`,
   To avoid false positives, lines that are inactive or uncertain (from an
   unresolved `#include`), lines with unexpanded macros, `.macro`/`.irp`/`.rept`
   bodies, `%` relocation expressions, and expressions containing unresolved
-  symbols are skipped conservatively.
+  symbols are skipped conservatively. Built-in codes can be suppressed via user
+  `diagnostics.suppress` or project-level `.riscv-asm-lsp.yaml` (`Diagnostics.Suppress`).
 
 - **External `clang` diagnostics (`diagnostics.external`: `"off"` | `"auto"` | `"on"`, default `"off"`)**:
   by default (`"off"`), `DiagnosticsWorker` runs only the built-in validator so

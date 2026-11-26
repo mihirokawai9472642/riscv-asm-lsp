@@ -395,6 +395,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-riscv",
  "url",
+ "yaml_serde",
 ]
 
 [[package]]

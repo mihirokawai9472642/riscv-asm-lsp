@@ -1,5 +1,6 @@
 mod compile_db;
 mod march;
+mod project_config;
 mod uri;
 
 pub use compile_db::{
@@ -438,5 +439,152 @@ mod tests {
             ]
         );
         assert!(entry.clang_flags.contains(&"-mcmodel=medany".to_owned()));
+    }
+
+    #[test]
+    fn interpolates_nearest_sibling_from_compile_commands_without_inheriting_x_override() {
+        let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_interp_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let dir_arch = tmp.join("arch").join("riscv");
+        let dir_mm = tmp.join("mm");
+        fs::create_dir_all(&dir_arch).unwrap();
+        fs::create_dir_all(&dir_mm).unwrap();
+
+        let boot_s = dir_arch.join("boot.s");
+        let unlisted_s = dir_arch.join("helper.S");
+        let unlisted_mm = dir_mm.join("mem.S");
+        fs::write(&boot_s, "nop\n").unwrap();
+        fs::write(&unlisted_s, "nop\n").unwrap();
+        fs::write(&unlisted_mm, "nop\n").unwrap();
+
+        fs::write(
+            tmp.join("compile_commands.json"),
+            serde_json::json!([
+                {
+                    "directory": tmp.to_string_lossy(),
+                    "arguments": [
+                        "clang",
+                        "--target=riscv32-unknown-elf",
+                        "-march=rv32imac",
+                        "-Iarch/inc",
+                        "-x",
+                        "assembler",
+                        "-c",
+                        boot_s.to_string_lossy()
+                    ],
+                    "file": boot_s.to_string_lossy()
+                },
+                {
+                    "directory": tmp.to_string_lossy(),
+                    "arguments": [
+                        "clang",
+                        "--target=riscv64-unknown-elf",
+                        "-march=rv64gc_zba",
+                        "-c",
+                        dir_mm.join("init.c").to_string_lossy()
+                    ],
+                    "file": dir_mm.join("init.c").to_string_lossy()
+                }
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut ctx = CompileContext::new(Some(tmp.clone()), Config::default());
+        // Sibling in `arch/riscv` inherits rv32imac + -Iarch/inc, NOT `boot.s`'s `-x assembler` override.
+        let arch_ctx = ctx.for_uri(&path_to_uri(&unlisted_s).unwrap());
+        assert_eq!(arch_ctx.march.xlen, Xlen::Rv32);
+        assert!(arch_ctx.march.extensions.contains("c"));
+        assert!(
+            arch_ctx
+                .include_dirs
+                .iter()
+                .any(|p| p.ends_with("arch/inc") || p.ends_with(r"arch\inc")),
+            "includes={:?}",
+            arch_ctx.include_dirs
+        );
+        assert!(
+            arch_ctx.preprocessed,
+            "expected .S suffix preprocessed=true"
+        );
+        assert!(ctx.is_preprocessed_path(&unlisted_s));
+
+        // File in `mm/` picks `mm/init.c` (`lcp` 2 > `arch/riscv` 1) -> rv64gc_zba
+        let mm_ctx = ctx.for_uri(&path_to_uri(&unlisted_mm).unwrap());
+        assert_eq!(mm_ctx.march.xlen, Xlen::Rv64);
+        assert!(mm_ctx.march.extensions.contains("zba"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn project_yaml_config_layers_add_remove_suppress_and_ignores_unsafe_keys() {
+        let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_yaml_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let sub = tmp.join("sub");
+        let sub_inc = sub.join("local_inc");
+        fs::create_dir_all(&sub_inc).unwrap();
+
+        let src_file = sub.join("test.S");
+        fs::write(&src_file, "nop\n").unwrap();
+        fs::write(
+            tmp.join("compile_flags.txt"),
+            "-march=rv64gc\n-DOLD_FLAG=1\n",
+        )
+        .unwrap();
+        fs::write(
+            sub.join(".riscv-asm-lsp.yaml"),
+            r#"
+CompileFlags:
+  Remove:
+    - "-march=*"
+    - "-DOLD_FLAG=*"
+  Add:
+    - "-march=rv32imac"
+    - "-DNEW_FLAG=9"
+    - "-Ilocal_inc"
+Diagnostics:
+  Suppress:
+    - "gnu-only-directive"
+clang: "/evil/clang"
+llvmMc: "/evil/llvm-mc"
+"#,
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.diagnostics.suppress = vec!["unknown-mnemonic".to_owned()];
+        let mut ctx = CompileContext::new(Some(tmp.clone()), cfg);
+        let fc = ctx.for_uri(&path_to_uri(&src_file).unwrap());
+        assert_eq!(fc.march.xlen, Xlen::Rv32);
+        assert!(fc.march.extensions.contains("c"));
+        assert!(!fc.march.extensions.contains("f"));
+        assert!(
+            fc.macro_flags.contains(&MacroFlag::Define {
+                name: "NEW_FLAG".to_owned(),
+                value: Some("9".to_owned())
+            }),
+            "macro_flags={:?}",
+            fc.macro_flags
+        );
+        assert!(
+            !fc.macro_flags
+                .iter()
+                .any(|m| matches!(m, MacroFlag::Define { name, .. } if name == "OLD_FLAG"))
+        );
+        assert!(
+            fc.include_dirs.iter().any(|d| d.ends_with("local_inc")),
+            "include_dirs={:?}",
+            fc.include_dirs
+        );
+        assert_eq!(
+            fc.suppress,
+            vec![
+                "unknown-mnemonic".to_owned(),
+                "gnu-only-directive".to_owned()
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
