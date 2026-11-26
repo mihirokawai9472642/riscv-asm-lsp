@@ -113,22 +113,12 @@ Pipeline stages:
     non-formulaic LLVM operand classes (combined with the mechanical immediate
     decoders in `server/src/hover/operands.rs`).
 
-## LLVM 23.1.6 vs. Documentation
+## LLVM vs. documentation
 
-Summary from `server/data/report.md` (LLVM `llvmorg-23.1.6` vs. riscv-unified-db
-`5d1ded1f93ab`, excluding vendor extensions and `.insn_*` internal formats):
-
-| Metric | Count | Notes |
-| --- | ---: | --- |
-| Extensions | 186 | |
-| Instructions & aliases (LLVM supported) | 2231 | 1450 in UDB + LLVM, 23 `riscv-asm-manual`, 20 `supplements.json`, 738 newer/experimental (e.g. `P`, `Y`, vector dot/zip/bfloat) |
-| Only in riscv-unified-db | 30 | e.g. `fcvt.h.q`/`fcvt.q.h`, `fmv.s.x`/`fmv.x.s`, older vector/crypto names |
-| `rv64gc` instructions in UDB missing from LLVM | 0 | |
-| CSRs (LLVM supported) | 453 | 415 in UDB + LLVM, 38 `supplements.json`, 0 undescribed |
-| CSRs only in riscv-unified-db | 2 | `mrmcfg`, `mnrmcfg` |
-| Registers | 96 | |
-| Directives | 137 | Combined `riscv-asm-manual` and `server/data/directives_gnu.json` |
-| Cleaned `TODO`s from riscv-unified-db | 6 | `htinst`, `hvip.VSEIP`, `hvip.VSTIP`, `hvip.VSSIP`, `mncause.CODE`, `mtinst` |
+[`server/data/report.md`](../server/data/report.md) lists, for the pinned
+inputs, which entries LLVM and riscv-unified-db agree on, which come from
+riscv-asm-manual or `supplements.json`, which have no description, and which
+`TODO`s were cleaned. It is regenerated with the data.
 
 Mismatch handling:
 
