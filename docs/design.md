@@ -150,7 +150,7 @@ expansions/encodings.
 | `inlay_hint.rs` | CSR number/name and `.equ`/`#define` value inlay hints |
 | `navigation.rs` | Go to definition, find references, document highlight, prepare/execute rename |
 | `symbols.rs` | Document symbols (`DocumentSymbol`) and workspace symbols (`SymbolInformation`) |
-| `semantic_tokens.rs` | Full and range semantic token encoding (including `#` comment/preproc override) |
+| `semantic_tokens.rs` | Full and range semantic token encoding (including `#` comment/preproc override and inactive preprocessor branch greying) |
 | `diagnostics/` | Async debounced `DiagnosticsWorker` (`worker.rs`), pure-Rust built-in validator (`builtin.rs`), `clang` runner (`clang.rs`), stderr/note/include parser (`parse.rs`), `#define` hints (`hints.rs`) |
 | `code_action.rs` | `did you mean` and `Use // comment` quick fixes and rewrite actions |
 | `tools.rs` | Version-independent external process discovery, RISC-V target verification, configured-tool warnings, timeouts, and one-shot permanent-failure disable |

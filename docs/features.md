@@ -184,6 +184,7 @@ Supports `textDocument/definition`, `textDocument/references`,
   | `invalid-immediate` | Error | Immediate out of range or misaligned for the operand class |
   | `invalid-csr` | Error | Unknown CSR, disabled CSR, or address out of 12-bit range |
   | `gnu-only-directive` | Warning | Directive accepted by GNU `as` but not LLVM |
+  | `inactive-branch` | Hint (`UNNECESSARY`) | Inactive preprocessor branch (`#if 0`, false `#ifdef`/`#if`); skipped for `uncertain` branches |
 
   To avoid false positives, lines that are inactive or uncertain (from an
   unresolved `#include`), lines with unexpanded macros, `.macro`/`.irp`/`.rept`
@@ -259,7 +260,7 @@ Supports `textDocument/definition`, `textDocument/references`,
 | `macro` | `declaration` | `.macro SAVE`, `SAVE` invocations |
 | `parameter` | `declaration` | macro and `.irp`/`.irpc` parameter definitions and `\param` uses |
 | `preprocessor` | — | `#define`, `#include`, `# 100`, `#` in preprocessed files |
-| `comment` | — | `# ...` lines in non-preprocessed files |
+| `comment` | — | `# ...` lines in non-preprocessed files, and inactive preprocessor branches (`#if 0`, false `#ifdef`/`#if`) |
 
 ## Preprocessor handling
 

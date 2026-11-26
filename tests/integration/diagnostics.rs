@@ -1180,9 +1180,51 @@ sym_table:
 ";
     let corpus_diags =
         run_builtin_diagnostics(&kernel_corpus_uri, corpus, &kernel_corpus_ctx, &db, &[]);
+    assert_eq!(corpus_diags.len(), 1, "corpus_diags: {corpus_diags:?}");
+    assert_eq!(
+        corpus_diags[0].diagnostic.code,
+        Some(lsp_types::NumberOrString::String(
+            "inactive-branch".to_owned()
+        ))
+    );
+    assert_eq!(
+        corpus_diags[0].diagnostic.severity,
+        Some(lsp_types::DiagnosticSeverity::HINT)
+    );
+    assert_eq!(corpus_diags[0].diagnostic.range.start.line, 15);
     assert!(
-        corpus_diags.is_empty(),
-        "expected zero false positives on kernel corpus, got: {corpus_diags:?}"
+        corpus_diags[0]
+            .diagnostic
+            .tags
+            .as_ref()
+            .is_some_and(|t| t.contains(&lsp_types::DiagnosticTag::UNNECESSARY))
+    );
+
+    // Uncertain branch (unresolved #include) must NOT emit inactive-branch
+    let uncertain_src = "#include \"missing_header.h\"\n#ifdef MAYBE_DEF\n    nop\n#endif\n";
+    let uncertain_diags = run_builtin_diagnostics(
+        &kernel_corpus_uri,
+        uncertain_src,
+        &kernel_corpus_ctx,
+        &db,
+        &[],
+    );
+    assert!(
+        uncertain_diags.is_empty(),
+        "unexpected inactive/diag on uncertain branch: {uncertain_diags:?}"
+    );
+
+    // Suppression hides inactive-branch hint too
+    let suppressed_inactive = run_builtin_diagnostics(
+        &kernel_corpus_uri,
+        corpus,
+        &kernel_corpus_ctx,
+        &db,
+        &["inactive-branch".to_owned()],
+    );
+    assert!(
+        suppressed_inactive.is_empty(),
+        "expected inactive-branch to be suppressed: {suppressed_inactive:?}"
     );
 
     // End-to-end LSP JSON-RPC test with `external: "off"` and `diagnostics.suppress`

@@ -314,5 +314,49 @@ _start:
         "decoded: {decoded:?}"
     );
 
+    // Inactive `#if 0` / `#else` greying emits comment tokens for inactive body while keeping active code & `#if`/`#else`/`#endif`
+    let inact_uri = crate::common::test_uri("sem_inactive.S");
+    let inact_src = "\
+#if 0
+    addi a0, a1, 1
+#else
+    nop
+#endif
+#include \"missing_guard.h\"
+#ifdef MAYBE
+    addi a0, a1, 2
+#endif
+";
+    client.open_doc(&inact_uri, 1, inact_src);
+    let inact_resp = client.send_request(
+        "textDocument/semanticTokens/full",
+        json!({ "textDocument": { "uri": inact_uri.as_str() } }),
+    );
+    let inact_data: Vec<u32> = inact_resp.result.expect("inactive tokens")["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+    let inact_decoded = decode_semantic_tokens(inact_src, &inact_data);
+    let comment_idx = idx_of("comment");
+    let reg_idx = idx_of("register");
+    assert!(
+        inact_decoded.contains(&("#if".to_owned(), pp_idx, 0)),
+        "inact_decoded: {inact_decoded:?}"
+    );
+    assert!(
+        inact_decoded.contains(&("    addi a0, a1, 1".to_owned(), comment_idx, 0)),
+        "inact_decoded: {inact_decoded:?}"
+    );
+    assert!(inact_decoded.contains(&("#else".to_owned(), pp_idx, 0)));
+    assert!(inact_decoded.contains(&("#endif".to_owned(), pp_idx, 0)));
+    // Uncertain branch stays normally highlighted (`a0`, `a1` are registers, not greyed out)
+    assert!(
+        !inact_decoded.contains(&("    addi a0, a1, 2".to_owned(), comment_idx, 0)),
+        "uncertain branch should not be greyed out: {inact_decoded:?}"
+    );
+    assert!(inact_decoded.contains(&("a0".to_owned(), reg_idx, 0)));
+
     client.shutdown_and_exit();
 }
