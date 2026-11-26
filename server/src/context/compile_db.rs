@@ -9,8 +9,12 @@ use serde::Deserialize;
 use crate::config::Config;
 
 use super::march::MarchSpec;
+use super::project_config::{
+    LoadedProjectConfig, find_nearest_project_config, parse_project_config_file,
+};
 use super::uri::{
-    lexical_normalize_path, normalize_path, path_key, path_starts_with, resolve_path, uri_to_path,
+    canonicalize_existing_prefix_key, lexical_normalize_path, normalize_path, path_key,
+    path_starts_with, resolve_path, uri_to_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +51,7 @@ pub struct FileContext {
     pub client_root: Option<PathBuf>,
     pub canon_root: Option<PathBuf>,
     pub preprocessed: bool,
+    pub suppress: Vec<String>,
 }
 
 pub fn is_riscv_target(target: &str) -> bool {
@@ -85,6 +90,8 @@ struct RawCompileCommand {
 #[derive(Debug, Clone)]
 pub(super) struct ParsedCompileEntry {
     pub directory: PathBuf,
+    pub file_path: PathBuf,
+    pub raw_args: Vec<String>,
     pub clang_flags: Vec<String>,
     pub target: Option<String>,
     pub march: Option<String>,
@@ -102,6 +109,7 @@ pub struct CompileContext {
     workspace_roots: Vec<PathBuf>,
     config: Config,
     root_states: Vec<RootCompileState>,
+    project_configs: HashMap<PathBuf, LoadedProjectConfig>,
 }
 
 struct RootCompileState {
@@ -124,6 +132,7 @@ impl CompileContext {
             workspace_roots,
             config,
             root_states,
+            project_configs: HashMap::new(),
         };
         ctx.reload_if_needed();
         ctx
@@ -150,12 +159,14 @@ impl CompileContext {
             state.loaded_db_path = None;
             state.loaded_mtime = None;
         }
+        self.project_configs.clear();
         self.reload_if_needed();
     }
 
     pub fn set_workspace_roots(&mut self, workspace_roots: Vec<PathBuf>) {
         self.workspace_roots = workspace_roots;
         self.root_states = build_root_states(&self.workspace_roots);
+        self.project_configs.clear();
         self.reload_if_needed();
     }
 
@@ -164,6 +175,7 @@ impl CompileContext {
         for state in &mut self.root_states {
             state.reload_if_needed(&dirs);
         }
+        self.project_configs.clear();
     }
 
     fn root_pair_for_path(&self, path: &Path) -> (Option<&Path>, Option<&Path>) {
@@ -185,27 +197,89 @@ impl CompileContext {
         &self,
         path: &Path,
         norm: &Path,
-    ) -> Option<(&ParsedCompileEntry, &RootCompileState)> {
+    ) -> Option<(&ParsedCompileEntry, &RootCompileState, bool)> {
         let key = path_key(norm);
         for state in &self.root_states {
             if let Some(entry) = state.entries.get(&key).or_else(|| state.entries.get(norm)) {
-                return Some((entry, state));
+                return Some((entry, state, true));
             }
         }
-        self.root_states
+        let containing_state = self
+            .root_states
             .iter()
             .filter(|s| path_starts_with(norm, &s.canon_root) || path_starts_with(path, &s.root))
-            .max_by_key(|s| s.canon_root.as_os_str().len())
-            .and_then(|s| s.fallback_entry.as_ref().map(|e| (e, s)))
+            .max_by_key(|s| s.canon_root.as_os_str().len())?;
+
+        if let Some(fallback) = &containing_state.fallback_entry {
+            return Some((fallback, containing_state, true));
+        }
+
+        let interp_key = canonicalize_existing_prefix_key(path);
+        interpolate_nearest_entry(&containing_state.entries, &interp_key)
+            .map(|entry| (entry, containing_state, false))
+    }
+
+    fn load_project_config_for_path(
+        &mut self,
+        path: &Path,
+        stop_root: Option<&Path>,
+    ) -> Option<LoadedProjectConfig> {
+        let (cfg_path, mtime) = find_nearest_project_config(path, stop_root)?;
+        let key = path_key(&normalize_path(&cfg_path));
+        if let Some(cached) = self.project_configs.get(&key)
+            && cached.mtime == mtime
+        {
+            return Some(cached.clone());
+        }
+        let data = parse_project_config_file(&cfg_path)?;
+        let base_dir = cfg_path
+            .parent()
+            .map(lexical_normalize_path)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let loaded = LoadedProjectConfig {
+            base_dir,
+            mtime,
+            data,
+        };
+        self.project_configs.insert(key, loaded.clone());
+        Some(loaded)
     }
 
     pub fn is_preprocessed_path(&mut self, path: &Path) -> bool {
         self.reload_if_needed();
         let norm = normalize_path(path);
-        if let Some((entry, _)) = self.find_entry_for_path(path, &norm)
-            && let Some(override_pre) = entry.lang_override
+        let (stop_root, entry_lang_override) = match self.find_entry_for_path(path, &norm) {
+            Some((entry, state, is_exact)) => (
+                Some(state.canon_root.clone()),
+                if is_exact { entry.lang_override } else { None },
+            ),
+            None => (self.root_pair_for_path(path).1.map(Path::to_path_buf), None),
+        };
+        let proj = self.load_project_config_for_path(path, stop_root.as_deref());
+        if let Some(proj_cfg) = &proj
+            && (!proj_cfg.data.compile_flags.remove.is_empty()
+                || !proj_cfg.data.compile_flags.add.is_empty())
         {
-            return override_pre;
+            let mut override_lang = entry_lang_override;
+            if proj_cfg
+                .data
+                .compile_flags
+                .remove
+                .iter()
+                .any(|p| pattern_matches(p, "-x") || pattern_matches(p, "-x*"))
+            {
+                override_lang = None;
+            }
+            let added =
+                extract_relevant_flags(&proj_cfg.base_dir, &proj_cfg.data.compile_flags.add);
+            if let Some(lang) = added.lang_override {
+                override_lang = Some(lang);
+            }
+            if let Some(pre) = override_lang {
+                return pre;
+            }
+        } else if let Some(pre) = entry_lang_override {
+            return pre;
         }
         is_preprocessed_by_suffix(path)
     }
@@ -219,12 +293,26 @@ impl CompileContext {
             .unwrap_or(true);
         if let Some(path) = &path_opt {
             let norm = normalize_path(path);
-            if let Some((entry, state)) = self.find_entry_for_path(path, &norm) {
+            if let Some((entry_ref, state_ref, is_exact)) = self.find_entry_for_path(path, &norm) {
+                let mut entry = entry_ref.clone();
+                if !is_exact {
+                    entry.lang_override = None;
+                }
+                let client_root = state_ref.root.clone();
+                let canon_root = state_ref.canon_root.clone();
+                let proj = self.load_project_config_for_path(path, Some(&canon_root));
+                let suppress = apply_project_config_to_entry(
+                    &mut entry,
+                    is_exact,
+                    proj.as_ref(),
+                    &self.config.diagnostics.suppress,
+                );
                 return self.file_context_from_entry(
-                    entry,
+                    &entry,
                     default_pre,
-                    Some(state.root.clone()),
-                    Some(state.canon_root.clone()),
+                    Some(client_root),
+                    Some(canon_root),
+                    suppress,
                 );
             }
         }
@@ -241,6 +329,33 @@ impl CompileContext {
                     self.root_states.first().map(|s| s.canon_root.clone()),
                 )
             });
+
+        let proj = path_opt
+            .as_deref()
+            .and_then(|p| self.load_project_config_for_path(p, canon_root.as_deref()));
+        if let Some(proj_cfg) = proj {
+            let default_dir = client_root
+                .clone()
+                .unwrap_or_else(|| proj_cfg.base_dir.clone());
+            let base_args = vec![
+                format!("--target={}", self.config.default_target),
+                format!("-march={}", self.config.default_march),
+            ];
+            let mut entry = extract_relevant_flags(&default_dir, &base_args);
+            let suppress = apply_project_config_to_entry(
+                &mut entry,
+                true,
+                Some(&proj_cfg),
+                &self.config.diagnostics.suppress,
+            );
+            return self.file_context_from_entry(
+                &entry,
+                default_pre,
+                client_root,
+                canon_root,
+                suppress,
+            );
+        }
 
         let target = self.config.default_target.clone();
         let is_riscv = is_riscv_target(&target);
@@ -260,6 +375,7 @@ impl CompileContext {
             client_root,
             canon_root,
             preprocessed: default_pre,
+            suppress: self.config.diagnostics.suppress.clone(),
         }
     }
 
@@ -281,6 +397,7 @@ impl CompileContext {
         default_pre: bool,
         client_root: Option<PathBuf>,
         canon_root: Option<PathBuf>,
+        suppress: Vec<String>,
     ) -> FileContext {
         let target = entry
             .target
@@ -310,7 +427,166 @@ impl CompileContext {
             client_root,
             canon_root,
             preprocessed: entry.lang_override.unwrap_or(default_pre),
+            suppress,
         }
+    }
+}
+
+fn interpolate_nearest_entry<'a>(
+    entries: &'a HashMap<PathBuf, ParsedCompileEntry>,
+    target_norm: &Path,
+) -> Option<&'a ParsedCompileEntry> {
+    let target_dir = target_norm.parent().unwrap_or(Path::new(""));
+    let target_dir_depth = target_dir.components().count();
+    let target_stem = target_norm.file_stem();
+
+    entries.values().min_by(|a, b| {
+        interpolation_score(a, target_dir, target_dir_depth, target_stem)
+            .cmp(&interpolation_score(
+                b,
+                target_dir,
+                target_dir_depth,
+                target_stem,
+            ))
+            .then_with(|| a.file_path.cmp(&b.file_path))
+    })
+}
+
+fn interpolation_score(
+    entry: &ParsedCompileEntry,
+    target_dir: &Path,
+    target_dir_depth: usize,
+    target_stem: Option<&std::ffi::OsStr>,
+) -> (usize, usize, u8, u8, u8) {
+    let cand_dir = entry.file_path.parent().unwrap_or(Path::new(""));
+    let cand_depth = cand_dir.components().count();
+    let lcp = target_dir
+        .components()
+        .zip(cand_dir.components())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let dist = target_dir_depth.saturating_sub(lcp) + cand_depth.saturating_sub(lcp);
+    let non_riscv_rank = u8::from(!entry.target.as_deref().is_none_or(is_riscv_target));
+    let stem_rank = u8::from(target_stem.is_none() || entry.file_path.file_stem() != target_stem);
+    let is_asm = matches!(
+        entry.file_path.extension().and_then(|e| e.to_str()),
+        Some("S" | "s" | "sx" | "asm")
+    );
+    let non_asm_rank = u8::from(!is_asm);
+    (
+        dist,
+        usize::MAX - lcp,
+        non_riscv_rank,
+        stem_rank,
+        non_asm_rank,
+    )
+}
+
+fn apply_project_config_to_entry(
+    entry: &mut ParsedCompileEntry,
+    is_exact: bool,
+    proj: Option<&LoadedProjectConfig>,
+    global_suppress: &[String],
+) -> Vec<String> {
+    let mut suppress = global_suppress.to_vec();
+    let Some(proj_cfg) = proj else {
+        return suppress;
+    };
+    for code in &proj_cfg.data.diagnostics.suppress {
+        if !suppress.iter().any(|existing| existing == code) {
+            suppress.push(code.clone());
+        }
+    }
+
+    let has_flag_edits = !proj_cfg.data.compile_flags.remove.is_empty()
+        || !proj_cfg.data.compile_flags.add.is_empty();
+    if !has_flag_edits {
+        return suppress;
+    }
+
+    let base_dir = entry.directory.clone();
+    let file_path = entry.file_path.clone();
+    let filtered = remove_matching_flags(&entry.raw_args, &proj_cfg.data.compile_flags.remove);
+    let mut updated = extract_relevant_flags(&base_dir, &filtered);
+    if !is_exact {
+        updated.lang_override = None;
+    }
+    updated.file_path = file_path;
+
+    let add_args = &proj_cfg.data.compile_flags.add;
+    let mut i = 0;
+    while i < add_args.len() {
+        i += updated.consume_flag(&proj_cfg.base_dir, add_args, i);
+    }
+    updated.raw_args.extend(add_args.iter().cloned());
+    *entry = updated;
+    suppress
+}
+
+fn remove_matching_flags(args: &[String], patterns: &[String]) -> Vec<String> {
+    if patterns.is_empty() {
+        return args.to_vec();
+    }
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if i == 0 && !arg.starts_with('-') {
+            out.push(arg.clone());
+            i += 1;
+            continue;
+        }
+        let takes_next = matches!(
+            arg.as_str(),
+            "-I" | "-iquote"
+                | "-isystem"
+                | "-include"
+                | "-imacros"
+                | "-isysroot"
+                | "--sysroot"
+                | "--target"
+                | "-target"
+                | "-mabi"
+                | "-mcmodel"
+                | "-D"
+                | "-U"
+                | "-x"
+        ) && i + 1 < args.len();
+
+        if takes_next {
+            let next = &args[i + 1];
+            let joined_no_space = format!("{arg}{next}");
+            let joined_space = format!("{arg} {next}");
+            if patterns.iter().any(|p| {
+                pattern_matches(p, arg)
+                    || pattern_matches(p, &joined_no_space)
+                    || pattern_matches(p, &joined_space)
+            }) {
+                i += 2;
+                continue;
+            }
+        }
+
+        if patterns.iter().any(|p| pattern_matches(p, arg)) {
+            i += 1;
+            continue;
+        }
+
+        out.push(arg.clone());
+        i += 1;
+    }
+    out
+}
+
+fn pattern_matches(pattern: &str, value: &str) -> bool {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Some(prefix) = trimmed.strip_suffix('*') {
+        value.starts_with(prefix)
+    } else {
+        value == trimmed
     }
 }
 
@@ -420,7 +696,9 @@ fn build_compile_entries(
         } else {
             Vec::new()
         };
-        entries.insert(path_key(&file_path), extract_relevant_flags(&dir, &args));
+        let mut parsed = extract_relevant_flags(&dir, &args);
+        parsed.file_path = canonicalize_existing_prefix_key(&file_path);
+        entries.insert(path_key(&file_path), parsed);
     }
     entries
 }
@@ -428,6 +706,8 @@ fn build_compile_entries(
 pub(super) fn extract_relevant_flags(dir: &Path, args: &[String]) -> ParsedCompileEntry {
     let mut entry = ParsedCompileEntry {
         directory: lexical_normalize_path(dir),
+        file_path: PathBuf::new(),
+        raw_args: args.to_vec(),
         clang_flags: Vec::new(),
         target: None,
         march: None,

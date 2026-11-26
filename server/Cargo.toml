@@ -27,5 +27,6 @@ serde.workspace = true
 serde_json.workspace = true
 ignore.workspace = true
 url.workspace = true
+yaml_serde.workspace = true
 tree-sitter.workspace = true
 tree-sitter-riscv.workspace = true

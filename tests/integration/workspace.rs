@@ -794,3 +794,114 @@ fn windows_drive_mixed_case_compile_db_and_encoded_colon_uri() {
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn compile_db_interpolation_and_project_yaml_live_reload() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_c1_c2_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let mod_dir = tmp.join("kernel");
+    let local_inc = mod_dir.join("inc");
+    std::fs::create_dir_all(&local_inc).unwrap();
+
+    std::fs::write(local_inc.join("cfg.h"), "#define KERNEL_VAL 88\n").unwrap();
+    let listed = mod_dir.join("listed.S");
+    let unlisted = mod_dir.join("unlisted.S");
+    std::fs::write(&listed, "_listed:\n    nop\n").unwrap();
+    let unlisted_src = "#include \"cfg.h\"\n    .eqv UNLISTED_CONST, 1\n    fadd.s ft0, ft1, ft2\n    li a0, KERNEL_VAL\n";
+    std::fs::write(&unlisted, unlisted_src).unwrap();
+
+    // Only `listed.S` is in compile_commands.json (rv32imac); `unlisted.S` interpolates from it.
+    std::fs::write(
+        tmp.join("compile_commands.json"),
+        json!([{
+            "directory": tmp.to_string_lossy(),
+            "arguments": [
+                "clang",
+                "--target=riscv32-unknown-elf",
+                "-march=rv32imac",
+                "-c",
+                listed.to_string_lossy()
+            ],
+            "file": listed.to_string_lossy()
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    // Project config in `kernel/.riscv-asm-lsp.yaml` adds `-Iinc` and suppresses `extension-disabled`.
+    let yaml_path = mod_dir.join(".riscv-asm-lsp.yaml");
+    std::fs::write(
+        &yaml_path,
+        "\
+CompileFlags:
+  Add:
+    - \"-Iinc\"
+Diagnostics:
+  Suppress:
+    - \"gnu-only-directive\"
+",
+    )
+    .unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let unlisted_uri = path_to_uri(&unlisted);
+    let yaml_uri = path_to_uri(&yaml_path);
+    let mut client = LspClient::start(
+        Some(json!({ "defaultMarch": "rv64gc", "diagnostics": { "enable": true, "delayMs": 20 } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&unlisted_uri, 1, unlisted_src);
+
+    let notif1 = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("initial diagnostics");
+    let diags1 = notif1.params["diagnostics"].as_array().unwrap();
+    // `gnu-only-directive` (.eqv) is suppressed by `.riscv-asm-lsp.yaml`; `extension-disabled` (fadd.s on interpolated rv32imac) remains.
+    assert_eq!(diags1.len(), 1, "diags1={diags1:?}");
+    assert_eq!(diags1[0]["code"], json!("extension-disabled"));
+
+    // `-Iinc` from `.riscv-asm-lsp.yaml` resolves `cfg.h` -> `KERNEL_VAL = 88`.
+    let hv = hover_markdown(&mut client, &unlisted_uri, 3, 12).expect("KERNEL_VAL hover");
+    assert!(hv.contains("88"), "got: {hv}");
+
+    // Update `.riscv-asm-lsp.yaml` to replace `-march=rv32imac` with `-march=rv64gc` and notify watched-file change.
+    std::fs::write(
+        &yaml_path,
+        "\
+CompileFlags:
+  Remove:
+    - \"-march=*\"
+  Add:
+    - \"-march=rv64gc\"
+    - \"-Iinc\"
+Diagnostics:
+  Suppress:
+    - \"gnu-only-directive\"
+",
+    )
+    .unwrap();
+    client.send_notification(
+        "workspace/didChangeWatchedFiles",
+        json!({
+            "changes": [{ "uri": yaml_uri.as_str(), "type": 2 }]
+        }),
+    );
+
+    let notif2 = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(5),
+        )
+        .expect("refreshed diagnostics after yaml update");
+    let diags2 = notif2.params["diagnostics"].as_array().unwrap();
+    assert!(
+        diags2.is_empty(),
+        "expected 0 diagnostics on rv64gc, got: {diags2:?}"
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

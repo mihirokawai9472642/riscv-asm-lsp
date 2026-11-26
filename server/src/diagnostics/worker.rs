@@ -344,27 +344,18 @@ impl DiagnosticsRunner {
         if !job.force && self.last_diagnosed.get(&key).copied() == Some(job.version) {
             return;
         }
+        let suppress = merge_suppress(&self.suppress, &job.file_ctx.suppress);
         let diags = match self.external {
-            ExternalDiagnosticsMode::Off => run_builtin_diagnostics(
-                &job.uri,
-                &job.text,
-                &job.file_ctx,
-                &self.db,
-                &self.suppress,
-            ),
+            ExternalDiagnosticsMode::Off => {
+                run_builtin_diagnostics(&job.uri, &job.text, &job.file_ctx, &self.db, &suppress)
+            }
             ExternalDiagnosticsMode::Auto | ExternalDiagnosticsMode::On => {
                 if let Some(ext) =
                     run_clang_diagnostics(&self.tools, &job.uri, &job.text, &job.file_ctx)
                 {
-                    filter_suppressed(ext, &self.suppress)
+                    filter_suppressed(ext, &suppress)
                 } else {
-                    run_builtin_diagnostics(
-                        &job.uri,
-                        &job.text,
-                        &job.file_ctx,
-                        &self.db,
-                        &self.suppress,
-                    )
+                    run_builtin_diagnostics(&job.uri, &job.text, &job.file_ctx, &self.db, &suppress)
                 }
             }
         };
@@ -386,6 +377,16 @@ enum WaitResult {
     Message(WorkerMsg),
     DueReady,
     Disconnected,
+}
+
+fn merge_suppress(global: &[String], file: &[String]) -> Vec<String> {
+    let mut merged = global.to_vec();
+    for code in file {
+        if !merged.iter().any(|existing| existing == code) {
+            merged.push(code.clone());
+        }
+    }
+    merged
 }
 
 fn is_stale(latest_versions: &Arc<Mutex<HashMap<String, i32>>>, key: &str, version: i32) -> bool {

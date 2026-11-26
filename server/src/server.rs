@@ -809,6 +809,8 @@ impl ServerState<'_> {
             }
             if change.uri.as_str().ends_with("compile_commands.json")
                 || change.uri.as_str().ends_with("compile_flags.txt")
+                || change.uri.as_str().ends_with(".riscv-asm-lsp.yaml")
+                || change.uri.as_str().ends_with(".riscv-asm-lsp.yml")
             {
                 self.ctx.reload_if_needed();
                 self.hover_worker.clear_cache();
@@ -893,6 +895,10 @@ fn register_watched_files_if_supported(
             },
             FileSystemWatcher {
                 glob_pattern: GlobPattern::String("**/compile_flags.txt".to_owned()),
+                kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+            },
+            FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/.riscv-asm-lsp.{yaml,yml}".to_owned()),
                 kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
             },
         ],

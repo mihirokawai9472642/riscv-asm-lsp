@@ -199,13 +199,19 @@ waiting for background workspace indexing.
 
 `CompileContext` supports multi-root workspace folders, searches
 `compileCommandsDirs` (`["", "build"]` by default) for `compile_commands.json`
-with fallback to `compile_flags.txt`, and extracts an allow-list of
+with fallback to nearest-sibling interpolation (without inheriting sibling `-x`
+language overrides) or `compile_flags.txt`, and extracts an allow-list of
 assembler/preprocessor flags (`--target`, `-march`, `-mabi`, `-mcmodel`, `-I`, `-iquote`,
 `-isystem`, `-D`, `-U`, `-include`, `-imacros`, `--sysroot`, `-isysroot`,
-`-nostdinc`, `-Wa,-I/-march/-mabi`, `-x`, PIC flags) plus the working directory.
-When no entry matches, configured defaults (`defaultTarget`, `defaultMarch`) and
-workspace root apply. Per-file preprocessing defaults by suffix (`.S`, `.sx`,
-headers = on; `.s`, `.inc` = off) and is overridden by `-x assembler-with-cpp` or
+`-nostdinc`, `-Wa,-I/-march/-mabi`, `-x`, `-menable-experimental-extensions`,
+PIC flags) plus the working directory. When no entry matches, configured
+defaults (`defaultTarget`, `defaultMarch`) and workspace root apply. Per-file
+project configuration files (`.riscv-asm-lsp.yaml` / `.riscv-asm-lsp.yml`,
+located nearest up to workspace root) can layer `CompileFlags.Remove`,
+`CompileFlags.Add` (through the same flag allow-list), and
+`Diagnostics.Suppress` — never unsafe tool paths (`clang`, `llvmMc`, driver
+paths). Per-file preprocessing defaults by suffix (`.S`, `.sx`, headers = on;
+`.s`, `.inc` = off) and is overridden by `-x assembler-with-cpp` or
 `-x assembler`. `.option push`/`pop`/`rvc`/`norvc`/`arch` directives refine the
 effective `MarchSpec` per line.
 

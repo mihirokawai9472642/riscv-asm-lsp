@@ -86,12 +86,34 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     strip_windows_verbatim_prefix(lexical_normalize_path(path))
 }
 
-/// Canonicalized lookup key for internal maps and sets.
-///
-/// Strips Windows verbatim prefixes (`\\?\`) and folds case on Windows so mixed-case
-/// paths match consistently while display URIs preserve client casing.
-pub fn path_key(path: &Path) -> PathBuf {
-    let norm = normalize_path(path);
+pub(super) fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    let lex = lexical_normalize_path(path);
+    if let Ok(canon) = fs::canonicalize(&lex) {
+        return strip_windows_verbatim_prefix(canon);
+    }
+    let mut suffix = Vec::new();
+    let mut cur = lex.as_path();
+    while let Some(name) = cur.file_name() {
+        suffix.push(name);
+        let Some(parent) = cur.parent() else {
+            break;
+        };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        if let Ok(canon) = fs::canonicalize(parent) {
+            let mut resolved = strip_windows_verbatim_prefix(canon);
+            for part in suffix.into_iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        cur = parent;
+    }
+    strip_windows_verbatim_prefix(lex)
+}
+
+fn fold_key_path(norm: PathBuf) -> PathBuf {
     #[cfg(windows)]
     {
         PathBuf::from(windows_case_fold_path(&norm.to_string_lossy()))
@@ -100,6 +122,18 @@ pub fn path_key(path: &Path) -> PathBuf {
     {
         norm
     }
+}
+
+pub(super) fn canonicalize_existing_prefix_key(path: &Path) -> PathBuf {
+    fold_key_path(canonicalize_existing_prefix(path))
+}
+
+/// Canonicalized lookup key for internal maps and sets.
+///
+/// Strips Windows verbatim prefixes (`\\?\`) and folds case on Windows so mixed-case
+/// paths match consistently while display URIs preserve client casing.
+pub fn path_key(path: &Path) -> PathBuf {
+    fold_key_path(normalize_path(path))
 }
 
 pub fn path_starts_with(path: &Path, base: &Path) -> bool {

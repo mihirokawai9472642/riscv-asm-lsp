@@ -97,7 +97,9 @@ targets.
 `initializationOptions` (in Zed: `lsp.riscv-asm-lsp.initialization_options`)
 are read once at startup. Settings under `lsp.riscv-asm-lsp.settings` (or sent
 via `workspace/didChangeConfiguration`) apply live without restarting the
-language server.
+language server. Projects can also place `.riscv-asm-lsp.yaml` (or `.yml`)
+in the workspace to add/remove compile flags and suppress built-in diagnostic
+codes (tool paths remain user-only for security).
 
 Example `.zed/settings.json`:
 
