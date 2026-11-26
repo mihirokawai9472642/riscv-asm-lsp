@@ -3,7 +3,8 @@
 Instructions for coding agents working in this repository. `README.md` is the
 user overview; `docs/design.md` describes the architecture and design decisions;
 `docs/features.md`, `docs/data.md`, and `docs/zed.md` document feature
-behaviour, generated data, and the Zed extension.
+behaviour, generated data, and the Zed extension. `CONTRIBUTING.md` describes
+the issue and pull request workflow.
 
 ## Project overview
 
@@ -135,6 +136,10 @@ available there.
 The project follows GitHub Flow: `main` always builds and passes the tests,
 and every change reaches it through a pull request.
 
+- Every change starts from a GitHub issue (see `CONTRIBUTING.md`). A branch
+  and its pull request address one issue, and the pull request links it
+  (`Fixes #N`). Stay within that issue: no unrelated clean-ups, speculative
+  features or lists of ideas.
 - Make each change on its own branch created from an up-to-date `main`,
   named after the change with the commit type as a prefix (for example
   `feat/hover-csr`). Do not commit to `main` directly.

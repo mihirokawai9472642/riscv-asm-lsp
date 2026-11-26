@@ -1,0 +1,66 @@
+name: Bug report
+description: A wrong diagnostic, hover or navigation result, a crash, or a slowdown seen on real code
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please report what you saw on real code. The reference for diagnostics and
+        encodings is LLVM 23 (`clang` / `llvm-mc`): what it accepts, the server accepts.
+  - type: input
+    id: version
+    attributes:
+      label: riscv-asm-lsp version
+      description: Output of `riscv-asm-lsp --version`, or the commit hash.
+      placeholder: riscv-asm-lsp 0.3.0
+    validations:
+      required: true
+  - type: input
+    id: editor
+    attributes:
+      label: Editor and OS
+      placeholder: Zed on Windows 11 (WSL), extension 0.3.0
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where it was seen
+      description: Project and version, file and line, and the steps to see it. For code that is not public, paste a minimal snippet instead.
+      placeholder: |
+        Project: Linux 6.18.65 (arch/riscv, built with LLVM=1)
+        Location: arch/riscv/kernel/entry.S:193
+        Steps: go to definition on `ret_from_exception`
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Actual and expected result
+      description: What the server did and what it should do. For diagnostics, include what clang or llvm-mc 23 says about the same code.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmed
+    attributes:
+      label: How it was confirmed
+      options:
+        - label: A person saw it in an editor on real code
+        - label: A measurement or script on real code shows it
+        - label: Only on an AI-generated or synthetic sample
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Relevant settings (initialization options, `.riscv-asm-lsp.yaml`) and whether a `compile_commands.json` is used.
+  - type: textarea
+    id: log
+    attributes:
+      label: Server log
+      description: The riscv-asm-lsp output from the editor's language server log (in Zed, `dev: open language server logs`). It can contain file contents.
+      render: text
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: The check that will show it is fixed, such as the same steps in the editor or the same measurement. Maintainers may fill this in.
