@@ -20,6 +20,7 @@ pub struct AsmManualData {
 
 /// Directives documented in riscv-asm-manual that LLVM rejects (Design Appendix A).
 const LLVM_UNSUPPORTED_DIRECTIVES: &[&str] = &[
+    ".dtpreldword",
     ".dtprelword",
     ".eqv",
     ".func",

@@ -7,7 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish = false
 description = "Language server for RISC-V assembly in GNU assembler syntax"
-include = ["src/**", "data/riscv.json", "data/texts.json", "Cargo.toml"]
+include = [
+    "src/**",
+    "data/riscv.json",
+    "data/texts.json",
+    "Cargo.toml",
+    "LICENSE.md",
+    "THIRD_PARTY_NOTICES.md",
+]
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }"
