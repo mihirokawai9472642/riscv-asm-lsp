@@ -35,6 +35,7 @@ pub trait AstVisitor {
     fn on_macro_param_name(&mut self, _node: Node<'_>) {}
     fn on_macro_name(&mut self, _node: Node<'_>) {}
     fn on_symbol(&mut self, _node: Node<'_>, _name: &str) {}
+    fn on_error(&mut self, _node: Node<'_>) {}
 }
 
 enum WalkItem<'tree> {
@@ -168,6 +169,9 @@ fn walk_stack<'tree>(mut stack: Vec<WalkItem<'tree>>, text: &str, visitor: &mut 
             "macro_variable" | "string_macro_variable" => {
                 emit_macro_var(node, text, visitor);
                 continue;
+            }
+            "ERROR" => {
+                visitor.on_error(node);
             }
             _ => {}
         }

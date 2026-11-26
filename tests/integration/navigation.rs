@@ -927,3 +927,65 @@ main_fn:
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn d4_fallbacks_and_d5_inline_macro_labels_support_navigation_and_symbols() {
+    let mut client = LspClient::start(None, None);
+    let uri = crate::common::test_uri("d4_d5_nav.S");
+    let src = "\
+SYM_BASE = 8
+SYM_DERIVED = SYM_BASE + 4
+.text
+_start:
+    SET_FAULT_HANDLER(x0, target_handler)
+    .dc.a target_handler
+    ALTERNATIVE(\"nop\", \"1: nop\\n\\tj 1b\", 0)
+    ALTERNATIVE(nop, __stringify(inline_alt: addi a0, a0, 1; j inline_alt), 0)
+target_handler:
+    li a0, SYM_DERIVED
+";
+    client.open_doc(&uri, 1, src);
+
+    // Column-0 `sym = expr`: go-to-definition from SYM_BASE on line 1 to line 0, and SYM_DERIVED on line 9 to line 1.
+    let def_base = client.send_request(
+        "textDocument/definition",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 1, "character": 15 } }),
+    );
+    assert_eq!(
+        def_base.result.as_ref().unwrap()["range"]["start"]["line"],
+        json!(0),
+        "SYM_BASE def: {def_base:?}"
+    );
+
+    // `.dc.a target_handler` reference jumps to `target_handler:` on line 8.
+    let def_dca = client.send_request(
+        "textDocument/definition",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 5, "character": 12 } }),
+    );
+    assert_eq!(
+        def_dca.result.as_ref().unwrap()["range"]["start"]["line"],
+        json!(8),
+        ".dc.a target_handler def: {def_dca:?}"
+    );
+
+    // D5 `__stringify(inline_alt: ... j inline_alt)` resolves definition + references + documentSymbol.
+    let def_alt = client.send_request(
+        "textDocument/definition",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 7, "character": 66 } }),
+    );
+    assert_eq!(
+        def_alt.result.as_ref().unwrap()["range"]["start"]["line"],
+        json!(7),
+        "inline_alt def: {def_alt:?}"
+    );
+
+    let sym_resp = client.send_request(
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    let sym_json = serde_json::to_string(&sym_resp.result).unwrap();
+    assert!(sym_json.contains("SYM_BASE"), "{sym_json}");
+    assert!(sym_json.contains("inline_alt"), "{sym_json}");
+
+    client.shutdown_and_exit();
+}

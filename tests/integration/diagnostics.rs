@@ -1768,3 +1768,40 @@ _start:
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn grammar_edge_cases_and_alternative_macro_produce_no_false_diagnostics() {
+    let doc_uri = crate::common::test_uri("d4_d5_grammar.S");
+    let mut client = LspClient::start(
+        Some(json!({
+            "defaultMarch": "rv64imac",
+            "diagnostics": { "enable": true, "delayMs": 15 }
+        })),
+        None,
+    );
+    let src = "\
+#define SET_FAULT_HANDLER(reg, label)
+#define ALTERNATIVE(old, new, feat) old
+SYM_VAL = 4 + 2
+.text
+_start:
+    SET_FAULT_HANDLER(x0, a1)
+    SET_FAULT_HANDLER( \\
+        x0, \\
+        a1)
+    .option arch, +a, +c
+    amoswap.w a0, a1, (a2)
+    .dc.a _start
+    ALTERNATIVE(nop, \"1: nop\\n\\tj 1b\", 0)
+    ALTERNATIVE(nop, __stringify(inline_alt: addi a0, a0, 1; j inline_alt), 0)
+";
+    client.open_doc(&doc_uri, 1, src);
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("publishDiagnostics");
+    assert_eq!(notif.params["diagnostics"], json!([]));
+    client.shutdown_and_exit();
+}

@@ -108,6 +108,7 @@ pub(super) fn build_file_index(input: BuildFileInput<'_>, parser: &mut Parser) -
         scan_cpp_defines(&input.text, &mut definitions);
     }
 
+    let mut error_spans: Vec<(usize, usize)> = Vec::new();
     if let Some(tree) = tree {
         let mut ctx = ExtractVisitor {
             text: &input.text,
@@ -117,6 +118,7 @@ pub(super) fn build_file_index(input: BuildFileInput<'_>, parser: &mut Parser) -
             references: &mut references,
             includes: &mut includes,
             globals: &mut globals,
+            error_spans: &mut error_spans,
             macro_stack: Vec::new(),
             repeat_stack: Vec::new(),
         };
@@ -133,7 +135,19 @@ pub(super) fn build_file_index(input: BuildFileInput<'_>, parser: &mut Parser) -
         }
     }
 
-    scan_fallback_assignments(&input.text, &input.line_index, &mut definitions);
+    scan_fallback_assignments(
+        &input.text,
+        &input.line_index,
+        &mut definitions,
+        &mut references,
+    );
+    scan_error_fallback_tokens(&input.text, &error_spans, &definitions, &mut references);
+    scan_inline_macro_labels(
+        &input.text,
+        &input.line_index,
+        &mut definitions,
+        &mut references,
+    );
     finalize_label_hierarchy_and_ranges(&input.text, &mut definitions, &mut references);
 
     FileIndex {
@@ -237,6 +251,7 @@ struct ExtractVisitor<'a> {
     references: &'a mut Vec<SymbolRef>,
     includes: &'a mut Vec<IncludeDirective>,
     globals: &'a mut HashSet<String>,
+    error_spans: &'a mut Vec<(usize, usize)>,
     macro_stack: Vec<usize>,
     repeat_stack: Vec<Option<usize>>,
 }
@@ -472,6 +487,12 @@ impl AstVisitor for ExtractVisitor<'_> {
         self.push_ref(name, (node.start_byte(), node.end_byte()));
     }
 
+    fn on_error(&mut self, node: Node<'_>) {
+        if node.start_byte() < node.end_byte() {
+            self.error_spans.push((node.start_byte(), node.end_byte()));
+        }
+    }
+
     fn on_numeric_label_ref(&mut self, node: Node<'_>, raw: &str) {
         if let Some((digits, forward)) = super::parse_numeric_ref_token(raw) {
             self.references.push(SymbolRef {
@@ -593,18 +614,28 @@ fn collect_macro_params(node: Node<'_>, text: &str, out: &mut Vec<MacroParamDef>
     }
 }
 
-fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<SymbolDef>) {
+fn scan_fallback_assignments(
+    text: &str,
+    line_index: &LineIndex,
+    defs: &mut Vec<SymbolDef>,
+    refs: &mut Vec<SymbolRef>,
+) {
     let mut existing_equs: HashSet<usize> = defs
         .iter()
         .filter(|d| d.kind == SymKind::Equ)
         .map(|d| d.name_span.0)
+        .collect();
+    let mut recorded_spans: HashSet<(usize, usize)> = defs
+        .iter()
+        .map(|d| d.name_span)
+        .chain(refs.iter().map(|r| r.span))
         .collect();
 
     let mut offset = 0usize;
     let mut in_block = false;
     for raw_line in text.split_inclusive('\n') {
         let code = crate::line::strip_comments_with_state(raw_line, &mut in_block, false);
-        if let Some((lhs, rhs)) = code.split_once('=') {
+        if let Some((eq_idx, lhs, rhs)) = code.find('=').map(|i| (i, &code[..i], &code[i + 1..])) {
             let lhs_trim = lhs.trim();
             if !lhs_trim.is_empty()
                 && !lhs_trim.ends_with(['!', '<', '>'])
@@ -613,12 +644,13 @@ fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<
                 && let Some(rel) = code.find(lhs_trim)
             {
                 let name_start = offset + rel;
+                let name_span = (name_start, name_start + lhs_trim.len());
                 if existing_equs.insert(name_start) {
                     defs.push(SymbolDef {
                         name: lhs_trim.to_owned(),
                         kind: SymKind::Equ,
                         assign_kind: Some(AssignKind::Equals),
-                        name_span: (name_start, name_start + lhs_trim.len()),
+                        name_span,
                         full_span: (offset, offset + raw_line.len()),
                         line_text: line_text_at(text, line_index, name_start),
                         value_text: Some(rhs.trim().to_owned()),
@@ -626,11 +658,395 @@ fn scan_fallback_assignments(text: &str, line_index: &LineIndex, defs: &mut Vec<
                         enclosing_label_idx: None,
                         enclosing_macro_idx: None,
                     });
+                    recorded_spans.insert(name_span);
                 }
+                let rhs_start = offset + eq_idx + 1;
+                let rhs_end = offset + code.len();
+                collect_tokens_in_slice(text, rhs_start, rhs_end, true, &mut recorded_spans, refs);
             }
         }
         offset += raw_line.len();
     }
+}
+
+fn scan_error_fallback_tokens(
+    text: &str,
+    error_spans: &[(usize, usize)],
+    defs: &[SymbolDef],
+    refs: &mut Vec<SymbolRef>,
+) {
+    if error_spans.is_empty() {
+        return;
+    }
+    let mut recorded_spans: HashSet<(usize, usize)> = defs
+        .iter()
+        .map(|d| d.name_span)
+        .chain(refs.iter().map(|r| r.span))
+        .collect();
+    for &(start, end) in error_spans {
+        collect_tokens_in_slice(text, start, end, false, &mut recorded_spans, refs);
+    }
+}
+
+fn collect_tokens_in_slice(
+    text: &str,
+    start: usize,
+    end: usize,
+    skip_strings: bool,
+    recorded_spans: &mut HashSet<(usize, usize)>,
+    refs: &mut Vec<SymbolRef>,
+) {
+    let Some(slice) = text.get(start..end) else {
+        return;
+    };
+    let bytes = slice.as_bytes();
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' {
+            in_single = true;
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            if skip_strings {
+                in_double = true;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if is_ident_start_byte(b) {
+            let tok_start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_cont_byte(bytes[i]) {
+                i += 1;
+            }
+            let tok = &slice[tok_start..i];
+            let abs_span = (start + tok_start, start + i);
+            let prev_byte = tok_start.checked_sub(1).and_then(|p| bytes.get(p).copied());
+            let next_byte = bytes.get(i).copied();
+            if tok != "."
+                && !tok.starts_with('.')
+                && next_byte != Some(b':')
+                && !matches!(prev_byte, Some(b'+' | b'-' | b'\\'))
+                && recorded_spans.insert(abs_span)
+            {
+                refs.push(SymbolRef {
+                    name: tok.to_owned(),
+                    kind: RefKind::Identifier,
+                    span: abs_span,
+                    enclosing_macro_idx: None,
+                });
+            }
+            continue;
+        }
+        if b.is_ascii_digit() {
+            let num_start = i;
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'x' | b'X'))
+            {
+                i += 1;
+            }
+            let tok = &slice[num_start..i];
+            let abs_span = (start + num_start, start + i);
+            if bytes.get(i) != Some(&b':')
+                && let Some((digits, forward)) = super::parse_numeric_ref_token(tok)
+                && recorded_spans.insert(abs_span)
+            {
+                refs.push(SymbolRef {
+                    name: digits.to_owned(),
+                    kind: if forward {
+                        RefKind::NumericForward
+                    } else {
+                        RefKind::NumericBackward
+                    },
+                    span: abs_span,
+                    enclosing_macro_idx: None,
+                });
+            }
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn is_ident_start_byte(b: u8) -> bool {
+    b.is_ascii_alphabetic() || matches!(b, b'_' | b'.')
+}
+
+fn is_ident_cont_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'$')
+}
+
+/// Extract inline label definitions and references embedded inside C macro argument strings
+/// and `__stringify(...)` forms (such as Linux `ALTERNATIVE(...)`).
+fn scan_inline_macro_labels(
+    text: &str,
+    line_index: &LineIndex,
+    defs: &mut Vec<SymbolDef>,
+    refs: &mut Vec<SymbolRef>,
+) {
+    let mut recorded_defs: HashSet<(usize, usize)> = defs.iter().map(|d| d.name_span).collect();
+    let mut recorded_refs: HashSet<(usize, usize)> = defs
+        .iter()
+        .map(|d| d.name_span)
+        .chain(refs.iter().map(|r| r.span))
+        .collect();
+
+    // 1. Scan `__stringify(...)` arguments for inline unquoted labels (`1:`, `lbl:`).
+    let bytes = text.as_bytes();
+    let mut search = 0usize;
+    while let Some(rel) = text.get(search..).and_then(|s| s.find("__stringify")) {
+        let kw_start = search + rel;
+        let kw_end = kw_start + "__stringify".len();
+        search = kw_end;
+        let prev_ok = kw_start == 0
+            || !bytes
+                .get(kw_start - 1)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if !prev_ok {
+            continue;
+        }
+        let mut p = kw_end;
+        while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        if bytes.get(p) != Some(&b'(') {
+            continue;
+        }
+        let Some(close) = find_matching_paren(bytes, p) else {
+            continue;
+        };
+        extract_inline_labels_in_fragment(
+            text,
+            p + 1,
+            close,
+            line_index,
+            &mut recorded_defs,
+            &mut recorded_refs,
+            defs,
+            refs,
+        );
+    }
+
+    // 2. Scan quoted string literals inside `ALTERNATIVE*(` macro calls.
+    let mut alt_search = 0usize;
+    while let Some(rel) = text.get(alt_search..).and_then(|s| s.find("ALTERNATIVE")) {
+        let kw_start = alt_search + rel;
+        let mut p = kw_start + "ALTERNATIVE".len();
+        alt_search = p;
+        let prev_ok = kw_start == 0
+            || !bytes
+                .get(kw_start - 1)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if !prev_ok {
+            continue;
+        }
+        while p < bytes.len() && (bytes[p].is_ascii_alphanumeric() || bytes[p] == b'_') {
+            p += 1;
+        }
+        while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        if bytes.get(p) != Some(&b'(') {
+            continue;
+        }
+        let Some(close) = find_matching_paren(bytes, p) else {
+            continue;
+        };
+        let mut i = p + 1;
+        while i < close {
+            if bytes[i] == b'"' {
+                let s_start = i + 1;
+                i += 1;
+                while i < close {
+                    if bytes[i] == b'\\' && i + 1 < close {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        extract_inline_labels_in_fragment(
+                            text,
+                            s_start,
+                            i,
+                            line_index,
+                            &mut recorded_defs,
+                            &mut recorded_refs,
+                            defs,
+                            refs,
+                        );
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+}
+
+fn find_matching_paren(bytes: &[u8], open_pos: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = open_pos;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_single {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == b'\'' {
+                in_single = false;
+            }
+        } else if in_double {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_double = false;
+            }
+        } else {
+            match b {
+                b'\'' => in_single = true,
+                b'"' => in_double = true,
+                b'(' => depth += 1,
+                b')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_inline_labels_in_fragment(
+    text: &str,
+    start: usize,
+    end: usize,
+    line_index: &LineIndex,
+    recorded_defs: &mut HashSet<(usize, usize)>,
+    recorded_refs: &mut HashSet<(usize, usize)>,
+    defs: &mut Vec<SymbolDef>,
+    refs: &mut Vec<SymbolRef>,
+) {
+    let Some(frag) = text.get(start..end) else {
+        return;
+    };
+    let bytes = frag.as_bytes();
+    let mut at_stmt_start = true;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_whitespace() || b == b'\\' && bytes.get(i + 1) == Some(&b'\n') {
+            i += 1;
+            continue;
+        }
+        // Treat C string escape `\n`, `\t` inside quotes and `;` as separators/whitespace.
+        if b == b'\\' && matches!(bytes.get(i + 1), Some(b'n' | b't' | b'r')) {
+            if bytes.get(i + 1) == Some(&b'n') {
+                at_stmt_start = true;
+            }
+            i += 2;
+            continue;
+        }
+        if b == b';' {
+            at_stmt_start = true;
+            i += 1;
+            continue;
+        }
+        if b == b',' || b == b'(' || b == b')' {
+            at_stmt_start = false;
+            i += 1;
+            continue;
+        }
+
+        if at_stmt_start && (b.is_ascii_digit() || is_ident_start_byte(b)) {
+            let tok_start = i;
+            let mut j = i + 1;
+            if b.is_ascii_digit() {
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+            } else {
+                while j < bytes.len() && is_ident_cont_byte(bytes[j]) {
+                    j += 1;
+                }
+            }
+            if bytes.get(j) == Some(&b':') && bytes.get(j + 1) != Some(&b':') {
+                let name = &frag[tok_start..j];
+                let abs_span = (start + tok_start, start + j);
+                if name != "." && recorded_defs.insert(abs_span) {
+                    let kind = if b.is_ascii_digit() {
+                        SymKind::NumericLabel
+                    } else if name.starts_with(".L") {
+                        SymKind::LocalLabel
+                    } else {
+                        SymKind::Label
+                    };
+                    defs.push(SymbolDef {
+                        name: name.to_owned(),
+                        kind,
+                        assign_kind: None,
+                        name_span: abs_span,
+                        full_span: (abs_span.0, start + j + 1),
+                        line_text: line_text_at(text, line_index, abs_span.0),
+                        value_text: None,
+                        params: Vec::new(),
+                        enclosing_label_idx: None,
+                        enclosing_macro_idx: None,
+                    });
+                    recorded_refs.insert(abs_span);
+                }
+                i = j + 1;
+                at_stmt_start = true;
+                continue;
+            }
+        }
+        at_stmt_start = false;
+        i += 1;
+    }
+
+    collect_tokens_in_slice(text, start, end, true, recorded_refs, refs);
 }
 
 fn is_valid_ident(s: &str) -> bool {
