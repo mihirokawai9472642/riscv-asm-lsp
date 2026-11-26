@@ -7,11 +7,13 @@ use lsp_types::{
 use tree_sitter::Node;
 
 use crate::ast::{AstVisitor, walk_node};
-use crate::context::CompileContext;
+use crate::context::{CompileContext, uri_to_path};
 use crate::data::Database;
 use crate::document::Document;
 use crate::index::{SymKind, WorkspaceIndex, parse_macro_var_token, parse_numeric_ref_token};
-use crate::preprocessor::{HashLineKind, classify_hash_line};
+use crate::preprocessor::{
+    HashLineKind, LineState, PreprocessOptions, classify_hash_line, preprocess_document,
+};
 
 pub const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::new("register"),
@@ -104,6 +106,43 @@ fn collect_semantic_tokens(
             out: &mut raw,
         };
         walk_node(tree.root_node(), &doc.text, &mut visitor);
+    }
+
+    if file_ctx.preprocessed {
+        let file_path = uri_to_path(&doc.uri);
+        let preproc = preprocess_document(
+            &doc.text,
+            &PreprocessOptions {
+                file_path: file_path.as_deref(),
+                file_ctx: &file_ctx,
+                db,
+                open_files: None,
+            },
+        );
+        let mut inactive_lines: HashSet<usize> = HashSet::new();
+        for pl in &preproc.lines {
+            if pl.state == LineState::Inactive {
+                for ln in pl.source_line..=pl.end_source_line {
+                    inactive_lines.insert(ln);
+                }
+            }
+        }
+        if !inactive_lines.is_empty() {
+            raw.retain(|tok| {
+                !inactive_lines.contains(&doc.line_index.line_at_offset(tok.start_byte))
+            });
+            for &line_idx in &inactive_lines {
+                let (ls, ce, _) = doc.line_index.line_bounds(&doc.text, line_idx);
+                if ls < ce && !doc.text.get(ls..ce).unwrap_or("").trim().is_empty() {
+                    raw.push(RawToken {
+                        start_byte: ls,
+                        end_byte: ce,
+                        token_type: IDX_COMMENT,
+                        modifiers: 0,
+                    });
+                }
+            }
+        }
     }
 
     Some(SemanticTokens {

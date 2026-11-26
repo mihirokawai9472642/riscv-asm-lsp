@@ -528,6 +528,13 @@ fn process_source_lines(
             .map_or(LineState::Active, |frame| frame.branch_state);
 
         if let Some(kind) = classify_hash_line(&lline.text) {
+            let directive_line_state = match kind {
+                HashLineKind::Directive {
+                    name: "elif" | "elifdef" | "elifndef" | "else" | "endif",
+                    ..
+                } => stack.last().map_or(cur_state, |frame| frame.parent_state),
+                _ => cur_state,
+            };
             match kind {
                 HashLineKind::Directive { name, rest, .. } => {
                     handle_directive(
@@ -551,7 +558,7 @@ fn process_source_lines(
                 out.push(PreprocessedLine {
                     source_line: lline.first_source_line,
                     end_source_line: lline.last_source_line,
-                    state: cur_state,
+                    state: directive_line_state,
                     text: String::new(),
                     had_expansion: false,
                     has_unexpanded_macro: false,

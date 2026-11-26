@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri};
+use lsp_types::{
+    Diagnostic, DiagnosticSeverity, DiagnosticTag, NumberOrString, Position, Range, Uri,
+};
 
 use crate::context::{FileContext, MarchSpec, path_key, uri_to_path};
 use crate::data::{Database, InstructionVariant, RegisterClass, Xlen};
@@ -28,6 +30,7 @@ pub mod codes {
     pub const INVALID_IMMEDIATE: &str = "invalid-immediate";
     pub const INVALID_CSR: &str = "invalid-csr";
     pub const GNU_ONLY_DIRECTIVE: &str = "gnu-only-directive";
+    pub const INACTIVE_BRANCH: &str = "inactive-branch";
 }
 
 /// Validate a document purely in Rust using the built-in preprocessor output and bundled
@@ -87,7 +90,78 @@ pub fn run_builtin_diagnostics(
         }
     }
 
+    if file_ctx.preprocessed {
+        emit_inactive_branch_hints(&preproc.lines, text, &line_index, &mut out);
+    }
+
     filter_suppressed(out, suppress)
+}
+
+fn emit_inactive_branch_hints(
+    lines: &[PreprocessedLine],
+    text: &str,
+    line_index: &LineIndex,
+    out: &mut Vec<StoredDiagnostic>,
+) {
+    let mut inactive_lines: Vec<usize> = Vec::new();
+    for pl in lines {
+        if pl.state == LineState::Inactive {
+            for ln in pl.source_line..=pl.end_source_line {
+                inactive_lines.push(ln);
+            }
+        }
+    }
+    inactive_lines.sort_unstable();
+    inactive_lines.dedup();
+
+    let mut run_start: Option<usize> = None;
+    let mut run_last_nonempty: Option<usize> = None;
+    let mut prev_line: Option<usize> = None;
+
+    let flush =
+        |start_opt: Option<usize>, end_opt: Option<usize>, out: &mut Vec<StoredDiagnostic>| {
+            let (Some(start_ln), Some(end_ln)) = (start_opt, end_opt) else {
+                return;
+            };
+            let (_, end_byte, _) = line_index.line_bounds(text, end_ln);
+            let end_pos = line_index.offset_to_position(text, end_byte);
+            let range = Range::new(Position::new(start_ln as u32, 0), end_pos);
+            out.push(StoredDiagnostic {
+                diagnostic: Diagnostic {
+                    range,
+                    severity: Some(DiagnosticSeverity::HINT),
+                    code: Some(NumberOrString::String(codes::INACTIVE_BRANCH.to_owned())),
+                    code_description: None,
+                    source: Some(SOURCE_NAME.to_owned()),
+                    message: "Inactive preprocessor branch".to_owned(),
+                    related_information: None,
+                    tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+                    data: None,
+                },
+                suggestions: Vec::new(),
+                macro_def_hints: Vec::new(),
+            });
+        };
+
+    for ln in inactive_lines {
+        let is_contiguous = prev_line.is_some_and(|p| ln <= p + 1);
+        if !is_contiguous {
+            flush(run_start, run_last_nonempty, out);
+            run_start = None;
+            run_last_nonempty = None;
+        }
+        prev_line = Some(ln);
+
+        let (ls, ce, _) = line_index.line_bounds(text, ln);
+        let non_empty = !text.get(ls..ce).unwrap_or("").trim().is_empty();
+        if non_empty {
+            if run_start.is_none() {
+                run_start = Some(ln);
+            }
+            run_last_nonempty = Some(ln);
+        }
+    }
+    flush(run_start, run_last_nonempty, out);
 }
 
 pub(super) fn filter_suppressed(
@@ -2098,11 +2172,9 @@ mod tests {
     /* 日😀 */ mvi a0, 1
 ";
         let diags = check("rv64gc", src, &[]);
-        // Unresolved `#include` suppresses `unknown-mnemonic`, so check directly without unresolved include:
-        assert!(
-            diags.is_empty(),
-            "expected 0 false positives, got {diags:?}"
-        );
+        // Inactive `#if 0` emits only the suppressible `inactive-branch` hint, with 0 errors/warnings:
+        assert_eq!(diag_codes(&diags), vec![codes::INACTIVE_BRANCH]);
+        assert!(check("rv64gc", src, &[codes::INACTIVE_BRANCH]).is_empty());
 
         let mb_src = "    /* 日😀 */ addi a0, a1, 5000\n";
         let mb_diags = check("rv64gc", mb_src, &[]);
