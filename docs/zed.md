@@ -67,8 +67,10 @@ from `config.toml`, so add these in user or workspace `.zed/settings.json`:
   addresses/names and resolved `.equ`/`#define` values inline.
 - Language server options under `lsp.riscv-asm-lsp.settings` apply live without
   restarting the server; options under
-  `lsp.riscv-asm-lsp.initialization_options` are read once at startup (see
-  [README.md](../README.md#configuration)).
+  `lsp.riscv-asm-lsp.initialization_options` act as the startup base layer and
+  are preserved when `workspace/didChangeConfiguration` sends partial, `null`,
+  or `{}` settings updates (nested objects such as `diagnostics` are merged
+  key-by-key; see [README.md](../README.md#configuration)).
 
 ### Theme Overrides
 

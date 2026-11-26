@@ -1550,3 +1550,139 @@ fn default_diagnostics_uses_builtin_without_spawning_clang() {
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn did_change_configuration_preserves_initialization_options_base_layer() {
+    let doc_uri = crate::common::test_uri("f1_config_layer.S");
+    let mut client = LspClient::start(
+        Some(json!({
+            "defaultTarget": "riscv32-unknown-elf",
+            "defaultMarch": "rv32imac",
+            "diagnostics": { "enable": true, "delayMs": 15 }
+        })),
+        None,
+    );
+    client.open_doc(&doc_uri, 1, "_start:\n    addiw a0, a1, 1\n");
+    let first = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("initial diagnostics");
+    assert_eq!(
+        first.params["diagnostics"][0]["code"],
+        json!("xlen-mismatch")
+    );
+
+    for payload in [
+        json!(null),
+        json!({}),
+        json!({ "riscv-asm-lsp": { "diagnostics": { "external": "off" } } }),
+    ] {
+        client.send_notification(
+            "workspace/didChangeConfiguration",
+            json!({ "settings": payload }),
+        );
+        let notif = client
+            .wait_for_notification(
+                "textDocument/publishDiagnostics",
+                std::time::Duration::from_secs(3),
+            )
+            .expect("diagnostics after partial/null didChangeConfiguration");
+        assert_eq!(
+            notif.params["diagnostics"][0]["code"],
+            json!("xlen-mismatch"),
+            "partial didChangeConfiguration wiped initOptions: {notif:?}"
+        );
+    }
+
+    client.send_notification(
+        "workspace/didChangeConfiguration",
+        json!({ "settings": { "defaultMarch": "rv64gc" } }),
+    );
+    let cleared = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("diagnostics after switching defaultMarch to rv64gc");
+    assert_eq!(cleared.params["diagnostics"], json!([]));
+
+    client.shutdown_and_exit();
+}
+
+#[test]
+fn insn_and_attribute_arch_directives_produce_no_false_positives() {
+    let doc_uri = crate::common::test_uri("insn_and_attr.S");
+    let mut client = LspClient::start(
+        Some(json!({
+            "defaultMarch": "rv64imac",
+            "diagnostics": { "enable": true, "delayMs": 15 }
+        })),
+        None,
+    );
+    let src = "\
+_start:
+    .insn r 0x33, 0, 0, a0, a1, a2
+    .insn i 0x13, 0, a0, a1, 1
+    .insn 0x13
+    .insn 4, 0x13
+    .attribute arch, \"rv64gcv\"
+    vsetivli a0, 4, e32, m1, ta, ma
+    frcsr a1
+";
+    client.open_doc(&doc_uri, 1, src);
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("publishDiagnostics");
+    assert_eq!(notif.params["diagnostics"], json!([]));
+    client.shutdown_and_exit();
+}
+
+#[test]
+fn deeply_nested_expressions_do_not_overflow_stack() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_deep_expr_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let terms_expr = std::iter::repeat_n("1", 20_000)
+        .collect::<Vec<_>>()
+        .join("+");
+    let parens_expr = format!("{}1{}", "(".repeat(5_000), ")".repeat(5_000));
+    let unary_expr = format!("{}1", "-".repeat(10_000));
+
+    let unopened_path = tmp.join("deep_unopened.S");
+    let deep_src = format!(
+        "_start:\n    addi a0, a0, {terms_expr}\n    addi a1, a1, {parens_expr}\n    addi a2, a2, {unary_expr}\n"
+    );
+    std::fs::write(&unopened_path, &deep_src).unwrap();
+
+    let open_path = tmp.join("main.S");
+    let open_src = "_start:\n    addi a0, a0, 1\n";
+    std::fs::write(&open_path, open_src).unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let open_uri = path_to_uri(&open_path);
+    let mut client = LspClient::start(
+        Some(json!({ "diagnostics": { "enable": true, "delayMs": 15 } })),
+        Some(&root_uri),
+    );
+    client.open_doc(&open_uri, 1, &deep_src);
+
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(10),
+        )
+        .expect("diagnostics for deep expression file");
+    assert_eq!(notif.params["uri"], json!(open_uri.as_str()));
+
+    let hover = crate::common::hover_markdown(&mut client, &open_uri, 1, 5).expect("hover addi");
+    assert!(hover.contains("addi"), "unexpected hover: {hover}");
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

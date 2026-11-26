@@ -212,13 +212,15 @@ located nearest up to workspace root) can layer `CompileFlags.Remove`,
 `Diagnostics.Suppress` — never unsafe tool paths (`clang`, `llvmMc`, driver
 paths). Per-file preprocessing defaults by suffix (`.S`, `.sx`, headers = on;
 `.s`, `.inc` = off) and is overridden by `-x assembler-with-cpp` or
-`-x assembler`. `.option push`/`pop`/`rvc`/`norvc`/`arch` directives refine the
+`-x assembler`. `.option push`/`pop`/`rvc`/`norvc`/`arch` and `.attribute arch` directives refine the
 effective `MarchSpec` per line.
 
 ### 4.4 Configuration
 
-Options are read from `initializationOptions` at startup and updated live via
-`workspace/didChangeConfiguration` and `workspace/didChangeWorkspaceFolders`:
+Options are read from `initializationOptions` as the startup base layer and
+updated live via `workspace/didChangeConfiguration` (deep-merging nested objects
+such as `diagnostics` key-by-key on top of the base layer, ignoring `null` or
+empty `{}` payloads) and `workspace/didChangeWorkspaceFolders`:
 `clang`, `llvmMc`, `compileCommandsDirs`, `defaultTarget`, `defaultMarch`,
 `diagnostics.enable`, `diagnostics.delayMs`, `diagnostics.external` (default `"off"`), and `diagnostics.suppress`. External tool paths (`clang`,
 `llvmMc`) come strictly from user/client configuration, `PATH`, or standard

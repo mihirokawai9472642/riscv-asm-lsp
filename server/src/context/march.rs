@@ -282,8 +282,25 @@ fn strip_ext_version(token: &str) -> &str {
     &token[..end]
 }
 
-/// Scan `.option` directives up to `target_line` (0-based) to determine effective
-/// `-march` state and `.option` directives to replay for `llvm-mc`.
+/// Parse `.attribute arch, "rv64..."` or `.attribute 5, "rv64..."` (`Tag_RISCV_arch`),
+/// returning the unquoted ISA string when present.
+pub fn parse_attribute_arch(rest: &str) -> Option<&str> {
+    let (tag, raw_val) = rest.split_once(',')?;
+    let tag_trimmed = tag.trim();
+    if !tag_trimmed.eq_ignore_ascii_case("arch") && tag_trimmed != "5" {
+        return None;
+    }
+    let trimmed = raw_val.trim();
+    let inner = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed)
+        .trim();
+    (!inner.is_empty()).then_some(inner)
+}
+
+/// Scan `.option` and `.attribute arch` directives up to `target_line` (0-based) to
+/// determine effective `-march` state and directives to replay for `llvm-mc`.
 pub fn effective_options_at_line(
     text: &str,
     target_line: usize,
@@ -301,6 +318,15 @@ pub fn effective_options_at_line(
         let stripped = crate::line::strip_comments_with_state(raw_line, &mut in_block, false);
         for stmt in crate::line::split_unquoted_statements_stripped(&stripped) {
             let trimmed = stmt.trim();
+            if let Some(rest) = trimmed.strip_prefix(".attribute")
+                && rest.chars().next().is_some_and(char::is_whitespace)
+            {
+                if let Some(arch_val) = parse_attribute_arch(rest) {
+                    current.apply_option_arch(arch_val);
+                    active_lines.push(trimmed.to_owned());
+                }
+                continue;
+            }
             let Some(rest) = trimmed.strip_prefix(".option") else {
                 continue;
             };

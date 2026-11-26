@@ -354,7 +354,7 @@ fn validate_statement(
         );
         let stmt_range = map_expanded_range(source_text, line_index, pl, abs_start, abs_end);
 
-        if head_lower.starts_with('.') && !head_lower.starts_with(".insn") {
+        if head_lower.starts_with('.') {
             handle_directive_statement(&head_lower, head, rest, head_range, db, state, out, 0);
             return;
         }
@@ -393,7 +393,13 @@ fn handle_directive_statement(
     include_depth: usize,
 ) {
     match head_lower {
+        ".insn" => return,
         ".option" => apply_option_directive(rest, state),
+        ".attribute" => {
+            if let Some(arch) = crate::context::parse_attribute_arch(rest) {
+                state.march.apply_option_arch(arch);
+            }
+        }
         ".equ" | ".equiv" | ".set" => {
             if let Some((sym, expr)) = rest.split_once(',') {
                 let sym_name = sym.trim();
@@ -498,6 +504,11 @@ fn scan_asm_include(target: &str, db: &Database, state: &mut ValidatorState<'_>,
                             let val = eval_asm_const_expr(expr.trim(), &state.equ_consts);
                             state.equ_consts.insert(s.to_owned(), val);
                         }
+                    }
+                }
+                ".attribute" if local_macro_depth == 0 => {
+                    if let Some(arch) = crate::context::parse_attribute_arch(rest) {
+                        state.march.apply_option_arch(arch);
                     }
                 }
                 ".include" if local_macro_depth == 0 => {
