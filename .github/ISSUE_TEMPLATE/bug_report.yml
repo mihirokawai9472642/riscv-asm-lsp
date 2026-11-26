@@ -57,7 +57,7 @@ body:
     id: log
     attributes:
       label: Server log
-      description: The riscv-asm-lsp output from the editor's language server log (in Zed, `dev: open language server logs`). It can contain file contents.
+      description: "The riscv-asm-lsp output from the editor's language server log (in Zed, `dev: open language server logs`). It can contain file contents."
       render: text
   - type: textarea
     id: done
