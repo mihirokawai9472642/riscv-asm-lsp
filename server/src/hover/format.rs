@@ -69,6 +69,24 @@ pub(crate) fn build_instruction_hover_parts(
     db: &Database,
     specific_syntax: Option<&str>,
 ) -> RenderedHoverParts {
+    build_instruction_hover_parts_for_stmt(
+        inst,
+        effective_march,
+        enabled_by_march,
+        db,
+        specific_syntax,
+        None,
+    )
+}
+
+pub(crate) fn build_instruction_hover_parts_for_stmt(
+    inst: &InstructionEntry,
+    effective_march: &MarchSpec,
+    enabled_by_march: bool,
+    db: &Database,
+    specific_syntax: Option<&str>,
+    stmt_with_consts: Option<(&str, &std::collections::HashMap<String, String>)>,
+) -> RenderedHoverParts {
     let variants_to_show = select_variants(inst, effective_march, specific_syntax);
     let (code, below_fence) = collect_syntax_block(inst, &variants_to_show);
     let context = format_instruction_context(inst, &variants_to_show);
@@ -96,7 +114,13 @@ pub(crate) fn build_instruction_hover_parts(
         let targets: Vec<String> = aliases.iter().map(|a| format!("`{a}`")).collect();
         facts.push(format!("Alias of: {}", targets.join(", ")));
     }
-    if let Some(op_fact) = format_operands_fact(&variants_to_show, db) {
+    let matched_operand_variants = stmt_with_consts.and_then(|(stmt, known_consts)| {
+        super::builtin_expand::matching_variants_for_stmt(stmt, &variants_to_show, known_consts, db)
+    });
+    let operand_variants = matched_operand_variants
+        .as_deref()
+        .unwrap_or(&variants_to_show);
+    if let Some(op_fact) = format_operands_fact(&inst.mnemonic, operand_variants, db) {
         facts.push(op_fact);
     }
 
@@ -275,11 +299,24 @@ fn collect_aliases(inst: &InstructionEntry) -> Vec<&str> {
     aliases
 }
 
-fn format_operands_fact(variants: &[&InstructionVariant], db: &Database) -> Option<String> {
+fn format_operands_fact(
+    mnemonic: &str,
+    variants: &[&InstructionVariant],
+    db: &Database,
+) -> Option<String> {
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
     let mut seen_name: HashSet<String> = HashSet::new();
+    let has_non_special = variants
+        .iter()
+        .any(|v| !crate::completion::snippets::is_special_variant(mnemonic, v));
 
-    for v in variants.iter().take(MAX_SYNTAX_VARIANTS) {
+    for v in variants
+        .iter()
+        .filter(|v| {
+            !has_non_special || !crate::completion::snippets::is_special_variant(mnemonic, v)
+        })
+        .take(MAX_SYNTAX_VARIANTS)
+    {
         for op in &v.operands {
             if !seen_name.insert(op.name.clone()) {
                 continue;

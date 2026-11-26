@@ -32,7 +32,7 @@ use expand::{
     format_this_line_fact, resolve_expansion,
 };
 use format::{
-    RenderedHoverParts, build_instruction_hover_parts, format_cpp_directive_hover,
+    RenderedHoverParts, build_instruction_hover_parts_for_stmt, format_cpp_directive_hover,
     format_include_hover, format_macro_counter_hover, format_operand_keyword_hover,
     format_symbol_hover, format_unresolved_include_hover,
 };
@@ -433,25 +433,41 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
             c.effective_march
                 .supports_extensions(&v.required_extensions, v.xlen)
         });
-    let mut parts =
-        build_instruction_hover_parts(c.inst, c.effective_march, enabled_by_march, c.db, None);
     let external_mode = c.ctx.config().diagnostics.external;
     let use_external_mc = external_mode != crate::config::ExternalDiagnosticsMode::Off
         && !c.tools.is_disabled(ToolKind::LlvmMc);
-    if !c.inst.llvm_supported || !enabled_by_march {
-        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
-    }
-    let Some(stmt) = crate::line::extract_statement_at_with_block_state(
+    let stmt_opt = crate::line::extract_statement_at_with_block_state(
         c.full_line,
         c.token_start.saturating_sub(c.line_start),
         c.starts_in_block,
-    ) else {
-        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
-    };
-
+    );
     let known_consts = c
         .index
         .constant_defines_in_scope(&c.doc.uri, Some(c.offset), c.ctx);
+    let Some(stmt) = stmt_opt.as_deref() else {
+        let parts = build_instruction_hover_parts_for_stmt(
+            c.inst,
+            c.effective_march,
+            enabled_by_march,
+            c.db,
+            None,
+            None,
+        );
+        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
+    };
+    if !c.inst.llvm_supported || !enabled_by_march {
+        let parts = build_instruction_hover_parts_for_stmt(
+            c.inst,
+            c.effective_march,
+            enabled_by_march,
+            c.db,
+            None,
+            Some((stmt, &known_consts)),
+        );
+        return HoverResolution::Ready(Some(make_hover(parts.render(), c.range)));
+    }
+    let stmt = stmt.to_owned();
+
     let mut const_pairs: Vec<(String, String)> = known_consts
         .iter()
         .filter(|(name, _)| expand::contains_ident(&stmt, name))
@@ -485,8 +501,17 @@ fn prepare_instruction_hover(c: InstructionHoverCtx<'_>) -> HoverResolution {
         (None, false)
     };
 
+    let target_stmt = builtin_preprocessed_stmt.as_deref().unwrap_or(&stmt);
+    let mut parts = build_instruction_hover_parts_for_stmt(
+        c.inst,
+        c.effective_march,
+        enabled_by_march,
+        c.db,
+        None,
+        Some((target_stmt, &known_consts)),
+    );
+
     if !use_external_mc {
-        let target_stmt = builtin_preprocessed_stmt.as_deref().unwrap_or(&stmt);
         let cached = match builtin_expand::expand_and_encode(
             target_stmt,
             c.effective_march,

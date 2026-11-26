@@ -867,6 +867,24 @@ fn encode_operand_value(
     Some(EncodedOperand::Relocated)
 }
 
+/// Return the subset of `variants` whose operand structure and coarse operand
+/// classes match `stmt`. Used to narrow instruction hover `Operands:` facts.
+pub(crate) fn matching_variants_for_stmt<'a>(
+    stmt: &str,
+    variants: &[&'a InstructionVariant],
+    known_consts: &HashMap<String, String>,
+    db: &Database,
+) -> Option<Vec<&'a InstructionVariant>> {
+    let clean = strip_leading_labels(stmt);
+    let (_mnem, user_ops) = parse_stmt(clean)?;
+    let matched: Vec<&'a InstructionVariant> = variants
+        .iter()
+        .copied()
+        .filter(|v| bind_typed_variant_operands(v, &user_ops, known_consts, db).is_some())
+        .collect();
+    (!matched.is_empty()).then_some(matched)
+}
+
 fn bind_typed_variant_operands(
     variant: &InstructionVariant,
     user_ops: &[String],

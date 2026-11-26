@@ -173,10 +173,19 @@ fn apply_description_corrections(
 }
 
 const SUMMARY_ENTRY_MAX_CHARS: usize = 260;
+const SUMMARY_SINGLE_SENTENCE_MAX_CHARS: usize = 320;
 const SUMMARY_FIELD_MAX_CHARS: usize = 140;
 
 /// Extract a deterministic 1–2 sentence summary for display without runtime truncation.
 pub fn make_summary(desc: &str, max_chars: usize) -> Option<String> {
+    make_summary_with_limit(desc, max_chars, 2)
+}
+
+fn make_field_summary(desc: &str, max_chars: usize) -> Option<String> {
+    make_summary_with_limit(desc, max_chars, 1)
+}
+
+fn make_summary_with_limit(desc: &str, max_chars: usize, max_sentences: usize) -> Option<String> {
     let paras: Vec<&str> = desc
         .split("\n\n")
         .map(str::trim)
@@ -214,26 +223,41 @@ pub fn make_summary(desc: &str, max_chars: usize) -> Option<String> {
         && let Some(next_para) = paras.get(idx + 1)
         && let Some(joined) = join_colon_list(&flat, next_para)
     {
-        return Some(finalize_summary(&joined, max_chars));
+        let cap = if max_sentences > 1 {
+            max_chars.max(SUMMARY_SINGLE_SENTENCE_MAX_CHARS)
+        } else {
+            max_chars
+        };
+        return Some(finalize_summary(&joined, cap));
     }
 
     let sentences = split_sentences(&flat);
-    let selected = if let Some(first) = sentences.first() {
-        if let Some(second) = sentences.get(1) {
+    let (selected, cap) = if let Some(first) = sentences.first() {
+        if max_sentences > 1
+            && let Some(second) = sentences.get(1)
+        {
             let combined = format!("{first} {second}");
             if combined.chars().count() <= max_chars {
-                combined
+                (combined, max_chars)
             } else {
-                (*first).to_owned()
+                (
+                    (*first).to_owned(),
+                    max_chars.max(SUMMARY_SINGLE_SENTENCE_MAX_CHARS),
+                )
             }
         } else {
-            (*first).to_owned()
+            let single_cap = if max_sentences > 1 {
+                max_chars.max(SUMMARY_SINGLE_SENTENCE_MAX_CHARS)
+            } else {
+                max_chars
+            };
+            ((*first).to_owned(), single_cap)
         }
     } else {
-        flat
+        (flat, max_chars)
     };
 
-    Some(finalize_summary(&selected, max_chars))
+    Some(finalize_summary(&selected, cap))
 }
 
 fn finalize_summary(raw: &str, max_chars: usize) -> String {
@@ -783,7 +807,7 @@ fn summarize_csr_fields(
         f.summary = f
             .description
             .as_deref()
-            .and_then(|d| make_summary(d, SUMMARY_FIELD_MAX_CHARS));
+            .and_then(|d| make_field_summary(d, SUMMARY_FIELD_MAX_CHARS));
     }
     fields
 }

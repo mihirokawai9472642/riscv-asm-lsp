@@ -772,6 +772,65 @@ _start:
 }
 
 #[test]
+fn hover_avoids_mixed_operands_zfinx_long_csr_and_cut_amo_summary() {
+    let mut client = LspClient::start(Some(json!({ "defaultMarch": "rv64gc_zabha_zacas" })), None);
+    let uri = crate::common::test_uri("hover_polish.S");
+    let src = "\
+_start:
+    sd a0, 8(sp)
+    flw fa0, 0(sp)
+    fadd.s fa0, fa1, fa2
+    csrr a0, mstatus
+    amocas.h.aqrl a0, a1, (a2)
+";
+    client.open_doc(&uri, 1, src);
+
+    let sd_hover = hover_markdown(&mut client, &uri, 1, 5).expect("sd hover");
+    assert!(
+        !sd_hover.contains("`tmp`") && !sd_hover.contains("`addr`"),
+        "sd hover mixed pseudo operands into Operands fact: {sd_hover}"
+    );
+    assert!(sd_hover.contains("Operands:"), "got: {sd_hover}");
+
+    let flw_hover = hover_markdown(&mut client, &uri, 2, 5).expect("flw hover");
+    assert!(
+        !flw_hover.contains("`tmp`") && !flw_hover.contains("`addr`"),
+        "flw hover mixed pseudo operands into Operands fact: {flw_hover}"
+    );
+    assert!(flw_hover.contains("FP32 reg"), "got: {flw_hover}");
+
+    let fadd_hover = hover_markdown(&mut client, &uri, 3, 6).expect("fadd.s hover");
+    assert!(
+        fadd_hover.contains("FP32 reg") && !fadd_hover.contains("GPR"),
+        "fadd.s hover showed Zfinx operand description instead of F: {fadd_hover}"
+    );
+
+    let mstatus_hover = hover_markdown(&mut client, &uri, 4, 15).expect("mstatus hover");
+    let field_lines: Vec<&str> = mstatus_hover
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- `"))
+        .collect();
+    assert!(
+        !field_lines.is_empty() && field_lines.len() <= 8,
+        "mstatus hover should bound shown fields: {mstatus_hover}"
+    );
+    for field_line in field_lines {
+        assert!(
+            field_line.chars().count() <= 180,
+            "mstatus field line unexpectedly long: {field_line}"
+        );
+    }
+
+    let amo_hover = hover_markdown(&mut client, &uri, 5, 6).expect("amocas.h.aqrl hover");
+    assert!(
+        !amo_hover.contains("…"),
+        "amocas.h.aqrl summary unexpectedly truncated: {amo_hover}"
+    );
+
+    client.shutdown_and_exit();
+}
+
+#[test]
 #[ignore = "requires llvm-mc"]
 fn builtin_expansion_and_encoding_match_llvm_mc() {
     assert!(
