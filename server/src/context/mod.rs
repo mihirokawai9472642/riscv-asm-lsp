@@ -514,6 +514,12 @@ mod tests {
         assert_eq!(mm_ctx.march.xlen, Xlen::Rv64);
         assert!(mm_ctx.march.extensions.contains("zba"));
 
+        // Non-existent sibling in an uncreated subdir still normalizes its existing ancestor
+        let unsaved_mm = dir_mm.join("future_sub").join("unsaved.S");
+        let unsaved_ctx = ctx.for_uri(&path_to_uri(&unsaved_mm).unwrap());
+        assert_eq!(unsaved_ctx.march.xlen, Xlen::Rv64);
+        assert!(unsaved_ctx.march.extensions.contains("zba"));
+
         let _ = fs::remove_dir_all(&tmp);
     }
 

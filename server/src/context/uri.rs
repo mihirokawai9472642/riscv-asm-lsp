@@ -80,10 +80,30 @@ pub fn lexical_normalize_path(path: &Path) -> PathBuf {
 }
 
 pub fn normalize_path(path: &Path) -> PathBuf {
-    if let Ok(canon) = fs::canonicalize(path) {
+    let lex = lexical_normalize_path(path);
+    if let Ok(canon) = fs::canonicalize(&lex) {
         return strip_windows_verbatim_prefix(canon);
     }
-    strip_windows_verbatim_prefix(lexical_normalize_path(path))
+    let mut suffix = Vec::new();
+    let mut cur = lex.as_path();
+    while let Some(name) = cur.file_name() {
+        suffix.push(name);
+        let Some(parent) = cur.parent() else {
+            break;
+        };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        if let Ok(canon) = fs::canonicalize(parent) {
+            let mut resolved = strip_windows_verbatim_prefix(canon);
+            for part in suffix.into_iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        cur = parent;
+    }
+    strip_windows_verbatim_prefix(lex)
 }
 
 /// Canonicalized lookup key for internal maps and sets.

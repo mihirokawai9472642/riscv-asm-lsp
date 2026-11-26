@@ -213,7 +213,7 @@ impl CompileContext {
             return Some((fallback, containing_state, true));
         }
 
-        interpolate_nearest_entry(&containing_state.entries, norm)
+        interpolate_nearest_entry(&containing_state.entries, &key)
             .map(|entry| (entry, containing_state, false))
     }
 
@@ -695,7 +695,7 @@ fn build_compile_entries(
             Vec::new()
         };
         let mut parsed = extract_relevant_flags(&dir, &args);
-        parsed.file_path = normalize_path(&file_path);
+        parsed.file_path = path_key(&file_path);
         entries.insert(path_key(&file_path), parsed);
     }
     entries
