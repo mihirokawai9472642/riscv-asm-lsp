@@ -13,7 +13,8 @@ use super::project_config::{
     LoadedProjectConfig, find_nearest_project_config, parse_project_config_file,
 };
 use super::uri::{
-    lexical_normalize_path, normalize_path, path_key, path_starts_with, resolve_path, uri_to_path,
+    canonicalize_existing_prefix_key, lexical_normalize_path, normalize_path, path_key,
+    path_starts_with, resolve_path, uri_to_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,7 +214,8 @@ impl CompileContext {
             return Some((fallback, containing_state, true));
         }
 
-        interpolate_nearest_entry(&containing_state.entries, &key)
+        let interp_key = canonicalize_existing_prefix_key(path);
+        interpolate_nearest_entry(&containing_state.entries, &interp_key)
             .map(|entry| (entry, containing_state, false))
     }
 
@@ -695,7 +697,7 @@ fn build_compile_entries(
             Vec::new()
         };
         let mut parsed = extract_relevant_flags(&dir, &args);
-        parsed.file_path = path_key(&file_path);
+        parsed.file_path = canonicalize_existing_prefix_key(&file_path);
         entries.insert(path_key(&file_path), parsed);
     }
     entries

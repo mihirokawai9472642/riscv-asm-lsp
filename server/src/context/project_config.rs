@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use serde::Deserialize;
 
-use super::uri::{normalize_path, path_starts_with};
+use super::uri::{canonicalize_existing_prefix, path_starts_with};
 
 pub const PROJECT_CONFIG_FILENAMES: &[&str] = &[".riscv-asm-lsp.yaml", ".riscv-asm-lsp.yml"];
 
@@ -45,8 +45,9 @@ pub(super) fn find_nearest_project_config(
 ) -> Option<(PathBuf, Option<SystemTime>)> {
     let mut cur = file_path.parent();
     while let Some(dir) = cur {
+        let canon_dir = canonicalize_existing_prefix(dir);
         if let Some(root) = stop_root
-            && !path_starts_with(&normalize_path(dir), root)
+            && !path_starts_with(&canon_dir, root)
             && !path_starts_with(dir, root)
         {
             break;
@@ -60,7 +61,7 @@ pub(super) fn find_nearest_project_config(
             }
         }
         if let Some(root) = stop_root
-            && (normalize_path(dir) == *root || dir == root)
+            && (canon_dir == *root || dir == root)
         {
             break;
         }
