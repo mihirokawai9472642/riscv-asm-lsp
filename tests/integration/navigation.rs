@@ -989,3 +989,97 @@ target_handler:
 
     client.shutdown_and_exit();
 }
+
+#[test]
+fn call_hierarchy_incoming_and_outgoing_across_files() {
+    let tmp = std::env::temp_dir().join(format!("riscv_asm_lsp_call_hier_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let main_path = tmp.join("entry.S");
+    let lib_path = tmp.join("lib.S");
+    let main_src = "\
+.globl _start
+_start:
+    call helper_fn
+    j leaf_fn
+    la a0, helper_fn
+leaf_fn:
+.Llocal_end:
+    ret
+";
+    let lib_src = "\
+.globl helper_fn
+helper_fn:
+    call leaf_fn
+    ret
+";
+    std::fs::write(&main_path, main_src).unwrap();
+    std::fs::write(&lib_path, lib_src).unwrap();
+
+    let root_uri = path_to_uri(&tmp);
+    let main_uri = path_to_uri(&main_path);
+    let mut client = LspClient::start(None, Some(&root_uri));
+    client.open_doc(&main_uri, 1, main_src);
+
+    // Non-label cursor (register `a0` on line 4) returns null.
+    let non_label = client.send_request(
+        "textDocument/prepareCallHierarchy",
+        json!({ "textDocument": { "uri": main_uri.as_str() }, "position": { "line": 4, "character": 7 } }),
+    );
+    assert_eq!(non_label.result, Some(json!(null)), "{non_label:?}");
+
+    // `call helper_fn` on line 2 resolves cross-file item in lib.S.
+    let prep_helper = client.send_request(
+        "textDocument/prepareCallHierarchy",
+        json!({ "textDocument": { "uri": main_uri.as_str() }, "position": { "line": 2, "character": 12 } }),
+    );
+    let helper_items = prep_helper
+        .result
+        .expect("prepare helper_fn")
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(helper_items.len(), 1);
+    assert_eq!(helper_items[0]["name"], json!("helper_fn"));
+
+    // Incoming calls for `helper_fn`: only `_start` via `call helper_fn` (not `la a0, helper_fn`).
+    let inc = client.send_request(
+        "callHierarchy/incomingCalls",
+        json!({ "item": helper_items[0] }),
+    );
+    let inc_arr = inc
+        .result
+        .expect("incomingCalls")
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(inc_arr.len(), 1, "expected only _start caller: {inc_arr:?}");
+    assert_eq!(inc_arr[0]["from"]["name"], json!("_start"));
+    assert_eq!(inc_arr[0]["fromRanges"].as_array().unwrap().len(), 1);
+
+    // Outgoing calls from `_start`: finds `helper_fn` and `leaf_fn`.
+    let prep_start = client.send_request(
+        "textDocument/prepareCallHierarchy",
+        json!({ "textDocument": { "uri": main_uri.as_str() }, "position": { "line": 1, "character": 2 } }),
+    );
+    let start_item = prep_start.result.unwrap().as_array().unwrap()[0].clone();
+    let out = client.send_request("callHierarchy/outgoingCalls", json!({ "item": start_item }));
+    let out_arr = out
+        .result
+        .expect("outgoingCalls")
+        .as_array()
+        .unwrap()
+        .clone();
+    let callee_names: Vec<&str> = out_arr
+        .iter()
+        .filter_map(|c| c["to"]["name"].as_str())
+        .collect();
+    assert!(
+        callee_names.contains(&"helper_fn") && callee_names.contains(&"leaf_fn"),
+        "unexpected outgoing callees: {callee_names:?}"
+    );
+
+    client.shutdown_and_exit();
+    let _ = std::fs::remove_dir_all(&tmp);
+}

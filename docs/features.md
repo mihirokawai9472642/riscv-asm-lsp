@@ -149,7 +149,9 @@ Trigger characters: `.`, `%`, `\`, `,`, and ` `.
 
 Supports `textDocument/definition`, `textDocument/references`,
 `textDocument/documentHighlight`, `textDocument/prepareRename`,
-`textDocument/rename`, `textDocument/documentSymbol`, and `workspace/symbol`.
+`textDocument/rename`, `textDocument/documentSymbol`, `workspace/symbol`, and
+`textDocument/prepareCallHierarchy` (`callHierarchy/incomingCalls` /
+`callHierarchy/outgoingCalls`).
 
 - Labels (`.globl` / normal across workspace, `.L...` file-local), numeric
   labels (`1:` <-> `1f`/`1b`), `.equ`/`.equiv`/`.set`/`=` (respecting reassignment

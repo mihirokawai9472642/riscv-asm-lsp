@@ -33,10 +33,10 @@ symbols.
   variant-specific operand placeholders (Tab moves between operands), directive
   snippets (`.macro` ... `.endm`, `.if`, `.irp`, ...), registers, CSRs,
   symbols, `%` relocation functions and macro parameters.
-- **Navigation and symbols**: go to definition, references, highlight and
-  rename for labels, numeric labels (`1f`, `1b`), `.equ`/`.set`/`=`, macros
-  and `#define`s across files and included headers; document outline and
-  workspace symbols.
+- **Navigation and symbols**: go to definition, references, highlight,
+  call hierarchy, and rename for labels, numeric labels (`1f`, `1b`),
+  `.equ`/`.set`/`=`, macros and `#define`s across files and included headers;
+  document outline and workspace symbols.
 - **Diagnostics and code actions** via the built-in Rust validator on unsaved
   text (plus optional `clang` when `diagnostics.external` is `"auto"` or
   `"on"`), with suppressible diagnostic codes and `#` preprocessor-directive

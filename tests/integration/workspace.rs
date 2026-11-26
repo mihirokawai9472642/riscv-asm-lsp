@@ -53,6 +53,13 @@ fn initialize_capabilities_and_shutdown() {
             .code_action_provider
             .is_some()
     );
+    assert!(
+        client
+            .init_result
+            .capabilities
+            .call_hierarchy_provider
+            .is_some()
+    );
     client.shutdown_and_exit();
 }
 

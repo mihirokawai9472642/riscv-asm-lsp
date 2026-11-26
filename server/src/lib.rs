@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod call_hierarchy;
 pub mod code_action;
 pub mod completion;
 pub mod config;
