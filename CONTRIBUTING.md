@@ -1,45 +1,122 @@
 # Contributing to riscv-asm-lsp
 
-riscv-asm-lsp improves in small steps, starting from problems seen on real
-code. This file describes how issues and pull requests work.
+Start with [docs/architecture.md](docs/architecture.md) for how the code is
+organised.
 
-## Reporting a problem
+## Issues
 
-- Use the **Bug report** form. Give the riscv-asm-lsp version, the editor,
-  where you saw the problem (project, file and line, or a minimal snippet),
-  and the server log if you can.
-- The reference is LLVM 23. For diagnostics and encodings, include what
-  `clang` or `llvm-mc` says about the same code.
-- Say how the problem was confirmed. Problems seen by a person in an editor,
-  or measured on real code, come first. Problems found only on AI-generated
-  or synthetic samples need to be reproduced on real code.
-- New features wait until the existing ones work well on real projects.
-  Questions and ideas go to Discussions.
-- Report security problems privately; see `SECURITY.md`.
+- Issues of any kind are welcome: bugs, typos, CI problems and so on. The
+  **Bug report** form asks for the details that help with server problems.
+- Propose new features in a **Feature request** issue before implementing
+  them.
+- Ask questions in Discussions. Report security problems privately; see
+  [SECURITY.md](SECURITY.md).
 
-## Design decisions
+## Development setup
 
-When a fix would change documented behaviour or a decision in
-`docs/design.md`, open a **Design decision** issue first, and implement it
-after the decision is made.
+Rust, LLVM 23 and the other tools run in the development container
+(`Dockerfile`, `compose.yaml`). Run commands from the repository root; the
+container mounts the repository at the same path.
 
-## Making a change
+```bash
+docker compose up -d --build
+docker compose exec dev cargo build
+```
 
-1. Every change starts from an issue.
-2. One issue per branch and pull request. Keep it small, with no unrelated
-   clean-ups or additions.
-3. Branch from an up-to-date `main` and name the branch after the change,
-   with the commit type as a prefix (for example `fix/macro-labels`).
-   Link the issue in the pull request (`Fixes #123`).
-4. Before committing, run the checks listed in `AGENTS.md` (tests, clippy,
-   rustfmt, `cargo deny`).
-5. A change is done when it has been checked again on the same real code as
-   the issue, with the same editor steps or the same measurement. Put the
-   results from before and after the change in the pull request. Tests are
-   required, but passing them is not enough on its own.
-6. Commit messages follow Conventional Commits (see `AGENTS.md`).
+Add new tools to the `Dockerfile` instead of installing them on the host. Run
+`git` on the host: commit signing and SSH keys are not available in the
+container.
 
-## Coding agents
+To try a change in Zed, put the built `target/debug/riscv-asm-lsp` on `PATH`
+or point `lsp.riscv-asm-lsp.binary` at it. To work on the extension itself,
+install `zed/` with `zed: install dev extension`. On Windows with a WSL
+checkout, copy `zed/` to a Windows folder first (Zed cannot link into
+`\\wsl.localhost`) and install Git for Windows and `rustup` there.
 
-Coding agents may help, but only within the issue at hand. The pull request
-says when an agent contributed. Agents follow `AGENTS.md`.
+## Checks
+
+Run these before every commit:
+
+```bash
+docker compose exec dev cargo test
+docker compose exec dev cargo clippy --all-targets -- -D warnings
+docker compose exec dev cargo fmt --check
+docker compose exec dev cargo deny check licenses
+```
+
+When `zed/` changed (a separate crate built for `wasm32-wasip2`), also run:
+
+```bash
+docker compose exec dev cargo clippy --manifest-path zed/Cargo.toml --target wasm32-wasip2 -- -D warnings
+docker compose exec dev cargo fmt --manifest-path zed/Cargo.toml --check
+```
+
+## Tests
+
+- New behaviour comes with an integration test that drives the server over
+  JSON-RPC, using the fixtures in `tests/`.
+- A fixed bug comes with a regression test. Keep covering multibyte
+  characters, positions past the end of a line, empty lines and comment
+  boundaries.
+- Tests that need `clang` or `llvm-mc` are marked `#[ignore]`; run them with
+  `cargo test -- --include-ignored`. The rest pass without those tools on
+  `PATH`.
+- Golden snapshots live in `tests/snapshots/`. Refactors keep them passing.
+  After an intentional output change, regenerate them and review the diff:
+
+  ```bash
+  docker compose exec -e UPDATE_SNAPSHOTS=1 dev cargo test --test integration snapshots -- --include-ignored
+  ```
+
+## Code
+
+- Rust stable, edition 2024, minimum Rust 1.90 (checked by the `msrv` CI
+  job).
+- Follow the robustness rules in
+  [docs/architecture.md](docs/architecture.md#robustness).
+- External tools run with argument lists, never through a shell; their flags
+  come from the project's compilation database.
+- Keep dependencies few. Each must be maintained and have a permissive license
+  (MIT, Apache-2.0, BSD, zlib or similar). Do not copy code or text from GPL
+  or GFDL sources such as binutils or the GNU as manual.
+- Use descriptive names; abbreviate only where it is standard (LSP, CSR, ABI,
+  XLEN). Files, comments, commit messages and user-facing text are in English;
+  comments explain why.
+- Keep the documentation in `docs/` in line with the code in the same pull
+  request.
+
+## Data
+
+`server/data/riscv.json` and `server/data/report.md` are generated by
+`cargo xtask gen-data`; never edit them by hand. [docs/data.md](docs/data.md)
+describes the sources, the pinned versions and regeneration. Record a new
+source in `THIRD_PARTY_NOTICES.md` and `docs/data.md`.
+
+## Pull requests
+
+- Bug fixes and small improvements can go straight to a pull request. If
+  there is an issue, link it (`Fixes #123`).
+- Branch from an up-to-date `main`, and name the branch after the change with
+  the commit type as a prefix (for example `fix/hover-csr`).
+- Commit messages follow
+  [Conventional Commits](https://www.conventionalcommits.org/):
+  `type(scope): summary`, where the scope is a top-level directory (`server`,
+  `xtask`, `data`, `zed`, `tests`, `docs`).
+- When a coding agent contributed, say so in the pull request and add a commit
+  trailer: `Assisted-By: <tool> [model]` when a person materially revised the
+  work, or `Generated-By: <tool> [model]` when the agent wrote most of it. Do
+  not use `Co-Authored-By` for AI tools.
+- Pull requests are merged once CI passes, and the branch is deleted
+  afterwards.
+- Dependabot pull requests are handled the same way. `tree-sitter-riscv` and
+  `zed_extension_api` are updated by hand, together with `zed/extension.toml`
+  and the supported Zed version.
+
+## Releases
+
+1. Raise the version in `Cargo.toml`, `zed/Cargo.toml` and
+   `zed/extension.toml` (with the lock files), and the example version in
+   `README.md`, in a pull request.
+2. After it is merged, tag the commit `vX.Y.Z` and push the tag. The release
+   workflow builds the archives for every target, with the license files and
+   checksums, and publishes a GitHub Release with generated notes.
