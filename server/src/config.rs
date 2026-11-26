@@ -148,6 +148,31 @@ impl Config {
     }
 }
 
+/// Deep-merge `overlay` on top of `base` key-by-key, keeping nested objects intact
+/// and ignoring `Value::Null` overlays so partial `didChangeConfiguration` updates do not
+/// wipe keys originally supplied via `initializationOptions`.
+pub fn merge_json_value(base: &Value, overlay: &Value) -> Value {
+    match (base, overlay) {
+        (_, Value::Null) => base.clone(),
+        (Value::Object(base_map), Value::Object(over_map)) => {
+            let mut merged = base_map.clone();
+            for (key, over_val) in over_map {
+                if let Some(base_val) = merged.get(key)
+                    && base_val.is_object()
+                    && over_val.is_object()
+                {
+                    let combined = merge_json_value(base_val, over_val);
+                    merged.insert(key.clone(), combined);
+                } else if !over_val.is_null() {
+                    merged.insert(key.clone(), over_val.clone());
+                }
+            }
+            Value::Object(merged)
+        }
+        _ => overlay.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +222,28 @@ mod tests {
             assert_eq!(cfg.diagnostics.external, expected, "raw={raw}");
             assert_eq!(cfg.diagnostics.suppress, vec!["gnu-only-directive"]);
         }
+    }
+
+    #[test]
+    fn merge_json_value_preserves_base_and_nested_objects() {
+        let base = json!({
+            "defaultTarget": "riscv32-unknown-elf",
+            "defaultMarch": "rv32imac",
+            "diagnostics": {
+                "enable": true,
+                "delayMs": 15,
+                "suppress": ["gnu-only-directive"]
+            }
+        });
+        assert_eq!(merge_json_value(&base, &Value::Null), base);
+        assert_eq!(merge_json_value(&base, &json!({})), base);
+
+        let overlaid = merge_json_value(&base, &json!({ "diagnostics": { "external": "off" } }));
+        let cfg = Config::from_init_options(Some(overlaid));
+        assert_eq!(cfg.default_target, "riscv32-unknown-elf");
+        assert_eq!(cfg.default_march, "rv32imac");
+        assert_eq!(cfg.diagnostics.delay_ms, 15);
+        assert_eq!(cfg.diagnostics.external, ExternalDiagnosticsMode::Off);
+        assert_eq!(cfg.diagnostics.suppress, vec!["gnu-only-directive"]);
     }
 }

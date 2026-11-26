@@ -714,3 +714,31 @@ vfadd.v
     );
     client_zve32f.shutdown_and_exit();
 }
+
+#[test]
+fn completion_respects_attribute_arch_directive() {
+    let mut client = LspClient::start(
+        Some(json!({ "defaultMarch": "rv64imac", "diagnostics": { "enable": false } })),
+        None,
+    );
+    let uri = crate::common::test_uri("attr_arch_comp.S");
+    client.open_doc(
+        &uri,
+        1,
+        "\
+.attribute arch, \"rv64gcv\"
+_start:
+    vsetiv
+",
+    );
+    let resp = client.send_request(
+        "textDocument/completion",
+        json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": 2, "character": 10 } }),
+    );
+    let labels = completion_labels(&resp.result);
+    assert!(
+        labels.iter().any(|l| l == "vsetivli"),
+        "expected vector instruction completion after .attribute arch: {labels:?}"
+    );
+    client.shutdown_and_exit();
+}

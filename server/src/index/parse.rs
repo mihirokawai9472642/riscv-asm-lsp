@@ -568,23 +568,28 @@ impl AstVisitor for ExtractVisitor<'_> {
 }
 
 fn collect_macro_params(node: Node<'_>, text: &str, out: &mut Vec<MacroParamDef>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "macro_parameter" {
-            if let Some(name_node) = child.child_by_field_name("name")
-                && let Some(raw) = text.get(name_node.start_byte()..name_node.end_byte())
-            {
-                let clean = raw.trim_start_matches(['\\', '%', '$']);
-                if !clean.is_empty() {
-                    out.push(MacroParamDef {
-                        name: clean.to_owned(),
-                        span: (name_node.start_byte(), name_node.end_byte()),
-                    });
+    let mut stack = vec![node];
+    while let Some(cur) = stack.pop() {
+        let start = stack.len();
+        let mut cursor = cur.walk();
+        for child in cur.children(&mut cursor) {
+            if child.kind() == "macro_parameter" {
+                if let Some(name_node) = child.child_by_field_name("name")
+                    && let Some(raw) = text.get(name_node.start_byte()..name_node.end_byte())
+                {
+                    let clean = raw.trim_start_matches(['\\', '%', '$']);
+                    if !clean.is_empty() {
+                        out.push(MacroParamDef {
+                            name: clean.to_owned(),
+                            span: (name_node.start_byte(), name_node.end_byte()),
+                        });
+                    }
                 }
+            } else {
+                stack.push(child);
             }
-        } else {
-            collect_macro_params(child, text, out);
         }
+        stack[start..].reverse();
     }
 }
 

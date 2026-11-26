@@ -26,7 +26,7 @@ use serde::de::DeserializeOwned;
 
 use crate::code_action::provide_code_actions;
 use crate::completion::{CompletionClientCaps, provide_completion, resolve_completion_item};
-use crate::config::Config;
+use crate::config::{Config, merge_json_value};
 use crate::context::{CompileContext, is_linker_script_uri, uri_to_path};
 use crate::data::Database;
 use crate::diagnostics::{DiagnosticsWorker, MessageSink};
@@ -112,7 +112,10 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         .and_then(|w| w.work_done_progress)
         == Some(true);
     let workspace_roots = extract_workspace_roots(&init_params);
-    let config = Config::from_init_options(init_params.initialization_options);
+    let init_options_raw = init_params
+        .initialization_options
+        .unwrap_or(serde_json::Value::Null);
+    let config = Config::from_init_options(Some(init_options_raw.clone()));
     let ctx = CompileContext::new_multi(workspace_roots.clone(), config.clone());
     let store = DocumentStore::new().map_err(std::io::Error::other)?;
     let mut index = WorkspaceIndex::new_multi(workspace_roots).map_err(std::io::Error::other)?;
@@ -146,6 +149,7 @@ pub fn run_stdio() -> Result<i32, Box<dyn std::error::Error>> {
         connection: &connection,
         db: &db,
         ctx,
+        init_options_raw,
         store,
         index,
         tools,
@@ -197,6 +201,7 @@ struct ServerState<'a> {
     connection: &'a Connection,
     db: &'a Database,
     ctx: CompileContext,
+    init_options_raw: serde_json::Value,
     store: DocumentStore,
     index: WorkspaceIndex,
     tools: Arc<ToolRunner>,
@@ -741,7 +746,8 @@ impl ServerState<'_> {
             .or_else(|| params.settings.get("riscvAsmLsp"))
             .cloned()
             .unwrap_or(params.settings);
-        let new_cfg = Config::from_init_options(Some(settings_val));
+        let merged = merge_json_value(&self.init_options_raw, &settings_val);
+        let new_cfg = Config::from_init_options(Some(merged));
         self.tools
             .update_bins(new_cfg.clang.clone(), new_cfg.llvm_mc.clone());
         self.diag_worker.update_config(new_cfg.diagnostics.clone());

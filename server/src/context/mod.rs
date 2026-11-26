@@ -8,7 +8,7 @@ pub use compile_db::{
     is_linker_script_template, is_linker_script_uri, is_preprocessed_by_suffix, is_riscv_target,
     split_command_args,
 };
-pub use march::{MarchSpec, effective_options_at_line};
+pub use march::{MarchSpec, effective_options_at_line, parse_attribute_arch};
 #[cfg(test)]
 pub(crate) use uri::test_uri;
 pub use uri::{
