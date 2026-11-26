@@ -1,211 +1,92 @@
 # RISC-V Assembly Language Server
 
 riscv-asm-lsp is a language server for RISC-V assembly in the GNU assembler
-syntax, with an extension for the Zed editor.
+syntax, with an extension for the Zed editor. It works with any editor that
+supports the Language Server Protocol.
 
-Prebuilt binaries for Linux (`x86_64` and `aarch64` musl), macOS (`aarch64`
-and `x86_64`), and Windows (`x86_64`) are published on
-[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases),
-or you can build from source.
+It provides hover documentation for instructions, CSRs, registers and
+directives, completion filtered by `-march`, go to definition, references and
+rename across files and headers, diagnostics on unsaved text, and semantic
+highlighting. It reads `compile_commands.json` and runs a built-in C
+preprocessor for `.S` files.
 
-Like `clangd`, the server's reference is its bundled data generated from one
-pinned LLVM release (currently `llvmorg-23.1.6`, updated with each server
-release). External `clang` and `llvm-mc` tools are optional supplements and are
-not required for editing, hover documentation, completion, navigation, or
-symbols.
+Like clangd, the server's reference is data generated from one pinned LLVM
+release (currently `llvmorg-23.1.6`): what that LLVM accepts is what the server
+offers. Everything works without external tools; `clang` and `llvm-mc` are
+optional.
 
 ## Quick Start
 
-1. Install `zed/` as a dev extension (`zed: install dev extension`; registry publication is pending — see [Developing the Extension](docs/zed.md#developing-the-extension)).
-2. Optionally install LLVM (`clang` and `llvm-mc`) and enable `diagnostics.external` (`"auto"` or `"on"`) if you want compiler-backed diagnostics and external `llvm-mc` expansions alongside the built-in engine (see [Optional: LLVM for clang-based diagnostics and expansions](#optional-llvm-for-clang-based-diagnostics-and-expansions)).
-3. Open a `.S` or `.s` file (see [Recommended Settings](docs/zed.md#recommended-settings) to enable `document_symbols` and `semantic_tokens`, which Zed extensions cannot enable by default in `config.toml`).
-
-## Features
-
-- **Hover** for instructions, aliases and pseudo-instructions (`mv`, `li`,
-  `la`, `csrw`, ...), CSRs with their fields, registers by number and ABI
-  name, directives, preprocessor directives (`#define`, `#include`, ...), and
-  project symbols (`_start`, `.equ`/`.set`/`=`, macros, `#define`, `1f`/`1b`,
-  `\@`). Instruction hovers show decoded operand constraints and the current
-  line's expansion and encoding (built in by default, with optional `llvm-mc`
-  when `diagnostics.external` is enabled).
-- **Completion** filtered by `-march` and `.option arch`: instructions with
-  variant-specific operand placeholders (Tab moves between operands), directive
-  snippets (`.macro` ... `.endm`, `.if`, `.irp`, ...), registers, CSRs,
-  symbols, `%` relocation functions and macro parameters.
-- **Navigation and symbols**: go to definition, references, highlight,
-  call hierarchy, and rename for labels, numeric labels (`1f`, `1b`),
-  `.equ`/`.set`/`=`, macros and `#define`s across files and included headers;
-  document outline and workspace symbols.
-- **Diagnostics and code actions** via the built-in Rust validator on unsaved
-  text (plus optional `clang` when `diagnostics.external` is `"auto"` or
-  `"on"`), with suppressible diagnostic codes and `#` preprocessor-directive
-  comment quick fixes.
-- **Signature help, folding ranges, and inlay hints** for instruction operands,
-  comment/directive blocks, CSR addresses, and resolved constants.
-- **Semantic tokens** classifying registers, CSRs, labels, constants, macros,
-  parameters, preprocessor lines and `#` comments.
-- **Zed extension** (`zed/`): the `RISC-V Assembly` language with a
-  tree-sitter grammar, highlighting, outline, brackets, indentation and
-  block/line comment support.
-
-`clang` and `llvm-mc` are optional and disabled by default (`diagnostics.external`
-is `"off"`). Everything — built-in C preprocessing, built-in diagnostics, hover
-expansions and encodings, completion, navigation, and symbols — works out of
-the box without external tools.
-
-See [docs/features.md](docs/features.md) for detailed feature behaviour.
-
-## Optional: LLVM for clang-based diagnostics and expansions
-
-External `clang` and `llvm-mc` tools are completely optional, and any recent
-LLVM version with RISC-V (`riscv32`/`riscv64`) target support works. No
-specific LLVM version is required.
-
-When `clang` or `llvmMc` are not set explicitly, `riscv-asm-lsp` searches in
-order:
-
-1. `clang` / `llvm-mc` on `PATH`
-2. Highest versioned `clang-<N>` / `llvm-mc-<N>` found on `PATH`
-3. Standard install directories (newest version first):
-   - Linux: `/usr/lib/llvm-*/bin`
-   - macOS (Homebrew): `/opt/homebrew/opt/llvm/bin`, `/usr/local/opt/llvm/bin`,
-     and versioned `llvm@*` formulas
-   - Windows: `C:\Program Files\LLVM\bin`
-
-Candidates that lack RISC-V targets (such as Apple's system `clang`) are
-skipped automatically. When automatic discovery finds no usable binary, the
-dependent feature is disabled quietly in the UI (logged once to stderr); warning
-popups are shown only when an explicitly configured path fails or lacks RISC-V
-targets.
-
-- **Debian / Ubuntu**:
-  ```bash
-  sudo apt install clang llvm
-  ```
-- **macOS (Homebrew)**:
-  ```bash
-  brew install llvm
-  ```
-  Apple's system `clang` does not include the RISC-V target and is not enough
-  for RISC-V diagnostics or `llvm-mc` expansion.
-- **Windows**: install LLVM using the official LLVM installer (which installs
-  tools under `C:\Program Files\LLVM\bin` by default).
-
-## Configuration
-
-`initializationOptions` (in Zed: `lsp.riscv-asm-lsp.initialization_options`)
-are read once at startup. Settings under `lsp.riscv-asm-lsp.settings` (or sent
-via `workspace/didChangeConfiguration`) apply live without restarting the
-language server. Projects can also place `.riscv-asm-lsp.yaml` (or `.yml`)
-in the workspace to add/remove compile flags and suppress built-in diagnostic
-codes (tool paths remain user-only for security).
-
-Example `.zed/settings.json`:
-
-```json
-{
-  "lsp": {
-    "riscv-asm-lsp": {
-      "settings": {
-        "defaultTarget": "riscv64-unknown-elf",
-        "defaultMarch": "rv64gc",
-        "diagnostics": {
-          "enable": true,
-          "delayMs": 300
-        }
-      }
-    }
-  }
-}
-```
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `clang` | Auto-discover (`PATH` -> versioned -> standard dirs) | Path to `clang` (overrides auto-discovery) |
-| `llvmMc` | Auto-discover (`PATH` -> versioned -> standard dirs) | Path to `llvm-mc` (overrides auto-discovery) |
-| `compileCommandsDirs` | `["", "build"]` | Directories, relative to the project root, searched for `compile_commands.json` |
-| `defaultTarget` | `"riscv64-unknown-elf"` | Target for files without a compilation database entry |
-| `defaultMarch` | `"rv64gc"` | `-march` for files without an entry |
-| `diagnostics.enable` | `true` | Enable diagnostics |
-| `diagnostics.delayMs` | `300` | Pause after typing before diagnostics run |
-| `diagnostics.external` | `"off"` | External `clang` / `llvm-mc` mode (`"off"`, `"auto"`, or `"on"`; opt-in) |
-| `diagnostics.suppress` | `[]` | Built-in diagnostic codes to suppress (e.g. `["gnu-only-directive"]`) |
+- **Zed**: install `zed/` as a dev extension (registry publication is
+  pending) and open a `.S` or `.s` file. The extension downloads the server.
+  See [docs/editors.md](docs/editors.md#zed).
+- **Other editors**: install the server from a release (below) and see
+  [docs/editors.md](docs/editors.md) for Neovim and Helix.
 
 ## Installing a release
 
-When using Zed, the extension downloads the release archive automatically. For
-standalone use (or other editors), download the matching archive and `.sha256`
-checksum from
-[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases):
+Prebuilt binaries are published on
+[GitHub Releases](https://github.com/mihirokawai9472642/riscv-asm-lsp/releases).
+Download the archive for your platform and its `.sha256` checksum:
 
 | Target | Archive |
 | --- | --- |
 | Linux `x86_64` (static musl) | `riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz` |
 | Linux `aarch64` (static musl) | `riscv-asm-lsp-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Apple Silicon (`aarch64`) | `riscv-asm-lsp-aarch64-apple-darwin.tar.gz` |
-| macOS Intel (`x86_64`) | `riscv-asm-lsp-x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `riscv-asm-lsp-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `riscv-asm-lsp-x86_64-apple-darwin.tar.gz` |
 | Windows `x86_64` | `riscv-asm-lsp-x86_64-pc-windows-msvc.zip` |
 
-For example, on Linux or macOS (`v0.3.0`):
+For example, on Linux:
 
 ```bash
 ARCHIVE=riscv-asm-lsp-x86_64-unknown-linux-musl.tar.gz
 curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.3.0/${ARCHIVE}"
 curl -fsSLO "https://github.com/mihirokawai9472642/riscv-asm-lsp/releases/download/v0.3.0/${ARCHIVE}.sha256"
-sha256sum -c "${ARCHIVE}.sha256"   # or: shasum -a 256 -c "${ARCHIVE}.sha256" on macOS
+sha256sum -c "${ARCHIVE}.sha256"
 tar -xzf "${ARCHIVE}" riscv-asm-lsp
 install -m 0755 riscv-asm-lsp ~/.local/bin/riscv-asm-lsp
 ```
 
-On Windows PowerShell, download the `.zip` and `.zip.sha256`, compare
-`Get-FileHash riscv-asm-lsp-x86_64-pc-windows-msvc.zip -Algorithm SHA256`
-against the `.sha256` file, extract `riscv-asm-lsp.exe`, and place it on
-`PATH`.
+On macOS, check the archive with `shasum -a 256 -c`; on Windows, compare
+`Get-FileHash` with the `.sha256` file and put `riscv-asm-lsp.exe` on `PATH`.
+To build from source instead, run `cargo build --release` (Rust 1.90 or newer).
 
-Every release archive includes `LICENSE.md`, `THIRD_PARTY_NOTICES.md`,
-`THIRD_PARTY_LICENSES.md`, and `COPYRIGHT-library.html`.
+## Optional: LLVM for clang-based diagnostics and expansions
 
-## Building
+With `diagnostics.external` set to `"auto"` or `"on"`, the server uses `clang`
+for diagnostics and `llvm-mc` for hover expansions instead of its built-in
+engine. Any LLVM version with the RISC-V target works:
 
-Building natively requires Rust 1.90 or newer (`edition = "2024"`):
+- Debian / Ubuntu: `sudo apt install clang llvm`
+- macOS: `brew install llvm` (Apple's `clang` has no RISC-V target)
+- Windows: the official LLVM installer
 
-```bash
-cargo build --release
-```
-
-With Docker (using the repository's Rust + LLVM 23 development container):
-
-```bash
-docker compose up -d --build
-docker compose exec dev cargo build --release
-```
-
-The server binary is `target/release/riscv-asm-lsp` (`riscv-asm-lsp.exe` on
-Windows). Place it on `PATH` or point `lsp.riscv-asm-lsp.binary.path` to it.
-See [docs/zed.md](docs/zed.md) for Zed settings, extension development,
-container execution, Windows with WSL, and theme overrides, and
-[docs/editors.md](docs/editors.md) for `cargo-binstall`, Neovim, and Helix setup.
+How the server finds the tools is described in
+[docs/configuration.md](docs/configuration.md#external-tools).
 
 ## Documentation
 
-| Document | Contents |
-| --- | --- |
-| [docs/features.md](docs/features.md) | Detailed behaviour of hover, completion, navigation, diagnostics, semantic tokens and preprocessing |
-| [docs/design.md](docs/design.md) | Architecture, server internals, robustness rules, testing and roadmap |
-| [docs/data.md](docs/data.md) | Instruction/CSR/directive data sources, pinned versions, generation and licenses |
-| [docs/zed.md](docs/zed.md) | Installing and configuring the Zed extension |
-| [docs/editors.md](docs/editors.md) | `cargo-binstall` and LSP configuration for Neovim and Helix |
-| [AGENTS.md](AGENTS.md) | Development commands, code conventions, module layout and test workflow |
+For **using** riscv-asm-lsp:
+
+- [docs/editors.md](docs/editors.md): setting up Zed, Neovim and Helix, and
+  troubleshooting.
+- [docs/configuration.md](docs/configuration.md): settings,
+  `compile_commands.json` and `.riscv-asm-lsp.yaml`.
+- [docs/features.md](docs/features.md): what each feature does, and the
+  diagnostic codes.
+
+For **contributing**: [CONTRIBUTING.md](CONTRIBUTING.md),
+[docs/architecture.md](docs/architecture.md) and [docs/data.md](docs/data.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for what the server runs and reads, and how to
+report a vulnerability.
 
 ## License
 
-The code is licensed under the [MIT License](LICENSE.md); the Zed extension
-carries its own copy in [zed/LICENSE](zed/LICENSE). The instruction data in
-`server/data/riscv.json` is derived from LLVM (`Apache-2.0 WITH LLVM-exception`),
-riscv-unified-db (`BSD-3-Clause-Clear`) and riscv-asm-manual (`CC-BY-4.0`) and
-stays under their licenses; hand-written files in `server/data/` (`directives_gnu.json`,
-`supplements.json`, `texts.json`) are MIT. See
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); binary release archives
-also include `THIRD_PARTY_LICENSES.md` and `COPYRIGHT-library.html` for
-third-party crates, musl/CRT, and the Rust standard library.
+The code is licensed under the [MIT License](LICENSE.md). The instruction data
+derived from LLVM, riscv-unified-db and riscv-asm-manual keeps its own licenses;
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Release archives also
+include the licenses of third-party crates and the Rust standard library.

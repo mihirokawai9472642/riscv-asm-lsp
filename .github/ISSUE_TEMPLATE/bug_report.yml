@@ -1,0 +1,37 @@
+name: Bug report
+description: A wrong diagnostic, hover or navigation result, a crash, or a slowdown
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: riscv-asm-lsp version
+      description: Output of `riscv-asm-lsp --version`, or the commit hash.
+      placeholder: riscv-asm-lsp 0.3.0
+    validations:
+      required: true
+  - type: input
+    id: editor
+    attributes:
+      label: Editor and OS
+      placeholder: Zed on Windows 11 (WSL)
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The code (a snippet, or a public project with file and line) and what you did.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Actual and expected result
+      description: For diagnostics, include what clang or llvm-mc 23 says about the same code.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Server log
+      description: "The riscv-asm-lsp output from the editor's language server log (in Zed, `dev: open language server logs`). It can contain file contents."
+      render: text

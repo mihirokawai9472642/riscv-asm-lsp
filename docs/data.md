@@ -42,8 +42,8 @@ The server uses one pinned stable LLVM release updated periodically:
 1. Bump `LLVM_TAG` in `xtask/src/pins.rs`, the `apt.llvm.org` / package version in `Dockerfile`, and `.github/workflows/ci.yml`, then rebuild the `dev` container.
 2. Run `cargo xtask gen-data` and inspect the `server/data/report.md` diff carefully (add new non-vendor CSR/instruction descriptions to `server/data/supplements.json` and extend vendor filters in `xtask/src/llvm.rs` if new vendor `.td` files or predicates were added upstream).
 3. Run `cargo test --lib` and decode any newly added operand classes in `server/data/texts.json` (`operand_classes`) and `server/src/hover/operands.rs`.
-4. Re-check `docs/design.md` Appendix A directives against `llvm-mc` (updating `xtask/src/asm_manual.rs` if support changed) and verify `march_implications_match_clang_print_enabled_extensions` and `data_validation_rv64gc_instructions_assemble_with_llvm_mc` with `--include-ignored`.
-5. Run `UPDATE_SNAPSHOTS=1` for snapshot tests if upstream wording or predicates changed intentionally, review every changed snapshot, and update version references in `README.md`, `docs/`, and `AGENTS.md`.
+4. Re-check the [directive table](#directive-support-in-llvm-23) against `llvm-mc` (updating `xtask/src/asm_manual.rs` if support changed) and verify `march_implications_match_clang_print_enabled_extensions` and `data_validation_rv64gc_instructions_assemble_with_llvm_mc` with `--include-ignored`.
+5. Run `UPDATE_SNAPSHOTS=1` for snapshot tests if upstream wording or predicates changed intentionally, review every changed snapshot, and update version references in `README.md` and `docs/`.
 
 ## Generation
 
@@ -113,22 +113,12 @@ Pipeline stages:
     non-formulaic LLVM operand classes (combined with the mechanical immediate
     decoders in `server/src/hover/operands.rs`).
 
-## LLVM 23.1.6 vs. Documentation
+## LLVM vs. documentation
 
-Summary from `server/data/report.md` (LLVM `llvmorg-23.1.6` vs. riscv-unified-db
-`5d1ded1f93ab`, excluding vendor extensions and `.insn_*` internal formats):
-
-| Metric | Count | Notes |
-| --- | ---: | --- |
-| Extensions | 186 | |
-| Instructions & aliases (LLVM supported) | 2231 | 1450 in UDB + LLVM, 23 `riscv-asm-manual`, 20 `supplements.json`, 738 newer/experimental (e.g. `P`, `Y`, vector dot/zip/bfloat) |
-| Only in riscv-unified-db | 30 | e.g. `fcvt.h.q`/`fcvt.q.h`, `fmv.s.x`/`fmv.x.s`, older vector/crypto names |
-| `rv64gc` instructions in UDB missing from LLVM | 0 | |
-| CSRs (LLVM supported) | 453 | 415 in UDB + LLVM, 38 `supplements.json`, 0 undescribed |
-| CSRs only in riscv-unified-db | 2 | `mrmcfg`, `mnrmcfg` |
-| Registers | 96 | |
-| Directives | 137 | Combined `riscv-asm-manual` and `server/data/directives_gnu.json` |
-| Cleaned `TODO`s from riscv-unified-db | 6 | `htinst`, `hvip.VSEIP`, `hvip.VSTIP`, `hvip.VSSIP`, `mncause.CODE`, `mtinst` |
+[`server/data/report.md`](../server/data/report.md) lists, for the pinned
+inputs, which entries LLVM and riscv-unified-db agree on, which come from
+riscv-asm-manual or `supplements.json`, which have no description, and which
+`TODO`s were cleaned. It is regenerated with the data.
 
 Mismatch handling:
 
@@ -139,9 +129,18 @@ Mismatch handling:
 | Documentation-only (`llvm_supported: false`) | Excluded from completion; hover warns `"Not accepted by LLVM 23 (spec only)."` |
 | Deprecated/renamed entries | Joined via LLVM deprecated names with deprecation metadata |
 
+## Directive support in LLVM 23
+
+Checked against `llvm-mc` 23.1.6. LLVM decides: for example, riscv-asm-manual
+lists `.dtprelword`, but LLVM 23 rejects it.
+
+| Status | Directives |
+| --- | --- |
+| Not supported | `.eqv`, `.func`/`.endfunc`, `.float16`, `.bfloat16`, `.dtprelword`, `.dtpreldword`, `.linkonce`, `.stabs`, listing directives (`.list`, `.nolist`, `.title`, `.sbttl`, `.psize`, `.mri`) |
+| Supported (representative) | `.macro` (including `\@`), `.altmacro`, `.irp`, `.rept`, `.equ`, `.set`, `=`, `.equiv`, `.option` (`arch`, `push`, `pop`, `exact`), `.insn`, `.attribute`, `.variant_cc`, `.cfi_*`, `.pushsection`, `.incbin`, `.ifc`, `.ifb`, `.reloc`, `.print`, `.warning`, `.int`, `.weakref`, `.line`, `.version`, `.dc`, `.dcb`, `.ds`, `.ifnotdef`, `.bundle_*`, `.base64` |
+
 ## Data licenses
 
-All imported data keeps its upstream license (`Apache-2.0 WITH LLVM-exception`,
-`BSD-3-Clause-Clear`, `CC-BY-4.0`), and project-authored JSON files
-(`directives_gnu.json`, `supplements.json`, `texts.json`) are MIT. Complete
-notices appear in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+Imported data keeps its upstream license (see the table above); the
+hand-written JSON files are MIT. Full notices are in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).

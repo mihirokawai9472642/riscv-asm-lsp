@@ -1,4 +1,4 @@
-# License and source audit policy for cargo-deny (see docs/design.md Section 6).
+# License and source audit policy for cargo-deny (see CONTRIBUTING.md and THIRD_PARTY_NOTICES.md).
 # Only permissive licenses compatible with MIT distribution are allowed;
 # GPL and GFDL crates are disallowed.
 [licenses]

@@ -1,276 +1,104 @@
 # Features
 
-Detailed specification of the features implemented in `riscv-asm-lsp`.
+Examples of hover output are in [tests/snapshots/hover/](../tests/snapshots/hover/).
 
 ## Hover
 
-Every hover uses a structured Markdown layout rendered through one shared
-formatter (`hover/format.rs`):
+| Target | Shows |
+| --- | --- |
+| Instruction, alias, pseudo-instruction | Long name, extensions, RV32/RV64, syntax variants, operand constraints, a notice when it is disabled by `-march` / `.option`, deprecated, or not accepted by LLVM, and the expansion and encoding of the current line |
+| CSR (`stvec`, or a number in a CSR operand) | Name, address, privilege mode and fields |
+| Register (`x10`, `a0`) | Class and calling-convention role |
+| Directive | Arguments, description, and whether LLVM accepts it |
+| `%hi`, rounding modes, `fence` sets, `v0.t` | What the keyword means in that operand |
+| Labels, `.equ` / `.set` / `=`, macros, macro parameters, `#define`, `1f` / `1b`, `\@` | Kind, defining file and line, and the value of constants |
+| `#include`, `.include` | The resolved path, or how to fix the search path |
 
-````text
-<kind and context header>
-
-```riscv
-<syntax / definition line(s)>
-```
-
-*(+N more)*
-
-> <status or deprecation notice, if any>
-
----
-
-<concise structured facts>
-
----
-
-<concise summary prose>
-````
-
-Representative outputs live under `tests/snapshots/hover/`:
-
-| Target | Context Header & Code Block | Notices, Facts & Prose | Example |
-| --- | --- | --- | --- |
-| Instruction / Alias / Pseudo | `<Instruction\|Alias\|Pseudo-instruction> · [<long name> · ]<extensions/base ISA> · <RV32\|RV64\|RV32/RV64>[ · spec only]`; up to 3 active-XLEN syntax variants in a `riscv` fence (plus `*(+N more)*` if truncated) | `>` notices if spec-only (not in the bundled LLVM reference), disabled by `-march`/`.option`, or deprecated (`prefer \`...\``); `Alias of:`, decoded `Operands:` constraints across all LLVM operand classes, `This line:` expansion & encoding (built-in offline engine by default, or `llvm-mc` when `diagnostics.external` is enabled), and concise `summary` | [instruction.md](../tests/snapshots/hover/instruction.md), [instruction_with_expansion.md](../tests/snapshots/hover/instruction_with_expansion.md), [alias.md](../tests/snapshots/hover/alias.md), [pseudo.md](../tests/snapshots/hover/pseudo.md), [macro_expansion.md](../tests/snapshots/hover/macro_expansion.md) |
-| CSR (`stvec` or numeric `0x105` in CSR position) | `CSR · [<long name> · ]0x<hex> · <privilege>-mode[ · spec only]` (e.g. `CSR · Supervisor Trap Vector · 0x105 · S-mode`); CSR name in `riscv` fence | `>` notices if spec-only or disabled by active `-march` XLEN/extensions; `Fields:` bullet list (up to 8 fields using RV32 bit ranges under RV32 `-march`, as ``- `NAME` [bits] — summary``, plus `- *+N more fields*` if more) and concise summary prose | [csr.md](../tests/snapshots/hover/csr.md) |
-| Operand keyword (`%hi`, `rne`, `iorw`, `v0.t`) | `Relocation modifier`, `Rounding mode`, `Fence ordering`, or `Vector mask`; token in `riscv` fence | Explanation matching active instruction operand role or `%` modifier | — |
-| Register (`x10` / `a0`) | `Register · <Integer\|Floating-point\|Vector>[ · <saver>]` (e.g. `Register · Integer · caller-saved`); `<abi> (<arch>)` in `riscv` fence | Concise register summary prose | [register.md](../tests/snapshots/hover/register.md) |
-| Directive (`.globl`, `.macro`, `.cfi_sections`, ...) | `Directive · <GNU / LLVM\|GNU only>`; `<name>[ <arguments>]` in `riscv` fence | `>` notice for GNU-only directives not accepted by the bundled LLVM reference; concise description | [directive.md](../tests/snapshots/hover/directive.md) |
-| Preprocessor `#<directive>` (in preprocessed files) | `Preprocessor directive`; `#<name>` in `c` fence | `>` notice that `#<name>` is handled by the C preprocessor rather than treated as a comment; directive description | [preprocessor_directive.md](../tests/snapshots/hover/preprocessor_directive.md) |
-| Project symbols (`label`, `.equ`, `.set`, `=`, `.macro`, `.irp`/`.irpc` param, `#define`, `1f`/`1b`) | ``<Kind> · `<file>:<line>` `` (`Label`, `Local label`, `Numeric label`, `Constant (.equ)` / `Constant (.equiv)` / `Symbol (.set)` / `Symbol (=)`, `Macro`, `Macro parameter`, `#define`); defining line in `riscv` fence | `>` notice when reassigned multiple times in scope; ``Value: `<val>` `` fact for constants/defines | [label.md](../tests/snapshots/hover/label.md), [equ.md](../tests/snapshots/hover/equ.md), [macro.md](../tests/snapshots/hover/macro.md), [macro_param.md](../tests/snapshots/hover/macro_param.md), [define.md](../tests/snapshots/hover/define.md) |
-| Macro invocation counter (`\@`) | `Macro invocation counter`; `\@` in `riscv` fence | Explanation from `server/data/texts.json` | — |
-| Include directive (`#include`, `.include`) | `Include` (or `Include · unresolved`); `#include "<target>"` in `c` fence | ``Path: `<resolved>` `` when found on disk; search-path configuration hint when unresolved | — |
-
-### Built-in & live expansion & encoding
-
-For valid instructions under active `-march`/`.option` state, hover renders a
-`This line:` expansion and machine-word encoding:
-
-- **Default offline engine (`diagnostics.external: "off"`)**: `hover/builtin_expand.rs`
-  and `hover/matint.rs` run synchronously in Rust with no external tools:
-  - `li` uses the port of LLVM `RISCVMatInt::generateInstSeq` (matching RV32/RV64
-    and bit-manipulation extensions such as `Zba`, `Zbb`, `Zbs`, `Zbkb`, and `P`);
-  - fixed relocatable pseudos (`la`, `lla`, `call`, `tail`, `jump`, and symbol
-    load/store forms) expand cleanly with `# (relocated)` markers;
-  - `InstAlias` records expand via `alias_expansion` templates from
-    `server/data/riscv.json`, compressed instructions are selected when `C`/`Zca`/`Zcf`/`Zcd`
-    allow, and instruction words are bit-packed from bundled TableGen `encoding`
-    templates.
-- **Optional `llvm-mc` mode (`diagnostics.external: "auto"` | `"on"`)**: when opted
-  in, hover invokes `llvm-mc` asynchronously off the main loop (falling back to
-  the built-in engine if `llvm-mc` is unavailable or fails):
-
-```text
-llvm-mc -triple=<riscv32|riscv64> -mattr=<attrs> -show-encoding -M no-aliases
-```
-
-- When `llvmMc` is not explicitly configured, the server searches `llvm-mc` on
-  `PATH`, then the highest versioned `llvm-mc-<N>` on `PATH`, then standard
-  LLVM install directories (`/usr/lib/llvm-*/bin` on Linux, Homebrew
-  `llvm`/`llvm@*` on macOS, `C:\Program Files\LLVM\bin` on Windows), verifying
-  RISC-V (`riscv32`/`riscv64`) target support via `llvm-mc --version` without
-  requiring a specific LLVM version.
-- Preceding `.option` directives, visible `.equ`/`#define` constants, and the
-  built-in C preprocessor (with `clang -E -P -x assembler-with-cpp` as an
-  optional fallback when external tools are enabled and unresolved headers are
-  needed) are applied before expansion.
-- Assembler directives, compiler-generated `.Lpcrel_hi*:` labels, and `# fixup`
-  lines are filtered out in `llvm-mc` output.
-- Little-endian encoding bytes render as hex instruction words (`0x1141`,
-  `0x10529073`) or `(relocated)` when relocations apply:
+The expansion and encoding come from the built-in engine (LLVM's `li`
+sequence, pseudo-instruction and alias expansions, compressed forms when `C`
+is enabled). With `diagnostics.external` enabled, `llvm-mc` produces them
+instead:
 
 ```text
 li a0, 0x12345678   ->  lui a0, 74565 · 0x12345537 / addi a0, a0, 1656 · 0x67850513
 csrw stvec, t0      ->  csrrw zero, stvec, t0 · 0x10529073
-mv a0, a1           ->  c.mv a0, a1 · 0x852e          (when C is enabled)
+mv a0, a1           ->  c.mv a0, a1 · 0x852e
 ```
-
-## Built-in C preprocessing
-
-For preprocessed assembly sources (`.S`, `.sx`, headers, or `-x
-assembler-with-cpp` in `compile_commands.json` / `compile_flags.txt`),
-`preprocessor/` evaluates preprocessor directives purely in Rust:
-
-- **Predefined macros**: emits `__ASSEMBLER__`, `__riscv`, `__riscv_arch_test`,
-  `__riscv_xlen`, `__riscv_flen`, `__riscv_float_abi_*`, `__riscv_cmodel_*`,
-  `__riscv_atomic`, `__riscv_mul`, `__riscv_div`, `__riscv_muldiv`,
-  `__riscv_compressed`, `__riscv_vector`/`__riscv_v_*`, and `__riscv_<ext>`
-  version values derived from `MarchSpec`, `-mabi`, `-mcmodel`, and `server/data/riscv.json`.
-- **Conditionals**: evaluates `#if`, `#ifdef`, `#ifndef`, `#elif`, `#elifdef`,
-  `#elifndef`, `#else`, and `#endif` using a C integer constant expression
-  evaluator (`defined`, arithmetic, shifts, comparisons, logical/bitwise ops,
-  and ternary `?:`), tracking each line as **active**, **inactive**, or
-  **uncertain** (when an unresolved `#include` may affect the guard).
-- **Macro expansion**: expands object-like and function-like macros (`#`, `##`,
-  `__VA_ARGS__`, GNU `, ##__VA_ARGS__`, `#include`/`#include_next`/`-include`/
-  `-imacros`/`-D`/`-U`, `\` continuations, and `/* ... */` / `//` comments)
-  with bounded recursion depth and UTF-16 source-span mappings back to the
-  original file.
 
 ## Completion
 
-Trigger characters: `.`, `%`, `\`, `,`, and ` `.
+- At the start of a statement: instructions enabled by the active `-march` and
+  `.option`, directives, macros and `#define`s. Instructions insert their
+  operands as snippets.
+- In operands: registers, CSRs, symbols, `%` relocation functions and macro
+  parameters, depending on the operand.
+- After `.option` and `.section`: their arguments and extension or section
+  names.
+- Nothing is offered inside comments.
 
-- **Comment suppression**: handled through `line.rs` consistently with hover and
-  `.option` tracking — silent inside `//`, `#` comments, and open `/* ...`
-  block comments, while completing normally after closed `/* ... */` blocks on
-  the same line.
-- **Positions**:
-  - Statement start: LLVM-accepted instructions, aliases, pseudo-instructions
-    filtered by active `-march`/`.option`, directives, `.macro` invocations, and
-    `#define` macros. Spec-only (`llvm_supported == false`) entries are excluded.
-  - Operand positions: classified by expected operand role (integer/FP/vector
-    registers, CSRs including `0xhex · mode` details, symbols, `%hi(`/etc.
-    relocations from `server/data/texts.json`, and enclosing macro/`.irp`/`.irpc`
-    parameters).
-  - After `.option`: `arch`, `rvc`, `norvc`, `push`, `pop`, `relax`, `norelax`,
-    `pic`, `nopic`, `exact`, plus extension names (`+ext`/`-ext`) after `.option arch, `.
-  - After `.section` / `.pushsection`: standard ELF section names (`.text`, `.data`, `.rodata`, `.bss`, ...), section flags (`"ax"`, `"aw"`, ...), and ELF section types (`@progbits`, `@nobits`, ...).
-- **Snippets and variant labels**:
-  - When `snippetSupport` is enabled, overloaded instruction variants sort real
-    instructions -> aliases -> special relocation/symbol forms, and register forms
-    -> immediate forms; each variant includes its operand syntax in `label`,
-    mnemonic in `filterText`, long name in `detail`, and tab-stop placeholders
-    such as `ld ${1:rd}, ${2:0}(${3:rs1})$0`.
-  - Structured directives (`.macro`, `.rept`, `.irp`, `.if`, `.equ`, `.section`,
-    `.option`) emit block/argument snippets; zero-operand instructions insert
-    plain text.
-  - Without snippet support, plain completions insert required trailing
-    separators (` ` or `, `) when more arguments follow.
-- **Lazy documentation & caps**:
-  - When the client advertises `resolveSupport` for `documentation`,
-    `completionItem/resolve` formats the variant's Markdown documentation using
-    the shared hover renderer.
-  - Deprecated entries carry `CompletionItemTag::DEPRECATED` and sort lower.
-  - Large symbol sets filter by prefix, cap at 200 symbol/macro items, and set
-    `isIncomplete: true` so typing refreshes candidates.
+## Navigation
 
-## Navigation and symbols
+Go to definition, references, highlight, rename, document outline, workspace
+symbols and call hierarchy work for labels, numeric labels (`1f` / `1b`),
+`.equ` / `.set` / `=`, macros, macro parameters and `#define`s, across files and
+included headers.
 
-Supports `textDocument/definition`, `textDocument/references`,
-`textDocument/documentHighlight`, `textDocument/prepareRename`,
-`textDocument/rename`, `textDocument/documentSymbol`, `workspace/symbol`, and
-`textDocument/prepareCallHierarchy` (`callHierarchy/incomingCalls` /
-`callHierarchy/outgoingCalls`).
+- `.L` labels are local to their file; `.set` / `=` resolve to the assignment
+  active at the cursor.
+- Rename refuses numeric labels, symbols outside the workspace, invalid names,
+  names of registers, CSRs, instructions or directives, and names that would
+  collide.
+- The location counter `.` and linker script templates (`*.lds.S`, `*.ld.S`)
+  are ignored.
 
-- Labels (`.globl` / normal across workspace, `.L...` file-local), numeric
-  labels (`1:` <-> `1f`/`1b`), `.equ`/`.equiv`/`.set`/`=` (respecting reassignment
-  at cursor line), `.macro`, macro/`\.irp`/`\.irpc` parameters (`\p`), and
-  `#define`s across `#include`/`.include` graphs are indexed.
-- Document outline nests both numeric labels (`1:`) and file-local labels
-  (`.L...`) under enclosing ordinary labels and lists macros; `workspace/symbol`
-  ranks matches cleanly and omits file-local/numeric/parameter symbols.
-- **Rename guards**: refuses numeric labels, symbols defined outside the
-  workspace, invalid identifiers (including leading digits or `.`), architectural
-  register/CSR/instruction/directive names, and names that collide within the
-  target scope.
-- **Exclusions**: the location counter `.` (`. = ...`) is never treated as a
-  symbol, and `*.lds.S` / `*.ld.S` linker script templates are excluded from
-  indexing and LSP features.
+## Diagnostics
 
-## Diagnostics and code actions
+The built-in validator checks unsaved text after preprocessing. Each
+diagnostic has a code that `diagnostics.suppress` or `.riscv-asm-lsp.yaml` can
+hide:
 
-- **Built-in validator (`diagnostics/builtin.rs`)**: runs purely in Rust on
-  active lines produced by the built-in preprocessor, tracking `.option`,
-  `.equ`/`.equiv`/`.set`/`=`, `.macro`/`.irp`/`.irpc`/`.rept`, and local
-  `.include` definitions. It emits stable, suppressible diagnostic codes
-  (`diagnostics.suppress`):
-
-  | Code | Severity | Meaning |
-  | --- | --- | --- |
-  | `unknown-mnemonic` | Error | Unrecognized instruction mnemonic (with edit-distance suggestions) |
-  | `unknown-directive` | Error | Unrecognized assembler directive (``.``-prefixed, not a defined macro) |
-  | `extension-disabled` | Error | Instruction valid for XLEN but requires a disabled extension |
-  | `xlen-mismatch` | Error | Instruction requires a different XLEN (RV32 vs RV64) |
-  | `operand-count` | Error | Wrong number of operands for all active variants |
-  | `invalid-register` | Error | Register missing or fails operand register-class constraints |
-  | `invalid-immediate` | Error | Immediate out of range or misaligned for the operand class |
-  | `invalid-csr` | Error | Unknown CSR, disabled CSR, or address out of 12-bit range |
-  | `gnu-only-directive` | Warning | Directive accepted by GNU `as` but not LLVM |
-  | `inactive-branch` | Hint (`UNNECESSARY`) | Inactive preprocessor branch (`#if 0`, false `#ifdef`/`#if`); skipped for `uncertain` branches |
-
-  To avoid false positives, lines that are inactive or uncertain (from an
-  unresolved `#include`), lines with unexpanded macros, `.macro`/`.irp`/`.rept`
-  bodies, `%` relocation expressions, and expressions containing unresolved
-  symbols are skipped conservatively. Built-in codes can be suppressed via user
-  `diagnostics.suppress` or project-level `.riscv-asm-lsp.yaml` (`Diagnostics.Suppress`).
-
-- **External `clang` diagnostics (`diagnostics.external`: `"off"` | `"auto"` | `"on"`, default `"off"`)**:
-  by default (`"off"`), `DiagnosticsWorker` runs only the built-in validator so
-  diagnostics never invoke external `clang`. When opted in via `"auto"` or
-  `"on"` and a RISC-V `clang` binary is found, `DiagnosticsWorker` prefers
-  `clang` results and falls back to the built-in validator when unavailable.
-
-- **Toolchain discovery**: when `clang` or `llvmMc` is omitted, the server
-  searches in order:
-  1. `clang` / `llvm-mc` on `PATH`;
-  2. the highest versioned `clang-<N>` / `llvm-mc-<N>` found on `PATH`;
-  3. standard LLVM install paths (`/usr/lib/llvm-*/bin` on Linux, Homebrew
-     `llvm` and `llvm@*` on macOS, `C:\Program Files\LLVM\bin` on Windows,
-     newest version first).
-
-  Any LLVM version with `riscv32` or `riscv64` target support (`clang
-  -print-targets` / `llvm-mc --version`) is accepted without version warnings.
-  During auto-discovery, candidates that lack RISC-V targets (such as Apple's
-  system `clang`) are skipped; if no usable binary is found, only that
-  feature is disabled and logged once to stderr without a `window/showMessage`
-  popup. When an explicitly configured `clang` / `llvmMc` path fails to run or
-  lacks RISC-V targets, a single `window/showMessage` warning is sent naming the
-  setting and linking to
-  `README.md#optional-llvm-for-clang-based-diagnostics-and-expansions`.
-- `DiagnosticsWorker` debounces unsaved edits (`diagnostics.delayMs`, default
-  300 ms), discards stale runs when document version advances, and runs:
-
-  ```text
-  clang <allow-listed flags> -iquote <file dir> -x <assembler-with-cpp|assembler> -c -o /dev/null -
-  ```
-
-- Parses `<stdin>` errors/warnings, `<instantiation>` macro diagnostics (via
-  `note: while in macro instantiation`), and errors in `#include`/`.include`
-  headers (mapped back to the include line with `relatedInformation`).
-- **Preprocessed `#define` hints**: attaches neutral `relatedInformation`
-  pointing to referenced `#define` lines, and flags prose-like `#define`s (where
-  an un-commented `# ...` line expanded into invalid syntax) for `Use // comment`
-  quick fixes.
-- **Code actions** (`textDocument/codeAction`): replacement quick fixes from
-  `clang` `"did you mean: ..."` suggestions and `Use // comment` quick fixes on
-  diagnosed `#` lines (plus `REFACTOR_REWRITE` on `#` comment lines in
-  preprocessed files).
-
-## Signature help, folding ranges, and inlay hints
-
-- **Signature help** (`textDocument/signatureHelp`, triggers ` ` and `,`):
-  shows active instruction syntax variants matching `-march`/`.option` and
-  highlights the current operand parameter with decoded LLVM operand
-  constraints.
-- **Folding ranges** (`textDocument/foldingRange`): folds multi-line `/* ... */`
-  block comments (`Comment`), `.macro`/`.endm`, `.if*`/`.endif`, `.rept`/`.irp`/`.irpc`/`.endr`,
-  `#if*`/`#endif` blocks (in preprocessed files), and multi-line label scopes.
-- **Inlay hints** (`textDocument/inlayHint`): displays CSR hex addresses / names
-  next to CSR operands and resolved `.equ` / `#define` values next to constant
-  references.
-
-## Semantic tokens
-
-`textDocument/semanticTokens/full` and `range` emit delta-encoded UTF-16 tokens:
-
-| Token type | Modifier | Examples |
+| Code | Severity | Meaning |
 | --- | --- | --- |
-| `register` | — | `t0`, `x5`, `fa0`, `sp` |
-| `csr` | — | `stvec`, `mstatus`, `scause` |
-| `label` | `declaration` | `_start:`, `1:`, `1f`, `1b`, `.Lloop` |
-| `constant` | `declaration` | `.equ`, `.set`, `=`, `#define` |
-| `macro` | `declaration` | `.macro SAVE`, `SAVE` invocations |
-| `parameter` | `declaration` | macro and `.irp`/`.irpc` parameter definitions and `\param` uses |
-| `preprocessor` | — | `#define`, `#include`, `# 100`, `#` in preprocessed files |
-| `comment` | — | `# ...` lines in non-preprocessed files, and inactive preprocessor branches (`#if 0`, false `#ifdef`/`#if`) |
+| `unknown-mnemonic` | Error | Unknown instruction (with suggestions) |
+| `unknown-directive` | Error | Unknown directive |
+| `extension-disabled` | Error | The instruction needs an extension that is not enabled |
+| `xlen-mismatch` | Error | The instruction is for the other XLEN |
+| `operand-count` | Error | Wrong number of operands |
+| `invalid-register` | Error | Wrong or missing register |
+| `invalid-immediate` | Error | Immediate out of range or misaligned |
+| `invalid-csr` | Error | Unknown or disabled CSR |
+| `gnu-only-directive` | Warning | GNU `as` accepts the directive, LLVM does not |
+| `inactive-branch` | Hint | Inactive `#if` branch, shown greyed out |
 
-## Preprocessor handling
+To avoid false errors, the validator skips lines it cannot be sure about:
+inactive branches, lines that depend on a missing `#include`, unexpanded
+macros, `.macro` / `.irp` / `.rept` bodies, `%` relocations and expressions
+with unknown symbols.
 
-Per-file preprocessing mode determines `#` handling, `#define` extraction,
-`clang -x` language flag, semantic tokens and `#` code actions:
+With `diagnostics.external` enabled and `clang` found, diagnostics come from
+`clang` instead, including errors inside macros and included files. The two
+are never mixed.
 
-- Default by suffix: `.S`, `.sx`, `.h`, `.H`, `.hpp` -> preprocessed (`-x assembler-with-cpp`);
-  `.s`, `.inc` -> non-preprocessed (`-x assembler`).
-- Overridden per file when `compile_commands.json` specifies `-x assembler-with-cpp`
-  or `-x assembler`.
+Code actions offer `clang`'s "did you mean" fixes and turn `#` comments that
+the preprocessor would misread into `//` comments.
+
+## Other features
+
+- **Signature help** shows the syntax variants of the instruction and the
+  current operand.
+- **Folding** covers block comments, `.macro`, `.if`, `.rept` / `.irp`, `#if`
+  blocks and label scopes.
+- **Inlay hints** show CSR addresses and the values of `.equ` and `#define`
+  constants.
+- **Semantic tokens** classify registers, CSRs, labels, constants, macros,
+  parameters, preprocessor lines and comments, and grey out inactive `#if`
+  branches.
+
+## Preprocessing
+
+In preprocessed files (see [configuration.md](configuration.md#compilation-database)),
+the built-in preprocessor evaluates `#if` / `#ifdef` / `#elif`, expands
+object-like and function-like macros, follows `#include`, and defines the
+macros clang predefines for RISC-V (`__riscv`, `__riscv_xlen`,
+`__riscv_<ext>`, ...) from `-march` and `-mabi`. In files that are not
+preprocessed, `#` starts a comment.
