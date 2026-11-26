@@ -287,7 +287,7 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 - **License**: Creative Commons Attribution 4.0 International (CC-BY-4.0),
   <https://creativecommons.org/licenses/by/4.0/>
 - **Modifications**: Directive and pseudoinstruction rows were extracted from
-  AsciiDoc tables, checked against LLVM 19 support, expanded where shorthands
+  AsciiDoc tables, checked against LLVM 23 support, expanded where shorthands
   were used, 30 directive descriptions were replaced by project-authored MIT
   summaries in `data/supplements.json` (preserving the manual's argument syntax),
   and stored in `data/riscv.json`.

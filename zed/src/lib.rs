@@ -151,22 +151,41 @@ fn target_asset_spec(
     }
 }
 
+fn parse_version_tuple(dir_name: &str) -> Option<(u64, u64, u64)> {
+    let raw = dir_name.strip_prefix("riscv-asm-lsp-")?;
+    let trimmed = raw.trim_start_matches(['v', 'V']);
+    let core = trimmed.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next().unwrap_or("0").parse::<u64>().ok()?;
+    let patch = parts.next().unwrap_or("0").parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+fn sort_cached_version_dirs(dirs: &mut [(String, String)]) {
+    // Prefer the highest semantic version descending on offline fallback (so v0.10.0 > v0.9.0).
+    dirs.sort_by(|a, b| {
+        parse_version_tuple(&b.0)
+            .cmp(&parse_version_tuple(&a.0))
+            .then_with(|| b.0.cmp(&a.0))
+    });
+}
+
 fn find_existing_downloaded_binary(exe_name: &str) -> Option<String> {
     let entries = fs::read_dir(".").ok()?;
     let mut candidates = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let name_str = name.to_string_lossy();
+        let name_str = name.to_string_lossy().into_owned();
         if name_str.starts_with("riscv-asm-lsp-") {
             let candidate = format!("{name_str}/{exe_name}");
             if fs::metadata(&candidate).is_ok_and(|s| s.is_file()) {
-                candidates.push(candidate);
+                candidates.push((name_str, candidate));
             }
         }
     }
-    // Prefer the highest version directory lexicographically on offline fallback.
-    candidates.sort_by(|a, b| b.cmp(a));
-    candidates.into_iter().next()
+    sort_cached_version_dirs(&mut candidates);
+    candidates.into_iter().next().map(|(_, path)| path)
 }
 
 fn cleanup_old_versions(keep_dir: &str) {
@@ -256,3 +275,46 @@ impl zed::Extension for RiscvAssemblyExtension {
 }
 
 zed::register_extension!(RiscvAssemblyExtension);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_version_dir_sorts_semver_numerically() {
+        let mut dirs = vec![
+            (
+                "riscv-asm-lsp-v0.2.0".to_owned(),
+                "riscv-asm-lsp-v0.2.0/riscv-asm-lsp".to_owned(),
+            ),
+            (
+                "riscv-asm-lsp-v0.9.0".to_owned(),
+                "riscv-asm-lsp-v0.9.0/riscv-asm-lsp".to_owned(),
+            ),
+            (
+                "riscv-asm-lsp-v0.10.0".to_owned(),
+                "riscv-asm-lsp-v0.10.0/riscv-asm-lsp".to_owned(),
+            ),
+            (
+                "riscv-asm-lsp-0.11.1-rc1".to_owned(),
+                "riscv-asm-lsp-0.11.1-rc1/riscv-asm-lsp".to_owned(),
+            ),
+            (
+                "riscv-asm-lsp-custom".to_owned(),
+                "riscv-asm-lsp-custom/riscv-asm-lsp".to_owned(),
+            ),
+        ];
+        sort_cached_version_dirs(&mut dirs);
+        let ordered: Vec<&str> = dirs.iter().map(|(d, _)| d.as_str()).collect();
+        assert_eq!(
+            ordered,
+            vec![
+                "riscv-asm-lsp-0.11.1-rc1",
+                "riscv-asm-lsp-v0.10.0",
+                "riscv-asm-lsp-v0.9.0",
+                "riscv-asm-lsp-v0.2.0",
+                "riscv-asm-lsp-custom",
+            ]
+        );
+    }
+}
