@@ -1805,3 +1805,66 @@ _start:
     assert_eq!(notif.params["diagnostics"], json!([]));
     client.shutdown_and_exit();
 }
+
+#[test]
+fn misalignment_wording_and_dtpreldword_and_sdata_directive_checks() {
+    let doc_uri = crate::common::test_uri("n3_n4_checks.S");
+    let mut client = LspClient::start(
+        Some(json!({
+            "defaultMarch": "rv64imac",
+            "diagnostics": { "enable": true, "delayMs": 15 }
+        })),
+        None,
+    );
+    let src = "\
+_start:
+    c.lw a0, 2(a1)
+    .dtpreldword 0
+    .sdata
+    .tdata
+    .tbss
+    .rodata
+";
+    client.open_doc(&doc_uri, 1, src);
+    let notif = client
+        .wait_for_notification(
+            "textDocument/publishDiagnostics",
+            std::time::Duration::from_secs(3),
+        )
+        .expect("publishDiagnostics");
+    let diags = notif.params["diagnostics"].as_array().unwrap();
+    let by_line = |line: u64| -> &serde_json::Value {
+        diags
+            .iter()
+            .find(|d| d["range"]["start"]["line"] == line)
+            .unwrap_or_else(|| panic!("missing diagnostic on line {line}: {diags:?}"))
+    };
+
+    let clw_diag = by_line(1);
+    assert_eq!(clw_diag["code"], json!("invalid-immediate"));
+    let clw_msg = clw_diag["message"].as_str().unwrap();
+    assert!(
+        clw_msg.contains("immediate must be a multiple of 4 in [0, 124]"),
+        "unexpected misaligned immediate message: {clw_msg}"
+    );
+    assert_eq!(clw_msg.matches("multiple of 4").count(), 1);
+
+    let dtp_diag = by_line(2);
+    assert_eq!(dtp_diag["code"], json!("gnu-only-directive"));
+    assert_eq!(dtp_diag["severity"], json!(2));
+
+    let sdata_diag = by_line(3);
+    assert_eq!(sdata_diag["code"], json!("unknown-directive"));
+    assert_eq!(sdata_diag["severity"], json!(1));
+
+    for valid_line in [4u64, 5, 6] {
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d["range"]["start"]["line"] == valid_line),
+            "unexpected diagnostic on valid section directive line {valid_line}: {diags:?}"
+        );
+    }
+
+    client.shutdown_and_exit();
+}

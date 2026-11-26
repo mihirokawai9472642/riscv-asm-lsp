@@ -8012,13 +8012,6 @@
     {
       "detail": "expression [, expression]*",
       "documentation": null,
-      "insertText": ".dtpreldword ",
-      "kind": 14,
-      "label": ".dtpreldword"
-    },
-    {
-      "detail": "expression [, expression]*",
-      "documentation": null,
       "insertText": ".dword ",
       "kind": 14,
       "label": ".dword"

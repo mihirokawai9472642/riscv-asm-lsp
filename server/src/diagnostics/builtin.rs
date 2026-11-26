@@ -433,6 +433,7 @@ fn handle_directive_statement(
                 | ".endfunc"
                 | ".float16"
                 | ".bfloat16"
+                | ".dtpreldword"
                 | ".dtprelword"
                 | ".linkonce"
                 | ".stabs"
@@ -478,30 +479,12 @@ fn is_known_extra_directive(head_lower: &str) -> bool {
                 | ".addrsig"
                 | ".addrsig_sym"
                 | ".cg_profile"
-                | ".eh_frame"
                 | ".lto_discard"
-                | ".variant_pcs"
-                | ".ln"
-                | ".stabs"
-                | ".stabd"
-                | ".stabn"
-                | ".fail"
-                | ".offset"
-                | ".struct"
-                | ".init"
-                | ".fini"
-                | ".preinit_array"
-                | ".init_array"
-                | ".fini_array"
-                | ".sdata"
-                | ".sbss"
                 | ".tdata"
                 | ".tbss"
                 | ".rodata"
-                | ".nopic"
-                | ".pic"
-                | ".relax"
-                | ".norelax"
+                | ".variant_cc"
+                | ".base64"
         )
 }
 
@@ -1569,9 +1552,8 @@ fn check_immediate_operand(
         return OperandVerdict::Mismatch(OperandMismatch {
             code: codes::INVALID_IMMEDIATE,
             message: format!(
-                "operand must be a multiple of {}, expected {}",
-                spec.step,
-                describe_imm_constraint(&spec)
+                "immediate must be a multiple of {} in [{}, {}]",
+                spec.step, spec.min, spec.max
             ),
             abs_start: uo.abs_start,
             abs_end: uo.abs_end,

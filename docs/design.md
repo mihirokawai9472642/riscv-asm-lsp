@@ -310,8 +310,6 @@ Only unfinished work is listed here:
 - **Distribution verification & publishing**:
   - Test clean Zed GUI installation/settings/features and publish to the Zed extension registry (`zed-industries/extensions`).
   - Publish `riscv-asm-lsp` to `crates.io` (the `server/data/` crate layout, `[package.metadata.binstall]`, and [docs/editors.md](editors.md) Neovim/Helix setup docs are in place).
-- **clangd-style project ergonomics**:
-  - Compile-database command interpolation from nearest known sibling file; `.clangd`-style project configuration file (excluding unsafe tool-path settings).
 - **Additional LSP features & corpus items**: none currently open beyond distribution verification and Zed polish.
 - **Zed extension polish**:
   - Separate `.s` vs. `.S` language grammars or upstream `tree-sitter-riscv`
@@ -329,7 +327,7 @@ Checked against `llvm-mc` 23.1.6:
 
 | Status | Directives |
 | --- | --- |
-| Not supported | `.eqv`, `.func`/`.endfunc`, `.float16`, `.bfloat16`, `.dtprelword`, `.linkonce`, `.stabs`, listing directives (`.list`, `.nolist`, `.title`, `.sbttl`, `.psize`, `.mri`) |
+| Not supported | `.eqv`, `.func`/`.endfunc`, `.float16`, `.bfloat16`, `.dtprelword`, `.dtpreldword`, `.linkonce`, `.stabs`, listing directives (`.list`, `.nolist`, `.title`, `.sbttl`, `.psize`, `.mri`) |
 | Supported (representative) | `.macro` (including `\@`), `.altmacro`, `.irp`, `.rept`, `.equ`, `.set`, `=`, `.equiv`, `.option` (`arch`, `push`, `pop`, `exact`), `.insn`, `.attribute`, `.variant_cc`, `.cfi_*`, `.pushsection`, `.incbin`, `.ifc`, `.ifb`, `.reloc`, `.print`, `.warning`, `.int`, `.weakref`, `.line`, `.version`, `.dc`, `.dcb`, `.ds`, `.ifnotdef`, `.bundle_*`, `.base64` |
 
 For example, `riscv-asm-manual` lists `.dtprelword` while LLVM 23 rejects it,

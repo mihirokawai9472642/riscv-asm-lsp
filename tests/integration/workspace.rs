@@ -912,3 +912,20 @@ Diagnostics:
     client.shutdown_and_exit();
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn crate_package_license_files_stay_in_sync_with_workspace_root() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root_dir = manifest_dir.parent().expect("workspace root");
+
+    for name in ["LICENSE.md", "THIRD_PARTY_NOTICES.md"] {
+        let root_text = std::fs::read_to_string(root_dir.join(name))
+            .unwrap_or_else(|e| panic!("read workspace {name}: {e}"));
+        let server_text = std::fs::read_to_string(manifest_dir.join(name))
+            .unwrap_or_else(|e| panic!("read server/{name}: {e}"));
+        assert_eq!(
+            server_text, root_text,
+            "server/{name} has drifted from workspace {name}"
+        );
+    }
+}
