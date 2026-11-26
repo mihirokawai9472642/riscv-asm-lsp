@@ -238,15 +238,15 @@ pub struct Database {
     extensions_by_march: HashMap<String, usize>,
 }
 
-const EMBEDDED_DATA_JSON: &str = include_str!("../../data/riscv.json");
-const EMBEDDED_TEXTS_JSON: &str = include_str!("../../data/texts.json");
+const EMBEDDED_DATA_JSON: &str = include_str!("../data/riscv.json");
+const EMBEDDED_TEXTS_JSON: &str = include_str!("../data/texts.json");
 
 #[derive(Debug, Deserialize)]
 struct PartialExtensionsData {
     extensions: Vec<ExtensionEntry>,
 }
 
-/// Extension implication graph, experimental flags, and parsed versions built from `data/riscv.json`.
+/// Extension implication graph, experimental flags, and parsed versions built from `server/data/riscv.json`.
 #[derive(Debug, Default)]
 pub struct ExtensionGraph {
     pub implies: HashMap<String, Vec<String>>,

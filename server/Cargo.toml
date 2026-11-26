@@ -7,6 +7,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 description = "Language server for RISC-V assembly in GNU assembler syntax"
+include = ["src/**", "data/riscv.json", "data/texts.json", "Cargo.toml"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-x86_64-unknown-linux-musl.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-aarch64-unknown-linux-musl.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [lib]
 name = "riscv_asm_lsp"

@@ -77,7 +77,7 @@ struct DescriptionCorrection {
 }
 
 fn load_supplements(workspace_root: &Path) -> Result<SupplementsFile, Box<dyn std::error::Error>> {
-    let path = workspace_root.join("data/supplements.json");
+    let path = workspace_root.join("server/data/supplements.json");
     let text = fs::read_to_string(&path)?;
     Ok(serde_json::from_str(&text)?)
 }
@@ -1090,7 +1090,7 @@ fn join_directives(
         by_name.insert(entry.name.clone(), entry);
     }
 
-    let hand_path = workspace_root.join("data/directives_gnu.json");
+    let hand_path = workspace_root.join("server/data/directives_gnu.json");
     let hand_text = fs::read_to_string(&hand_path)?;
     let hand: HandGnuDirectivesFile = serde_json::from_str(&hand_text)?;
     for dir in hand.directives {
@@ -1169,7 +1169,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace root");
-        let supplements = load_supplements(root).expect("load data/supplements.json");
+        let supplements = load_supplements(root).expect("load server/data/supplements.json");
         let mut corrections = Vec::new();
         let (insts, _) = join_instructions(&llvm, &udb, &manual, &supplements, &mut corrections);
         let li = insts.iter().find(|i| i.mnemonic == "li").expect("li entry");
@@ -1254,7 +1254,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace root");
-        let supplements = load_supplements(root).expect("load data/supplements.json");
+        let supplements = load_supplements(root).expect("load server/data/supplements.json");
         let mut corrections = Vec::new();
         let (insts, inst_report) =
             join_instructions(&llvm, &udb, &manual, &supplements, &mut corrections);
@@ -1314,7 +1314,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace root");
-        let supplements = load_supplements(root).expect("load data/supplements.json");
+        let supplements = load_supplements(root).expect("load server/data/supplements.json");
         let manual = AsmManualData {
             pseudos: Vec::new(),
             directives: vec![

@@ -184,7 +184,8 @@ docker compose exec dev cargo build --release
 The server binary is `target/release/riscv-asm-lsp` (`riscv-asm-lsp.exe` on
 Windows). Place it on `PATH` or point `lsp.riscv-asm-lsp.binary.path` to it.
 See [docs/zed.md](docs/zed.md) for Zed settings, extension development,
-container execution, Windows with WSL, and theme overrides.
+container execution, Windows with WSL, and theme overrides, and
+[docs/editors.md](docs/editors.md) for `cargo-binstall`, Neovim, and Helix setup.
 
 ## Documentation
 
@@ -194,15 +195,16 @@ container execution, Windows with WSL, and theme overrides.
 | [docs/design.md](docs/design.md) | Architecture, server internals, robustness rules, testing and roadmap |
 | [docs/data.md](docs/data.md) | Instruction/CSR/directive data sources, pinned versions, generation and licenses |
 | [docs/zed.md](docs/zed.md) | Installing and configuring the Zed extension |
+| [docs/editors.md](docs/editors.md) | `cargo-binstall` and LSP configuration for Neovim and Helix |
 | [AGENTS.md](AGENTS.md) | Development commands, code conventions, module layout and test workflow |
 
 ## License
 
 The code is licensed under the [MIT License](LICENSE.md); the Zed extension
 carries its own copy in [zed/LICENSE](zed/LICENSE). The instruction data in
-`data/riscv.json` is derived from LLVM (`Apache-2.0 WITH LLVM-exception`),
+`server/data/riscv.json` is derived from LLVM (`Apache-2.0 WITH LLVM-exception`),
 riscv-unified-db (`BSD-3-Clause-Clear`) and riscv-asm-manual (`CC-BY-4.0`) and
-stays under their licenses; hand-written files in `data/` (`directives_gnu.json`,
+stays under their licenses; hand-written files in `server/data/` (`directives_gnu.json`,
 `supplements.json`, `texts.json`) are MIT. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); binary release archives
 also include `THIRD_PARTY_LICENSES.md` and `COPYRIGHT-library.html` for

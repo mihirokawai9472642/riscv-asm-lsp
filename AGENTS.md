@@ -15,8 +15,8 @@ accepts is what the server offers.
 | Path | Contents |
 | --- | --- |
 | `server/` | The language server crate (binary `riscv-asm-lsp`) |
+| `server/data/` | Generated instruction data (`riscv.json`, `report.md`) and hand-written files (`directives_gnu.json`, `supplements.json`, `texts.json`) |
 | `xtask/` | Data generation (`cargo xtask gen-data`) |
-| `data/` | Generated instruction data (`riscv.json`, `report.md`) and hand-written files (`directives_gnu.json`, `supplements.json`, `texts.json`) |
 | `zed/` | The Zed extension (its own crate, built for `wasm32-wasip2`; not a workspace member) |
 | `tests/` | Integration tests, fixtures, and golden snapshots (`tests/snapshots/`) |
 | `docs/` | Design and reference documentation (`design.md`, `features.md`, `data.md`, `zed.md`) |
@@ -59,7 +59,7 @@ same path inside the container.
 - The Zed extension crate is outside the workspace; pass its manifest:
   `docker compose exec dev cargo clippy --manifest-path zed/Cargo.toml --target wasm32-wasip2 -- -D warnings`
   and `docker compose exec dev cargo fmt --manifest-path zed/Cargo.toml --check`.
-- `docker compose exec dev cargo xtask gen-data`: regenerates `data/` from the
+- `docker compose exec dev cargo xtask gen-data`: regenerates `server/data/` from the
   pinned inputs. It downloads LLVM `.td` files, `riscv-unified-db` and
   `riscv-asm-manual`, so run it only when changing the data or its generator.
 
@@ -97,12 +97,12 @@ available there.
 
 ## Data
 
-- Files in `data/` marked as generated (`riscv.json`, `report.md`) are written
+- Files in `server/data/` marked as generated (`riscv.json`, `report.md`) are written
   by `cargo xtask gen-data`; never edit them by hand. Hand-written files say so
   (`directives_gnu.json`, `supplements.json`, `texts.json` in their `notice`
   field).
 - The pinned input versions live in one place in `xtask/src/pins.rs`. Changing
-  a pin means regenerating and reviewing the diff of `data/report.md`.
+  a pin means regenerating and reviewing the diff of `server/data/report.md`.
 - Imported data keeps its source license. When adding a source, record it in
   `THIRD_PARTY_NOTICES.md` and in `docs/data.md`.
 

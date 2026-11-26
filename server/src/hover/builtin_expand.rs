@@ -103,7 +103,7 @@ fn expand_single_statement(
         return Some(vec![compress_and_encode(call, march, known_consts, db)]);
     }
 
-    // 4. `InstAlias` expansion from `data/riscv.json` (`alias_expansion`)
+    // 4. `InstAlias` expansion from `server/data/riscv.json` (`alias_expansion`)
     if let Some(canon) = try_expand_alias(&lower, &ops, march, known_consts, db) {
         return Some(vec![compress_and_encode(canon, march, known_consts, db)]);
     }

@@ -20,7 +20,7 @@ struct ParsedImmParts {
     max: i64,
 }
 
-/// Decode an LLVM operand class name (77 total: 51 register/special classes from `data/texts.json`
+/// Decode an LLVM operand class name (77 total: 51 register/special classes from `server/data/texts.json`
 /// plus 26 mechanically decoded immediate constraint classes).
 pub fn describe_operand_class(class: &str, db: &Database) -> Option<String> {
     if let Some(desc) = db.texts.operand_classes.get(class) {

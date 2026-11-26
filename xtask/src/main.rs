@@ -32,11 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (data, report_data) =
                 join::build(&workspace_root, llvm_data, udb_data, manual_data)?;
             let json_text = serde_json::to_string(&data)?;
-            let json_path = workspace_root.join("data/riscv.json");
+            let json_path = workspace_root.join("server/data/riscv.json");
             fs::write(&json_path, format!("{json_text}\n"))?;
 
             let report_text = report::render(&data, &report_data);
-            let report_path = workspace_root.join("data/report.md");
+            let report_path = workspace_root.join("server/data/report.md");
             fs::write(&report_path, report_text)?;
 
             eprintln!(
